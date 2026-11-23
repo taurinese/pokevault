@@ -1,14 +1,17 @@
 import { Data, Effect, Schema } from "effect";
 
 // ---------------------------------------------------------------------------
-// Constantes
+// Constants
 // ---------------------------------------------------------------------------
 
-/** Ratio officiel d'une carte Pokémon (63 mm × 88 mm). */
+/** Official Pokémon card aspect ratio (63 mm × 88 mm). */
 export const CardAspectRatio = 63 / 88;
 
+/** Upper bound for a single user_card_copies row quantity. */
+export const MAX_CARD_COPY_QUANTITY = 999;
+
 // ---------------------------------------------------------------------------
-// Schémas des types de base
+// Base schemas (aligned with docs/02-modele-des-donnees.md)
 // ---------------------------------------------------------------------------
 
 export const CardLanguage = Schema.Literals(["FR", "EN", "JP", "ZH"]);
@@ -30,49 +33,74 @@ export type CardCondition = typeof CardCondition.Type;
 export const HoloEffect = Schema.Literals(["none", "holo", "reverse", "ex", "sir", "tera", "gold"]);
 export type HoloEffect = typeof HoloEffect.Type;
 
-/** Carte d'une collection utilisateur (représentation de domaine minimale). */
-export const OwnedCard = Schema.Struct({
-  cardId: Schema.NonEmptyString,
+/** Non-empty TCGdex card identifier without whitespace (e.g. `sv03.5-199`). */
+export const CardId = Schema.NonEmptyString.check(Schema.isPattern(/^\S+$/));
+export type CardId = typeof CardId.Type;
+
+/** Owned card copy payload (maps to `user_card_copies`, excluding catalog-only fields). */
+export const CardCopy = Schema.Struct({
+  cardId: CardId,
   language: CardLanguage,
   variant: CardVariant,
   condition: CardCondition,
-  quantity: Schema.Int.check(Schema.isGreaterThan(0)),
-  holoEffect: Schema.optionalKey(HoloEffect),
+  quantity: Schema.Int.check(
+    Schema.isGreaterThan(0),
+    Schema.isLessThanOrEqualTo(MAX_CARD_COPY_QUANTITY),
+  ),
 });
-export type OwnedCard = typeof OwnedCard.Type;
+export type CardCopy = typeof CardCopy.Type;
 
 // ---------------------------------------------------------------------------
-// Erreurs typées
+// Typed domain errors (aligned with docs/03-architecture.md)
 // ---------------------------------------------------------------------------
 
-export class CardValidationError extends Data.TaggedError("CardValidationError")<{
+export class ValidationError extends Data.TaggedError("ValidationError")<{
   readonly message: string;
+  readonly cause?: unknown;
 }> {}
 
 // ---------------------------------------------------------------------------
-// Décodage
+// Decoders
 // ---------------------------------------------------------------------------
 
-/** Décode une charge utile inconnue en `OwnedCard`, avec une erreur typée. */
-export const decodeOwnedCard = (input: unknown): Effect.Effect<OwnedCard, CardValidationError> =>
-  Schema.decodeUnknownEffect(OwnedCard)(input).pipe(
-    Effect.mapError((error) => new CardValidationError({ message: error.message })),
+/** Decodes an unknown payload into a `CardCopy` with a typed `ValidationError`. */
+export const decodeCardCopy = (input: unknown): Effect.Effect<CardCopy, ValidationError> =>
+  Schema.decodeUnknownEffect(CardCopy)(input).pipe(
+    Effect.mapError((error) => new ValidationError({ message: error.message, cause: error })),
   );
 
 // ---------------------------------------------------------------------------
-// Mapping rareté / variante → effet holo 3D
+// Rarity / variant → 3D holo preset mapping (TCGdex FR & EN)
 // ---------------------------------------------------------------------------
 
 const normalizeRarity = (rarity: string): string =>
-  rarity.trim().toLowerCase().replace(/\s+/g, " ");
+  rarity
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
 
-const GOLD_RARITIES: ReadonlySet<string> = new Set(["ur", "hyper rare", "gold", "secret rare"]);
+const GOLD_RARITIES: ReadonlySet<string> = new Set([
+  "gold",
+  "hyper rare",
+  "mega hyper rare",
+  "secret rare",
+  "ur",
+  "crown",
+  "couronne",
+]);
+
 const SIR_RARITIES: ReadonlySet<string> = new Set([
   "sir",
   "sar",
   "special illustration rare",
+  "illustration speciale rare",
   "special art rare",
+  "trois etoiles",
+  "three star",
 ]);
+
 const EX_RARITIES: ReadonlySet<string> = new Set([
   "ex",
   "dr",
@@ -81,19 +109,60 @@ const EX_RARITIES: ReadonlySet<string> = new Set([
   "rr",
   "rrr",
   "full art",
+  "full art trainer",
+  "dresseur full art",
+  "chromatique ultra rare",
+  "shiny ultra rare",
+  "holo rare v",
+  "holo rare vmax",
+  "holo rare vstar",
+  "shiny rare v",
+  "shiny rare vmax",
+  "rare holo lv.x",
+  "rare prime",
+  "legende",
+  "legend",
+  "ace spec rare",
+  "high-tech rare",
+  "mega attack rare",
   "v",
   "vmax",
   "vstar",
   "gx",
+  "deux etoiles",
+  "two star",
+  "quatre diamants",
+  "four diamond",
 ]);
+
 const HOLO_RARITIES: ReadonlySet<string> = new Set([
   "holo",
   "holo rare",
   "rare holo",
-  "rare",
   "ar",
   "ir",
   "illustration rare",
+  "shiny rare",
+  "un chromatique",
+  "deux chromatiques",
+  "one shiny",
+  "two shiny",
+  "radieux rare",
+  "radiant rare",
+  "magnifique",
+  "magnifique rare",
+  "amazing rare",
+  "collection classique",
+  "classic collection",
+  "rare noir blanc",
+  "black white rare",
+  "futuristic rare",
+  "pikachu rare",
+  "rgb rare",
+  "une etoile",
+  "one star",
+  "trois diamants",
+  "three diamond",
 ]);
 
 const rarityEffect = (rarity: string): HoloEffect => {
@@ -119,18 +188,28 @@ const variantEffect = (variant: CardVariant | undefined): HoloEffect => {
   }
 };
 
+export interface DeriveHoloEffectInput {
+  readonly rarity: string;
+  readonly variant?: CardVariant | undefined;
+  readonly isTera?: boolean | undefined;
+}
+
 /**
- * Déduit l'effet holo 3D d'une carte à partir de sa rareté (texte TCGdex / normalisé)
- * et, optionnellement, de sa variante.
+ * Derives the 3D holo shader preset from TCGdex FR/EN rarity metadata,
+ * card variant, and Tera card flag (`isTera`).
  *
- * - Les raretés premium (`tera`, `gold`, `sir`, `ex`) l'emportent toujours.
- * - Sinon, une variante brillante (`reverse`, `pokeball`, `masterball`, `holo`) prime.
- * - Sinon, l'effet dépend de la rareté (`holo`) ou vaut `none`.
+ * Precedence:
+ * 1. `isTera` (or explicit `"tera"` in rarity) → `"tera"`.
+ * 2. Premium rarities (`gold`, `sir`, `ex`) always take precedence over `variant`.
+ * 3. Shiny variants (`reverse`, `pokeball`, `masterball`, `holo`) override basic/holo rarities.
+ * 4. Otherwise, fall back to rarity (`holo` or `none`). Plain `"Rare"` maps to `none` unless
+ *    paired with a `holo` or `reverse` variant so pre-SV non-holo rares stay accurate.
  */
-export const deriveHoloEffect = (rarity: string, variant?: CardVariant): HoloEffect => {
-  const fromRarity = rarityEffect(rarity);
+export const deriveHoloEffect = (input: DeriveHoloEffectInput): HoloEffect => {
+  if (input.isTera) return "tera";
+  const fromRarity = rarityEffect(input.rarity);
   if (fromRarity !== "none" && fromRarity !== "holo") return fromRarity;
-  const fromVariant = variantEffect(variant);
+  const fromVariant = variantEffect(input.variant);
   if (fromVariant !== "none") return fromVariant;
   return fromRarity;
 };

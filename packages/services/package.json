@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts"
   },
@@ -11,6 +12,6 @@
   },
   "dependencies": {
     "@pokevault/domain": "workspace:*",
-    "effect": "^4.1.5"
+    "effect": "catalog:"
   }
 }
