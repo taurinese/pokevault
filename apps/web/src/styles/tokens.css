@@ -1,0 +1,140 @@
+/* ==========================================================================
+   PokéVault — Design Tokens Dark & Light
+   Source de vérité : docs/03-architecture.md §4 + docs/design-brief.md
+   (valeurs exactes des maquettes Brilliant).
+   Consommés via le bloc `@theme inline` de `app.css` (Tailwind v4) : aucun composant
+   métier ne doit écrire de couleur hex brute.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. Dark — thème par défaut (conforme aux specs : `DEFAULT 'dark'`).
+      S'applique sans attribut `data-theme` et avec `data-theme="dark"`.
+   -------------------------------------------------------------------------- */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-canvas: #0b0d12;
+  --bg-surface-1: #121620;
+  --bg-surface-2: #181d2a;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+
+  --text-primary: #f4f6fa;
+  --text-secondary: #94a0b8;
+  --text-muted: #5e6a82;
+
+  --accent-gold: #f5c43d;
+  --accent-gold-bar: #f5c43d;
+  --accent-gold-soft: rgba(245, 196, 61, 0.15);
+  --accent-blue: #60a5fa;
+
+  --semantic-success: #22c55e;
+  --semantic-success-strong: #4ade80;
+  --semantic-warning: #f59e0b;
+  --semantic-danger: #ef4444;
+
+  --pv-shadow-card: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --pv-shadow-nav: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --pv-shadow-sheet: 0 -12px 40px rgba(0, 0, 0, 0.6);
+}
+
+/* --------------------------------------------------------------------------
+   2. Light — `data-theme="light"` explicite (sur `<html>` ou un sous-arbre).
+   -------------------------------------------------------------------------- */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-canvas: #f4f6fa;
+  --bg-surface-1: #ffffff;
+  --bg-surface-2: #eef2f9;
+  --border-subtle: rgba(15, 23, 42, 0.08);
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+
+  --accent-gold: #a16207;
+  --accent-gold-bar: #e5ac1a;
+  --accent-gold-soft: #fef6da;
+  --accent-blue: #2563eb;
+
+  --semantic-success: #16a34a;
+  --semantic-success-strong: #15803d;
+  --semantic-warning: #d97706;
+  --semantic-danger: #dc2626;
+
+  --pv-shadow-card: 0 4px 16px rgba(15, 23, 42, 0.08);
+  --pv-shadow-nav: 0 12px 32px rgba(15, 23, 42, 0.14);
+  --pv-shadow-sheet: 0 -12px 40px rgba(15, 23, 42, 0.18);
+}
+
+/* --------------------------------------------------------------------------
+   3. System — `data-theme="system"` suit `prefers-color-scheme` (le sombre
+      reste celui du bloc §1 ; seul le clair a besoin d'un override).
+   -------------------------------------------------------------------------- */
+@media (prefers-color-scheme: light) {
+  [data-theme="system"] {
+    color-scheme: light;
+
+    --bg-canvas: #f4f6fa;
+    --bg-surface-1: #ffffff;
+    --bg-surface-2: #eef2f9;
+    --border-subtle: rgba(15, 23, 42, 0.08);
+
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+
+    --accent-gold: #a16207;
+    --accent-gold-bar: #e5ac1a;
+    --accent-gold-soft: #fef6da;
+    --accent-blue: #2563eb;
+
+    --semantic-success: #16a34a;
+    --semantic-success-strong: #15803d;
+    --semantic-warning: #d97706;
+    --semantic-danger: #dc2626;
+
+    --pv-shadow-card: 0 4px 16px rgba(15, 23, 42, 0.08);
+    --pv-shadow-nav: 0 12px 32px rgba(15, 23, 42, 0.14);
+    --pv-shadow-sheet: 0 -12px 40px rgba(15, 23, 42, 0.18);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   4. Tokens indépendants du thème : typographie, géométrie, safe-area,
+      élévation (z), durées de mouvement. Préfixe `--pv-` pour ne jamais
+      écraser les variables natives de Tailwind v4 (`--radius-*`, `--ease-*`…).
+   -------------------------------------------------------------------------- */
+:root {
+  /* Polices auto-hébergées (Fontsource variable, sous-ensemble latin — cf. app.css). */
+  --pv-font-ui: "Plus Jakarta Sans Variable", "Plus Jakarta Sans", Inter, system-ui, sans-serif;
+  --pv-font-mono:
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Rayons — la grille de cartes utilise des coins de 8px. */
+  --pv-radius-card: 8px;
+  --pv-radius-sheet: 16px;
+  --pv-radius-pill: 999px;
+
+  /* Safe-area (iOS notch / barre de navigation système). */
+  --safe-area-inset-top: env(safe-area-inset-top, 0px);
+  --safe-area-inset-right: env(safe-area-inset-right, 0px);
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-inset-left: env(safe-area-inset-left, 0px);
+
+  /* Cibles tactiles minimales (accessibilité). */
+  --touch-target-min: 44px;
+
+  /* Géométrie de la Navbar B (pilule flottante). */
+  --navbar-pill-height: 64px;
+
+  /* Élévation. */
+  --z-navbar: 30;
+  --z-sheet: 50;
+
+  /* Mouvement. */
+  --pv-duration-fast: 120ms;
+  --pv-duration-med: 220ms;
+  --pv-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}

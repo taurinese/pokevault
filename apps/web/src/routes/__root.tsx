@@ -1,6 +1,15 @@
-import { createRootRoute, HeadContent, Link, Outlet, Scripts } from "@tanstack/react-router";
+import {
+  createRootRoute,
+  HeadContent,
+  Link,
+  Outlet,
+  Scripts,
+  useMatches,
+} from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { FloatingPillNavbar } from "../components/FloatingPillNavbar.tsx";
 import { HTML_LANG, t } from "../i18n/index.ts";
+import { THEME_INIT_SCRIPT } from "../lib/theme.ts";
 import appCss from "../styles/app.css?url";
 
 const NotFound = () => (
@@ -16,8 +25,11 @@ const NotFound = () => (
 );
 
 const RootDocument = ({ children }: { readonly children: ReactNode }) => (
-  <html lang={HTML_LANG}>
+  <html lang={HTML_LANG} suppressHydrationWarning>
     <head>
+      {/* Script bloquant avant le premier rendu : pose `data-theme` (zéro FOUC, toutes routes). */}
+      {/* biome-ignore lint/security/noDangerouslySetInnerHtml: constante statique maîtrisée (aucune entrée utilisateur) */}
+      <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       <HeadContent />
     </head>
     <body>
@@ -26,6 +38,18 @@ const RootDocument = ({ children }: { readonly children: ReactNode }) => (
     </body>
   </html>
 );
+
+const RootLayout = () => {
+  const hideNavbar = useMatches({
+    select: (matches) => matches.some((match) => match.staticData.hideNavbar === true),
+  });
+  return (
+    <>
+      <Outlet />
+      {hideNavbar ? null : <FloatingPillNavbar />}
+    </>
+  );
+};
 
 export const Route = createRootRoute({
   head: () => ({
@@ -38,5 +62,5 @@ export const Route = createRootRoute({
   }),
   notFoundComponent: NotFound,
   shellComponent: RootDocument,
-  component: () => <Outlet />,
+  component: RootLayout,
 });
