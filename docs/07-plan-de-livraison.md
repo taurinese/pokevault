@@ -6,11 +6,12 @@
 
 ## 1. Méthodologie de développement
 
-### Workflow Git (Trunk-Based Development)
-- **`main`** : branche unique de production, protégée (CI verte obligatoire, zéro push direct).
-- **Branches courtes** : `feat/<issue>-<slug>`, `fix/<issue>-<slug>`, `chore/<issue>-<slug>`.
+### Workflow Git (Integration `develop` → Release `main`)
+- **`main`** : branche unique de production, **protégée** (PR obligatoire, CI verte obligatoire, zéro push direct, zéro force-push). Chaque PR `develop` → `main` correspond à une **milestone complète** (puis à chaque nouvelle version en prod) et déclenche la CD GHCR.
+- **`develop`** : branche d’intégration protégée (PR obligatoire + CI verte). Toutes les PR d’issues ciblent `develop`.
+- **Branches courtes** : créées depuis `develop` (`feat/<issue>-<slug>`, `fix/<issue>-<slug>`, `chore/<issue>-<slug>`).
 - **Conventional Commits** : `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`.
-- **1 Issue = 1 PR ciblée** : template PR avec résumé, `Closes #<num>`, captures Dark + Light si UI, checklist tests. **Squash & Merge** sur `main`.
+- **1 Issue = 1 PR ciblée vers `develop`** : template PR avec résumé, `Closes #<num>` (ou lien issue), captures Dark + Light si UI, checklist tests. **Squash & Merge** sur `develop`, puis **Merge PR** `develop` → `main` en fin de milestone / release.
 
 ### Pipeline CI/CD (GitHub Actions)
 - **CI (sur chaque PR vers `main`)** :
