@@ -1,23 +1,61 @@
 @import "tailwindcss";
+@import "@fontsource-variable/plus-jakarta-sans/index.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";
+@import "./tokens.css";
 
-:root {
-  color-scheme: light dark;
-  --bg-canvas: #f4f6fa;
-  --bg-surface-1: #ffffff;
-  --border-subtle: rgba(15, 23, 42, 0.08);
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --accent-gold: #a16207;
-}
+/* Mapping des design tokens (tokens.css) dans le thème Tailwind v4 :
+   les utilitaires (`bg-canvas`, `text-primary`, `border-line`, `bg-gold-soft`, …)
+   référencent les variables CSS, donc ils suivent automatiquement le thème
+   actif (`data-theme` sur `<html>` ou `prefers-color-scheme`). */
+@theme {
+  --color-canvas: var(--bg-canvas);
+  --color-surface-1: var(--bg-surface-1);
+  --color-surface-2: var(--bg-surface-2);
+  --color-line: var(--border-subtle);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg-canvas: #0b0d12;
-    --bg-surface-1: #121620;
-    --border-subtle: rgba(255, 255, 255, 0.08);
-    --text-primary: #f4f6fa;
-    --text-secondary: #94a0b8;
-    --accent-gold: #f5c43d;
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-muted: var(--text-muted);
+
+  --color-gold: var(--accent-gold);
+  --color-gold-bar: var(--accent-gold-bar);
+  --color-gold-soft: var(--accent-gold-soft);
+  --color-accent-blue: var(--accent-blue);
+
+  --color-success: var(--semantic-success);
+  --color-success-strong: var(--semantic-success-strong);
+  --color-warning: var(--semantic-warning);
+  --color-danger: var(--semantic-danger);
+
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-mono);
+
+  --radius-card: var(--radius-card);
+  --radius-pill: var(--radius-pill);
+
+  --shadow-card: var(--shadow-card);
+  --shadow-nav: var(--shadow-nav);
+  --shadow-sheet: var(--shadow-sheet);
+
+  --animate-sheet-in: sheet-in var(--duration-med) var(--ease-out);
+  --animate-backdrop-in: backdrop-in var(--duration-fast) ease-out;
+
+  @keyframes sheet-in {
+    from {
+      transform: translateY(100%);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes backdrop-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
 }
 
@@ -25,10 +63,18 @@ body {
   margin: 0;
   background: var(--bg-canvas);
   color: var(--text-primary);
-  font-family: "Plus Jakarta Sans", Inter, system-ui, sans-serif;
+  font-family: var(--font-ui);
 }
 
+/* Chiffres (prix, compteurs, pourcentages) : monospace tabular-nums. */
 .tabular {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-sheet-in,
+  .animate-backdrop-in {
+    animation: none;
+  }
 }

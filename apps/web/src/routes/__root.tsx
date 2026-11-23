@@ -1,5 +1,13 @@
-import { createRootRoute, HeadContent, Link, Outlet, Scripts } from "@tanstack/react-router";
+import {
+  createRootRoute,
+  HeadContent,
+  Link,
+  Outlet,
+  Scripts,
+  useRouterState,
+} from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { FloatingPillNavbar, navbarTabFromPath } from "../components/FloatingPillNavbar.tsx";
 import { HTML_LANG, t } from "../i18n/index.ts";
 import appCss from "../styles/app.css?url";
 
@@ -27,6 +35,16 @@ const RootDocument = ({ children }: { readonly children: ReactNode }) => (
   </html>
 );
 
+const RootLayout = () => {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  return (
+    <>
+      <Outlet />
+      <FloatingPillNavbar activeTab={navbarTabFromPath(pathname)} />
+    </>
+  );
+};
+
 export const Route = createRootRoute({
   head: () => ({
     meta: [
@@ -38,5 +56,5 @@ export const Route = createRootRoute({
   }),
   notFoundComponent: NotFound,
   shellComponent: RootDocument,
-  component: () => <Outlet />,
+  component: RootLayout,
 });
