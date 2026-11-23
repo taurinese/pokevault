@@ -11,7 +11,7 @@ const ratioFormatter = new Intl.NumberFormat(DEFAULT_LOCALE, {
   maximumFractionDigits: 3,
 });
 
-const DEMO_IMAGE_URL = "https://assets.tcgdex.net/fr/sv/sv03.5/199/high.webp";
+const DEMO_IMAGE_URL = "https://assets.tcgdex.net/fr/sv/sv03.5/199/low.webp";
 
 const Home = () => {
   const [sheetOpen, setSheetOpen] = useState(false);

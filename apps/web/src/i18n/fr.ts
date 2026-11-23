@@ -18,7 +18,8 @@ export const fr = {
   "nav.search": "Recherche",
   "nav.wishlist": "Wishlist",
   "nav.alerts": "Alertes",
-  "nav.alertsUnread": "{count} alertes non lues",
+  "nav.alertsUnread_one": "{count} alerte non lue",
+  "nav.alertsUnread_other": "{count} alertes non lues",
 
   // Bascule Dark / Light
   "theme.toggle": "Basculer entre le thème sombre et le thème clair (thème actuel : {theme})",
@@ -30,7 +31,8 @@ export const fr = {
 
   // CardTile
   "cardTile.owned": "Carte possédée : {name}",
-  "cardTile.duplicate": "Carte en {count} exemplaires : {name}",
+  "cardTile.duplicate_one": "Carte en {count} exemplaire : {name}",
+  "cardTile.duplicate_other": "Carte en {count} exemplaires : {name}",
   "cardTile.missing": "Carte manquante : {name}",
   "cardTile.burst": "+{count} en saisie rafale",
   "cardTile.imageFallback": "Visuel indisponible",

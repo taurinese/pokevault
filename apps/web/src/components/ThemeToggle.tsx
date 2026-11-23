@@ -1,34 +1,49 @@
 import { Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { t } from "../i18n/index.ts";
+import {
+  DEFAULT_THEME,
+  parseThemePreference,
+  resolveTheme,
+  THEME_STORAGE_KEY,
+} from "../lib/theme.ts";
 
-export type ThemePreference = "dark" | "light";
-
-const THEME_STORAGE_KEY = "pokevault:theme";
-
-const readInitialTheme = (): ThemePreference => {
-  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-  return stored === "light" || stored === "dark" ? stored : "dark";
+const systemPrefersLight = (): boolean => {
+  try {
+    return window.matchMedia("(prefers-color-scheme: light)").matches;
+  } catch {
+    return false;
+  }
 };
+
+/** Thème effectif lu sur `<html data-theme>` (posé avant le rendu par le script inline). */
+const readAppliedTheme = (): "dark" | "light" =>
+  resolveTheme(
+    parseThemePreference(document.documentElement.dataset["theme"]),
+    systemPrefersLight(),
+  );
 
 /**
  * Bascule Dark / Light : écrit `data-theme` sur `<html>` (consommé par
- * `tokens.css`), persiste le choix en `localStorage`. Par défaut : dark.
+ * `tokens.css`) et persiste le choix en `localStorage` (clé partagée avec le
+ * script anti-FOUC de `__root.tsx`). Repli `dark` en SSR (zéro hydration mismatch).
  */
 export const ThemeToggle = () => {
-  const [theme, setTheme] = useState<ThemePreference>("dark");
+  const [theme, setTheme] = useState<"dark" | "light">(DEFAULT_THEME);
 
   useEffect(() => {
-    const initial = readInitialTheme();
-    setTheme(initial);
-    document.documentElement.setAttribute("data-theme", initial);
+    setTheme(readAppliedTheme());
   }, []);
 
   const toggle = () => {
-    const next: ThemePreference = theme === "dark" ? "light" : "dark";
+    const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
-    document.documentElement.setAttribute("data-theme", next);
-    window.localStorage.setItem(THEME_STORAGE_KEY, next);
+    document.documentElement.dataset["theme"] = next;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // Stockage indisponible (mode privé, quota…) : le thème reste appliqué pour la session.
+    }
   };
 
   const Icon = theme === "dark" ? Sun : Moon;

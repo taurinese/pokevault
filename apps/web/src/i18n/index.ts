@@ -20,3 +20,23 @@ export const t = (key: TranslationKey, params?: TranslationParams): string => {
     return value === undefined ? match : String(value);
   });
 };
+
+/** Clés de base (sans suffixe) disposant d'une forme `_one` ET `_other`. */
+export type PluralKey = {
+  [K in TranslationKey]: K extends `${infer Base}_one`
+    ? `${Base}_other` extends TranslationKey
+      ? Base
+      : never
+    : never;
+}[TranslationKey];
+
+const pluralRules = new Intl.PluralRules(DEFAULT_LOCALE);
+
+/**
+ * Traduction pluralisée `fr-FR` (`Intl.PluralRules`) : choisit `<base>_one`
+ * (0 et 1 en français) ou `<base>_other`, et injecte `{count}` automatiquement.
+ */
+export const tPlural = (base: PluralKey, count: number, params?: TranslationParams): string => {
+  const suffix = pluralRules.select(count) === "one" ? "_one" : "_other";
+  return t(`${base}${suffix}` as TranslationKey, { ...params, count });
+};

@@ -19,7 +19,12 @@ describe("CardTile", () => {
     expect(html).toContain('decoding="async"');
     expect(html).toContain(`aspect-ratio:${CardAspectRatio}`);
     expect(html).toContain("rounded-card");
-    expect(html).toContain('aria-label="Carte possédée : Dracaufeu ex"');
+    expect(html).toContain("Carte possédée : Dracaufeu ex");
+  });
+
+  it('does not put role="img" on the outer container (future interactive tile)', () => {
+    const html = renderToStaticMarkup(h(CardTile, { name: "Dracaufeu ex" }));
+    expect(html).not.toContain('role="img"');
   });
 
   it("shows a ×N badge in monospace tabular-nums for the duplicate state", () => {
@@ -29,7 +34,15 @@ describe("CardTile", () => {
     expect(html).toContain("×4");
     expect(html).toContain("font-mono");
     expect(html).toContain("tabular-nums");
-    expect(html).toContain('aria-label="Carte en 4 exemplaires : Pikachu"');
+    expect(html).toContain("Carte en 4 exemplaires : Pikachu");
+  });
+
+  it("treats a duplicate with count < 2 as a single owned copy (no badge)", () => {
+    const html = renderToStaticMarkup(
+      h(CardTile, { name: "Pikachu", state: "duplicate", count: 1 }),
+    );
+    expect(html).not.toContain("×1");
+    expect(html).toContain("Carte possédée : Pikachu");
   });
 
   it("dims and desaturates the missing state with a subtle border", () => {
@@ -37,7 +50,7 @@ describe("CardTile", () => {
     expect(html).toContain("saturate-0");
     expect(html).toContain("opacity-30");
     expect(html).toContain("border-line");
-    expect(html).toContain('aria-label="Carte manquante : Mew"');
+    expect(html).toContain("Carte manquante : Mew");
   });
 
   it("shows a gold badge when burstCount is set (saisie rafale)", () => {
@@ -57,3 +70,13 @@ describe("CardTile", () => {
     expect(html).toContain("bg-surface-2");
   });
 });
+
+// Garde-fous de typage : les combinaisons invalides ne compilent pas (vérifié par `pnpm typecheck`).
+export const typeChecks = (): void => {
+  // @ts-expect-error `duplicate` exige un `count`.
+  h(CardTile, { name: "A", state: "duplicate" });
+  // @ts-expect-error `missing` n'accepte pas de `count`.
+  h(CardTile, { name: "A", state: "missing", count: 3 });
+  // @ts-expect-error `owned` n'accepte pas de `count`.
+  h(CardTile, { name: "A", state: "owned", count: 3 });
+};

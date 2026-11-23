@@ -1,50 +1,83 @@
 import { CardAspectRatio } from "@pokevault/domain";
 import { ImageOff } from "lucide-react";
-import { t } from "../i18n/index.ts";
+import { useEffect, useRef, useState } from "react";
+import { t, tPlural } from "../i18n/index.ts";
+
+/**
+ * Possession de la carte, en union discriminée (aucune combinaison invalide) :
+ * - `owned` (défaut) : exemplaire unique ;
+ * - `missing` : carte manquante (tuile atténuée) ;
+ * - `duplicate` : `count >= 2` exemplaires (badge `×N`). Un `count < 2` est
+ *   traité comme `owned` à l'exécution.
+ */
+export type CardTileOwnership =
+  | { readonly state?: "owned" | undefined; readonly count?: undefined }
+  | { readonly state: "missing"; readonly count?: undefined }
+  | { readonly state: "duplicate"; readonly count: number };
 
 export type CardTileState = "owned" | "duplicate" | "missing";
 
-export interface CardTileProps {
-  /** Nom de la carte (used dans le `aria-label`). */
+export type CardTileProps = CardTileOwnership & {
+  /** Nom de la carte (utilisé dans le libellé accessible). */
   readonly name: string;
   readonly imageUrl?: string | undefined;
-  /** `owned` par défaut ; `duplicate` affiche un badge `×N` ; `missing` atténue la tuile. */
-  readonly state?: CardTileState | undefined;
-  /** Nombre d'exemplaires (badge `×N` de l'état `duplicate`). */
-  readonly count?: number | undefined;
   /** Compteur du mode saisie rafale (badge doré `+N`). */
   readonly burstCount?: number | undefined;
-}
+};
 
 /**
  * Tuile carte Pokémon : ratio strict 63/88 (`CardAspectRatio`), image lazy +
  * async (zéro CLS grâce au ratio fixe), coins 8px, états `owned` / `duplicate`
  * / `missing` (+ badge doré `burstCount`), et fallback visuel propre quand
- * `imageUrl` est absent. Zéro couleur hex brute : uniquement des tokens.
+ * `imageUrl` est absent ou ne charge pas. Pas de `role="img"` sur le conteneur
+ * (la tuile pourra devenir interactive) : le libellé est un texte `sr-only`.
+ * Zéro couleur hex brute : uniquement des tokens.
  */
-export const CardTile = ({ name, imageUrl, state = "owned", count, burstCount }: CardTileProps) => {
-  const isMissing = state === "missing";
+export const CardTile = (props: CardTileProps) => {
+  const { name, imageUrl, burstCount } = props;
+  const duplicateCount = props.state === "duplicate" && props.count >= 2 ? props.count : undefined;
+  const isMissing = props.state === "missing";
+  const hasBurst = burstCount !== undefined && burstCount > 0;
+
+  const [failedUrl, setFailedUrl] = useState<string | undefined>(undefined);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const showImage = imageUrl !== undefined && failedUrl !== imageUrl;
+
+  // Une erreur de chargement survenue avant l'hydratation n'a pas déclenché `onError`.
+  useEffect(() => {
+    const image = imageRef.current;
+    if (image?.complete && image.naturalWidth === 0) setFailedUrl(imageUrl);
+  }, [imageUrl]);
+
   const baseLabel =
-    state === "duplicate" && count !== undefined
-      ? t("cardTile.duplicate", { name, count })
+    duplicateCount !== undefined
+      ? tPlural("cardTile.duplicate", duplicateCount, { name })
       : isMissing
         ? t("cardTile.missing", { name })
         : t("cardTile.owned", { name });
-  const ariaLabel =
-    burstCount !== undefined && burstCount > 0
-      ? `${baseLabel} — ${t("cardTile.burst", { count: burstCount })}`
-      : baseLabel;
+  const label = hasBurst
+    ? `${baseLabel} — ${t("cardTile.burst", { count: burstCount })}`
+    : baseLabel;
 
   return (
     <div
-      role="img"
-      aria-label={ariaLabel}
       className={`relative w-full overflow-hidden rounded-card border border-line bg-surface-1 shadow-card ${
         isMissing ? "saturate-0 opacity-30" : ""
       }`}
       style={{ aspectRatio: CardAspectRatio }}
     >
-      {imageUrl === undefined ? (
+      <span className="sr-only">{label}</span>
+      {showImage ? (
+        <img
+          ref={imageRef}
+          src={imageUrl}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailedUrl(imageUrl)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
         <div
           aria-hidden="true"
           className="flex h-full w-full flex-col items-center justify-center gap-1 bg-surface-2 px-1 text-muted"
@@ -54,22 +87,20 @@ export const CardTile = ({ name, imageUrl, state = "owned", count, burstCount }:
             {t("cardTile.imageFallback")}
           </span>
         </div>
-      ) : (
-        <img
-          src={imageUrl}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          className="h-full w-full object-cover"
-        />
       )}
-      {state === "duplicate" && count !== undefined && count > 1 ? (
-        <span className="absolute top-1.5 right-1.5 rounded-md border border-line bg-surface-1/90 px-1.5 py-0.5 font-mono text-xs tabular-nums text-primary">
-          ×{count}
+      {duplicateCount !== undefined ? (
+        <span
+          aria-hidden="true"
+          className="absolute top-1.5 right-1.5 rounded-md border border-line bg-surface-1/90 px-1.5 py-0.5 font-mono text-xs tabular-nums text-primary"
+        >
+          ×{duplicateCount}
         </span>
       ) : null}
-      {burstCount !== undefined && burstCount > 0 ? (
-        <span className="absolute top-1.5 left-1.5 rounded-md bg-gold-soft px-1.5 py-0.5 font-mono text-xs tabular-nums text-gold">
+      {hasBurst ? (
+        <span
+          aria-hidden="true"
+          className="absolute top-1.5 left-1.5 rounded-md bg-gold-soft px-1.5 py-0.5 font-mono text-xs tabular-nums text-gold"
+        >
           +{burstCount}
         </span>
       ) : null}

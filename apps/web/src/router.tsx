@@ -12,4 +12,9 @@ declare module "@tanstack/react-router" {
   interface Register {
     router: ReturnType<typeof getRouter>;
   }
+
+  /** Données statiques de route : `hideNavbar` masque la pilule sur les vues profondes. */
+  interface StaticDataRouteOption {
+    readonly hideNavbar?: boolean;
+  }
 }

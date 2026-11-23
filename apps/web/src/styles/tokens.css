@@ -2,17 +2,16 @@
    PokéVault — Design Tokens Dark & Light
    Source de vérité : docs/03-architecture.md §4 + docs/design-brief.md
    (valeurs exactes des maquettes Brilliant).
-   Consommés via le bloc `@theme` de `app.css` (Tailwind v4) : aucun composant
+   Consommés via le bloc `@theme inline` de `app.css` (Tailwind v4) : aucun composant
    métier ne doit écrire de couleur hex brute.
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
-   1. Dark — thème par défaut (conforme aux specs), `data-theme="dark"`,
-      et `data-theme="system"` avant résolution du média query.
+   1. Dark — thème par défaut (conforme aux specs : `DEFAULT 'dark'`).
+      S'applique sans attribut `data-theme` et avec `data-theme="dark"`.
    -------------------------------------------------------------------------- */
 :root,
-:root[data-theme="dark"],
-:root[data-theme="system"] {
+[data-theme="dark"] {
   color-scheme: dark;
 
   --bg-canvas: #0b0d12;
@@ -34,15 +33,15 @@
   --semantic-warning: #f59e0b;
   --semantic-danger: #ef4444;
 
-  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.4);
-  --shadow-nav: 0 12px 32px rgba(0, 0, 0, 0.5);
-  --shadow-sheet: 0 -12px 40px rgba(0, 0, 0, 0.6);
+  --pv-shadow-card: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --pv-shadow-nav: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --pv-shadow-sheet: 0 -12px 40px rgba(0, 0, 0, 0.6);
 }
 
 /* --------------------------------------------------------------------------
-   2. Light — `data-theme="light"` explicite sur `<html>`.
+   2. Light — `data-theme="light"` explicite (sur `<html>` ou un sous-arbre).
    -------------------------------------------------------------------------- */
-:root[data-theme="light"] {
+[data-theme="light"] {
   color-scheme: light;
 
   --bg-canvas: #f4f6fa;
@@ -64,18 +63,17 @@
   --semantic-warning: #d97706;
   --semantic-danger: #dc2626;
 
-  --shadow-card: 0 4px 16px rgba(15, 23, 42, 0.08);
-  --shadow-nav: 0 12px 32px rgba(15, 23, 42, 0.14);
-  --shadow-sheet: 0 -12px 40px rgba(15, 23, 42, 0.18);
+  --pv-shadow-card: 0 4px 16px rgba(15, 23, 42, 0.08);
+  --pv-shadow-nav: 0 12px 32px rgba(15, 23, 42, 0.14);
+  --pv-shadow-sheet: 0 -12px 40px rgba(15, 23, 42, 0.18);
 }
 
 /* --------------------------------------------------------------------------
-   3. Fallback système : quand `data-theme` est absent ou `"system"` sur
-      `<html>`, on suit `prefers-color-scheme` (dark par défaut, cf. §1).
+   3. System — `data-theme="system"` suit `prefers-color-scheme` (le sombre
+      reste celui du bloc §1 ; seul le clair a besoin d'un override).
    -------------------------------------------------------------------------- */
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme]),
-  :root[data-theme="system"] {
+  [data-theme="system"] {
     color-scheme: light;
 
     --bg-canvas: #f4f6fa;
@@ -97,60 +95,27 @@
     --semantic-warning: #d97706;
     --semantic-danger: #dc2626;
 
-    --shadow-card: 0 4px 16px rgba(15, 23, 42, 0.08);
-    --shadow-nav: 0 12px 32px rgba(15, 23, 42, 0.14);
-    --shadow-sheet: 0 -12px 40px rgba(15, 23, 42, 0.18);
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]),
-  :root[data-theme="system"] {
-    color-scheme: dark;
-
-    --bg-canvas: #0b0d12;
-    --bg-surface-1: #121620;
-    --bg-surface-2: #181d2a;
-    --border-subtle: rgba(255, 255, 255, 0.08);
-
-    --text-primary: #f4f6fa;
-    --text-secondary: #94a0b8;
-    --text-muted: #5e6a82;
-
-    --accent-gold: #f5c43d;
-    --accent-gold-bar: #f5c43d;
-    --accent-gold-soft: rgba(245, 196, 61, 0.15);
-    --accent-blue: #60a5fa;
-
-    --semantic-success: #22c55e;
-    --semantic-success-strong: #4ade80;
-    --semantic-warning: #f59e0b;
-    --semantic-danger: #ef4444;
-
-    --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.4);
-    --shadow-nav: 0 12px 32px rgba(0, 0, 0, 0.5);
-    --shadow-sheet: 0 -12px 40px rgba(0, 0, 0, 0.6);
+    --pv-shadow-card: 0 4px 16px rgba(15, 23, 42, 0.08);
+    --pv-shadow-nav: 0 12px 32px rgba(15, 23, 42, 0.14);
+    --pv-shadow-sheet: 0 -12px 40px rgba(15, 23, 42, 0.18);
   }
 }
 
 /* --------------------------------------------------------------------------
    4. Tokens indépendants du thème : typographie, géométrie, safe-area,
-      élévation (z), durées de mouvement.
+      élévation (z), durées de mouvement. Préfixe `--pv-` pour ne jamais
+      écraser les variables natives de Tailwind v4 (`--radius-*`, `--ease-*`…).
    -------------------------------------------------------------------------- */
 :root {
-  /* Polices auto-hébergées (Fontsource variable, 100 % offline en PWA). */
-  --font-ui: "Plus Jakarta Sans Variable", "Plus Jakarta Sans", Inter, system-ui, sans-serif;
-  --font-mono:
+  /* Polices auto-hébergées (Fontsource variable, sous-ensemble latin — cf. app.css). */
+  --pv-font-ui: "Plus Jakarta Sans Variable", "Plus Jakarta Sans", Inter, system-ui, sans-serif;
+  --pv-font-mono:
     "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /* Ratio officiel des cartes Pokémon (63 mm × 88 mm). */
-  --card-aspect-ratio: 63 / 88;
-
   /* Rayons — la grille de cartes utilise des coins de 8px. */
-  --radius-sm: 6px;
-  --radius-card: 8px;
-  --radius-lg: 16px;
-  --radius-pill: 999px;
+  --pv-radius-card: 8px;
+  --pv-radius-sheet: 16px;
+  --pv-radius-pill: 999px;
 
   /* Safe-area (iOS notch / barre de navigation système). */
   --safe-area-inset-top: env(safe-area-inset-top, 0px);
@@ -166,11 +131,10 @@
 
   /* Élévation. */
   --z-navbar: 30;
-  --z-backdrop: 40;
   --z-sheet: 50;
 
   /* Mouvement. */
-  --duration-fast: 120ms;
-  --duration-med: 220ms;
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --pv-duration-fast: 120ms;
+  --pv-duration-med: 220ms;
+  --pv-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
