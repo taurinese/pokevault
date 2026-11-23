@@ -14,7 +14,6 @@ WORKDIR /app
 FROM base AS builder
 # 1. Manifests only, so this layer stays cached until a manifest changes.
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
-COPY tsconfig.json tsconfig.base.json ./
 COPY packages/domain/package.json packages/domain/package.json
 COPY packages/services/package.json packages/services/package.json
 COPY apps/web/package.json apps/web/package.json
@@ -23,15 +22,21 @@ COPY apps/worker/package.json apps/worker/package.json
 # scoped to this command only: a persistent NODE_ENV=development would leak into
 # `vite build` and emit a dev JSX runtime (jsxDEV) that crashes under the
 # production NODE_ENV of the final stage.
-RUN NODE_ENV=development pnpm install --frozen-lockfile
-# 2. Sources, then build every workspace package (web dist/ + worker dist/index.mjs).
+RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
+    NODE_ENV=development pnpm install --frozen-lockfile
+# 2. TS configs + sources (after the install so editing them never busts the
+#    dependency cache), then build every workspace package
+#    (web dist/ + worker dist/index.mjs).
+COPY tsconfig.json tsconfig.base.json ./
 COPY packages/ packages/
 COPY apps/ apps/
 RUN pnpm build
 # 3. Pruned production install of the web app (prod deps only, workspace
 #    packages included). pnpm 10 requires --legacy here because the workspace
 #    packages do not set inject-workspace-packages=true.
-RUN pnpm --filter @pokevault/web deploy --prod --legacy /prod/web
+RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
+    pnpm --filter @pokevault/web deploy --prod --legacy /prod/web \
+    && rm -rf /prod/web/src /prod/web/vite.config.ts /prod/web/tsconfig.json
 
 # ------------------------------------------------------------------- web --
 FROM ${NODE_IMAGE} AS web

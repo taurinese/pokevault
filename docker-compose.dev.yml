@@ -1,59 +1,81 @@
 # PokéVault — dev-only infra (docs/03-architecture.md §5).
 #
-# Runs the Supabase self-host infra (Postgres, PostgREST, GoTrue, Storage) while
-# the web app and worker run locally with HMR:
+# Runs the Supabase self-host infra (Postgres, GoTrue, Storage) while the web
+# app and worker run on the host with HMR:
 #
-#   cp .env.example .env
+#   cp .env.example .env     # replace the CHANGE_ME_* placeholders
 #   docker compose -f docker-compose.dev.yml --env-file .env up -d
-#   pnpm dev
+#   pnpm dev                 # http://localhost:3000
 #
-# Postgres is published on 127.0.0.1:54322 for local tooling (Supabase CLI,
-# psql, TablePlus…). No Caddy here: the Vite dev server serves the app directly.
+# Host-reachable endpoints (all bound to 127.0.0.1 only):
+#   http://localhost:54321/auth/v1/*      GoTrue   (same paths as production)
+#   http://localhost:54321/storage/v1/*   Storage  (same paths as production)
+#   postgresql://supabase_admin:<POSTGRES_PASSWORD>@localhost:54322/postgres
+#       (superuser, for Supabase CLI / psql / TablePlus)
+#   postgresql://postgres:<POSTGRES_PASSWORD>@localhost:54322/postgres
+#       (what the worker uses)
+# A tiny dev Caddy (infra/caddy/Caddyfile.dev) reproduces the production
+# /auth/v1 and /storage/v1 routing, so the app uses the same URLs everywhere.
+#
+# Dev overrides (all optional, see .env.example):
+#   DEV_SITE_URL           app URL as seen by the browser   (default http://localhost:3000)
+#   DEV_API_EXTERNAL_URL   public Supabase API URL          (default http://localhost:54321)
+#   DEV_ADDITIONAL_REDIRECT_URLS                            (default DEV_SITE_URL)
+# These intentionally differ from the production SITE_URL / API_EXTERNAL_URL
+# so one `.env` can serve both stacks. The OAuth redirect URI to register at
+# Google / Discord for dev is  ${DEV_API_EXTERNAL_URL}/auth/v1/callback.
+# Point `pnpm dev` at SUPABASE_PUBLIC_URL=http://localhost:54321 with
+# SUPABASE_ANON_KEY from .env.
 name: pokevault-dev
 
-x-supabase-env: &supabase-env
-  POSTGRES_USER: ${POSTGRES_USER:-postgres}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-  POSTGRES_DB: ${POSTGRES_DB:-postgres}
-  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
-  ANON_KEY: ${ANON_KEY:?set ANON_KEY in .env}
-  SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY in .env}
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
 
 services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:54321:54321"
+    volumes:
+      - ./infra/caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - caddy_dev_data:/data
+      - caddy_dev_config:/config
+    depends_on:
+      auth:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    logging: *default-logging
+    networks:
+      - pokevault-dev
+
+  # Left on the image's default superuser (`supabase_admin`): do NOT set
+  # POSTGRES_USER (see docker-compose.yml).
   postgres:
     image: supabase/postgres:15.8.1.085
     restart: unless-stopped
     environment:
-      <<: *supabase-env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_EXP: "3600"
     ports:
       - "127.0.0.1:54322:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
+      - ./infra/supabase/init/99-roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
+      - ./infra/supabase/init/99-jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-postgres} -h 127.0.0.1",
-        ]
+      test: ["CMD-SHELL", "pg_isready -U supabase_admin -d $${POSTGRES_DB:-postgres} -h 127.0.0.1"]
       interval: 5s
       timeout: 5s
       retries: 12
-      start_period: 10s
-    networks:
-      - pokevault-dev
-
-  rest:
-    image: postgrest/postgrest:v13.0.8
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PGRST_DB_URI: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}
-      PGRST_DB_SCHEMAS: public,storage
-      PGRST_DB_ANON_ROLE: anon
-      PGRST_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
-      PGRST_SERVER_PORT: "3000"
+      start_period: 20s
+    logging: *default-logging
     networks:
       - pokevault-dev
 
@@ -65,32 +87,39 @@ services:
         condition: service_healthy
     environment:
       GOTRUE_API_HOST: 0.0.0.0
-      PORT: "9999"
-      API_EXTERNAL_URL: ${API_EXTERNAL_URL:-http://localhost:3000}
-      GOTRUE_API_EXTERNAL_URL: ${API_EXTERNAL_URL:-http://localhost:3000}/auth/v1
-      GOTRUE_SITE_URL: ${SITE_URL:-http://localhost:3000}
-      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS:-${SITE_URL:-http://localhost:3000}}
-      GOTRUE_DISABLE_SIGNUP: ${GOTRUE_DISABLE_SIGNUP:-false}
+      GOTRUE_API_PORT: "9999"
+      # Single external URL variable (GoTrue reads API_EXTERNAL_URL); the OAuth
+      # callbacks below carry the /auth/v1 prefix explicitly, as in supabase/docker.
+      API_EXTERNAL_URL: ${DEV_API_EXTERNAL_URL:-http://localhost:54321}
+      GOTRUE_SITE_URL: ${DEV_SITE_URL:-http://localhost:3000}
+      GOTRUE_URI_ALLOW_LIST: ${DEV_ADDITIONAL_REDIRECT_URLS:-${DEV_SITE_URL:-http://localhost:3000}}
+      GOTRUE_DISABLE_SIGNUP: ${GOTRUE_DISABLE_SIGNUP:-true}
       GOTRUE_DB_DRIVER: postgres
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable
-      GOTRUE_DB_DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}?search_path=auth&sslmode=disable
       GOTRUE_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
       GOTRUE_JWT_ADMIN_ROLES: service_role
       GOTRUE_JWT_EXP: "3600"
-      GOTRUE_DEFAULT_GROUP_NAME: authenticated
+      # OAuth only: no email/password, no phone, no anonymous users.
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "false"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
       GOTRUE_EXTERNAL_GOOGLE_ENABLED: ${GOTRUE_EXTERNAL_GOOGLE_ENABLED:-false}
       GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID:-}
       GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOTRUE_EXTERNAL_GOOGLE_SECRET:-}
+      GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: ${DEV_API_EXTERNAL_URL:-http://localhost:54321}/auth/v1/callback
       GOTRUE_EXTERNAL_DISCORD_ENABLED: ${GOTRUE_EXTERNAL_DISCORD_ENABLED:-false}
       GOTRUE_EXTERNAL_DISCORD_CLIENT_ID: ${GOTRUE_EXTERNAL_DISCORD_CLIENT_ID:-}
       GOTRUE_EXTERNAL_DISCORD_SECRET: ${GOTRUE_EXTERNAL_DISCORD_SECRET:-}
+      GOTRUE_EXTERNAL_DISCORD_REDIRECT_URI: ${DEV_API_EXTERNAL_URL:-http://localhost:54321}/auth/v1/callback
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9999/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 6
       start_period: 10s
+    logging: *default-logging
     networks:
       - pokevault-dev
 
@@ -100,22 +129,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      rest:
-        condition: service_started
     environment:
-      PORT: "5000"
       ANON_KEY: ${ANON_KEY:?set ANON_KEY in .env}
-      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY in .env}
-      POSTGREST_URL: http://rest:3000
+      SERVICE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY in .env}
       PGRST_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}
       STORAGE_BACKEND: file
       FILE_STORAGE_BACKEND_PATH: /var/lib/storage
       TENANT_ID: stub
       REGION: stub
       GLOBAL_S3_BUCKET: stub
       ENABLE_IMAGE_TRANSFORMATION: "false"
-      STORAGE_SITE_URL: ${SITE_URL:-http://localhost:3000}
       FILE_SIZE_LIMIT: "2097152"
     volumes:
       - storage_dev_data:/var/lib/storage
@@ -125,6 +149,7 @@ services:
       timeout: 5s
       retries: 6
       start_period: 10s
+    logging: *default-logging
     networks:
       - pokevault-dev
 
@@ -135,3 +160,5 @@ networks:
 volumes:
   postgres_dev_data:
   storage_dev_data:
+  caddy_dev_data:
+  caddy_dev_config:

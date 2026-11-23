@@ -1,0 +1,21 @@
+# PokéVault dev reverse proxy — mirrors the production Supabase routing so
+# `pnpm dev` (localhost:3000) talks to the same /auth/v1/* and /storage/v1/*
+# URLs as in production, through http://localhost:54321.
+# Bound to 127.0.0.1 only by docker-compose.dev.yml. No security headers here:
+# this is a local-only helper.
+:54321 {
+	@auth_admin path /auth/v1/admin /auth/v1/admin/*
+	handle @auth_admin {
+		respond 403
+	}
+
+	handle_path /auth/v1/* {
+		reverse_proxy auth:9999
+	}
+
+	handle_path /storage/v1/* {
+		reverse_proxy storage:5000
+	}
+
+	respond "PokéVault dev: use /auth/v1/* or /storage/v1/*" 404
+}
