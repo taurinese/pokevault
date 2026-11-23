@@ -1,0 +1,24 @@
+{
+  "name": "pokevault",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "biome": "biome",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "vitest run",
+    "build": "pnpm -r --if-present build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.8",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}
