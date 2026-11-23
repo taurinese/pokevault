@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality (biome, typecheck, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect package.json
+        id: pkg
+        shell: bash
+        run: |
+          if [ -f package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            if grep -q '"packageManager"' package.json; then
+              echo "package-manager=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "package-manager=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "package-manager=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # packageManager field present in package.json: let pnpm/action-setup read it.
+      - name: Set up pnpm (version from packageManager field)
+        if: steps.pkg.outputs.package-manager == 'true'
+        uses: pnpm/action-setup@v4
+
+      # Fallback when no packageManager field is declared yet.
+      - name: Set up pnpm (fallback v10)
+        if: steps.pkg.outputs.package-manager != 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js 24
+        if: steps.pkg.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.pkg.outputs.exists == 'true'
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Biome check
+        if: steps.pkg.outputs.exists == 'true'
+        shell: bash
+        run: pnpm biome check .
+
+      - name: Typecheck
+        if: steps.pkg.outputs.exists == 'true'
+        shell: bash
+        run: pnpm typecheck
+
+      - name: Unit tests
+        if: steps.pkg.outputs.exists == 'true'
+        shell: bash
+        run: pnpm test
+
+      - name: Build
+        if: steps.pkg.outputs.exists == 'true'
+        shell: bash
+        run: pnpm build
+
+      - name: Note when package.json is absent
+        if: steps.pkg.outputs.exists != 'true'
+        shell: bash
+        run: echo "package.json absent (monorepo scaffolding lands with issue #1) — pnpm steps skipped, job stays green."
+
+  migrations-check:
+    name: Migrations check (naming & non-empty)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate supabase/migrations/*.sql
+        shell: bash
+        run: |
+          set -u
+          dir="supabase/migrations"
+          if [ ! -d "$dir" ]; then
+            echo "No '$dir' directory yet — nothing to validate."
+            exit 0
+          fi
+          shopt -s nullglob
+          files=("$dir"/*.sql)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No .sql files in '$dir' — nothing to validate."
+            exit 0
+          fi
+          status=0
+          prev=-1
+          for f in "${files[@]}"; do
+            base="$(basename "$f")"
+            if ! printf '%s' "$base" | grep -Eq '^[0-9]{3}_.+\.sql$'; then
+              echo "::error file=$f::Migration name '$base' must match NNN_*.sql (3-digit ordered prefix, underscore, .sql extension)."
+              status=1
+            else
+              num=$((10#${base:0:3}))
+              if [ "$num" -le "$prev" ]; then
+                echo "::error file=$f::Migration prefix '${base:0:3}' is not strictly increasing (previous: $prev) — keep migrations ordered and unique."
+                status=1
+              fi
+              prev="$num"
+            fi
+            if [ -z "$(tr -d '[:space:]' < "$f")" ]; then
+              echo "::error file=$f::Migration file is empty."
+              status=1
+            fi
+          done
+          if [ "$status" -eq 0 ]; then
+            echo "OK: ${#files[@]} migration(s) in '$dir' are correctly named (NNN_*.sql, ordered) and non-empty."
+          else
+            echo "::error::One or more migrations in '$dir' are invalid (see above)."
+          fi
+          exit "$status"

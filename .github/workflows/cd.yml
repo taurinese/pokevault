@@ -1,0 +1,77 @@
+name: CD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker:
+    name: Build & push '${{ matrix.component }}' to GHCR
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component:
+          - web
+          - worker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Gate: Dockerfile lands with issue #4 — until then, skip the Docker build cleanly.
+      - name: Check Dockerfile presence
+        id: check-dockerfile
+        shell: bash
+        run: |
+          if [ -f Dockerfile ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "Dockerfile found — building and pushing target '${{ matrix.component }}'."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Dockerfile is not in the repo yet (lands with issue #4) — skipping Docker build for '${{ matrix.component }}'."
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.check-dockerfile.outputs.present == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.check-dockerfile.outputs.present == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags)
+        if: steps.check-dockerfile.outputs.present == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/pokevault-${{ matrix.component }}
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest
+
+      - name: Build and push image
+        if: steps.check-dockerfile.outputs.present == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: ${{ matrix.component }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
