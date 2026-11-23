@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { Effect, Fiber, Layer, Logger, References } from "effect";
+import { ServiceConfigError } from "@pokevault/services";
+import { ConfigProvider, Effect, Fiber, Layer, Logger, References } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import { loadWorkerConfig } from "./config.ts";
@@ -119,7 +120,44 @@ describe("runWorker", () => {
 
 describe("loadWorkerConfig", () => {
   it("defaults the heartbeat interval to 30 seconds", async () => {
-    const config = await Effect.runPromise(loadWorkerConfig);
+    const config = await Effect.runPromise(
+      loadWorkerConfig.pipe(
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      ),
+    );
     expect(config.heartbeatIntervalMs).toBe(30_000);
   });
+
+  it("parses a custom positive integer heartbeat interval", async () => {
+    const config = await Effect.runPromise(
+      loadWorkerConfig.pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({ env: { WORKER_HEARTBEAT_INTERVAL_MS: "5000" } }),
+          ),
+        ),
+      ),
+    );
+    expect(config.heartbeatIntervalMs).toBe(5_000);
+  });
+
+  it.each(["0", "-100", "abc"])(
+    "fails with ServiceConfigError for invalid interval %s",
+    async (raw) => {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          loadWorkerConfig.pipe(
+            Effect.provide(
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({ env: { WORKER_HEARTBEAT_INTERVAL_MS: raw } }),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(error).toBeInstanceOf(ServiceConfigError);
+      expect(error._tag).toBe("ServiceConfigError");
+      expect(error.key).toBe("WORKER_HEARTBEAT_INTERVAL_MS");
+    },
+  );
 });

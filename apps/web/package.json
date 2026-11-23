@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite dev --port 3000",
     "build": "vite build",
-    "start": "srvx --prod --port 3000 --static ../client dist/server/server.js",
+    "start": "srvx --prod --static ../client dist/server/server.js",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

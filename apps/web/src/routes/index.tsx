@@ -1,8 +1,8 @@
 import { CardAspectRatio } from "@pokevault/domain";
 import { createFileRoute } from "@tanstack/react-router";
-import { t } from "../i18n/index.ts";
+import { DEFAULT_LOCALE, t } from "../i18n/index.ts";
 
-const ratioFormatter = new Intl.NumberFormat("fr-FR", {
+const ratioFormatter = new Intl.NumberFormat(DEFAULT_LOCALE, {
   minimumFractionDigits: 3,
   maximumFractionDigits: 3,
 });
