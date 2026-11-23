@@ -1,0 +1,21 @@
+name: Feature / Task
+description: Nouvelle fonctionnalité ou tâche issue du backlog
+title: "[T?.?] "
+labels: ["type:feat"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Contexte & Référence
+      description: Lien vers la doc (`docs/`) ou la frame Brilliant concernée
+    validations:
+      required: true
+  - type: textarea
+    id: criteria
+    attributes:
+      label: Critères d'acceptation
+      description: Checklist testable de ce qui définit "Done"
+      value: |
+        - [ ] ...
+    validations:
+      required: true

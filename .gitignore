@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Builds & caches
+dist/
+build/
+.output/
+.vinxi/
+.tanstack/
+.nitro/
+.vite/
+.turbo/
+*.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Supabase local
+supabase/.temp/
+supabase/.branches/
+
+# Testing & coverage
+coverage/
+playwright-report/
+test-results/
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
