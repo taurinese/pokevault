@@ -13,6 +13,7 @@
       "!**/.output",
       "!**/coverage",
       "!pnpm-lock.yaml",
+      "!**/routeTree.gen.ts",
       "!**/*.md"
     ]
   },
