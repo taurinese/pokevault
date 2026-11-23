@@ -27,6 +27,7 @@ Toujours consulter `docs/` avant d’implémenter une fonctionnalité :
   - Toute modification de schéma passe par une migration SQL dans `supabase/migrations/`.
   - Toute table utilisateur a RLS activée (`auth.uid() = user_id`).
   - La route publique `/s/:token` ne passe **que** par `get_shared_binder(token)` — jamais de lecture directe des tables privées.
-- **Qualité avant PR** :
+- **Qualité & Workflow Git avant PR** :
   - `pnpm biome check` + `pnpm typecheck` + `pnpm test` + `pnpm build` doivent tous passer.
-  - 1 Issue = 1 branche courte = 1 PR ciblée avec `Closes #<id>` et Conventional Commits.
+  - **`main`** est protégée (production / releases uniquement) : aucun push direct ; les merges vers `main` se font via une PR de release `develop` → `main` à la fin d'une milestone (ou d'une version).
+  - **1 Issue = 1 branche courte depuis `develop` = 1 PR ciblée vers `develop`** avec `Closes #<id>` (ou `Refs #<id>` si clôturée à la release `main`) et Conventional Commits.
