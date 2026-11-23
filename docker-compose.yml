@@ -1,0 +1,242 @@
+# PokéVault — all-in-one self-host stack (docs/03-architecture.md §5, docs/06-securite.md §5).
+#
+#   cp .env.example .env   # replace EVERY CHANGE_ME_* placeholder (see .env.example)
+#   docker compose up -d --build
+#
+# Only Caddy exposes ports (80/443). Postgres, GoTrue and Storage stay on the
+# internal `pokevault` network and are reachable only through Caddy
+# (/auth/v1/*, /storage/v1/*; /auth/v1/admin/* is blocked).
+# Zero secret is hardcoded here: everything comes from .env (see .env.example).
+#
+# Each Supabase service connects with its own dedicated Postgres role
+# (supabase_auth_admin, supabase_storage_admin); their passwords are set from
+# POSTGRES_PASSWORD by infra/supabase/init/99-roles.sql on first boot.
+# Changing POSTGRES_PASSWORD afterwards requires `docker compose down -v`
+# (or manual ALTER ROLE statements): init scripts only run on an empty volume.
+name: pokevault
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    environment:
+      # ":80" for local HTTP-only, or a hostname for automatic HTTPS.
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-:80}
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+      - "${CADDY_HTTPS_PORT:-443}:443/udp" # HTTP/3 (QUIC)
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    healthcheck:
+      # Caddy admin API (container-local, never published).
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    logging: *default-logging
+    networks:
+      - pokevault
+
+  # Postgres + Supabase extensions/roles. Left on the image's default
+  # superuser (`supabase_admin`) so that its migrate.sh succeeds on first boot:
+  # do NOT set POSTGRES_USER.
+  postgres:
+    image: supabase/postgres:15.8.1.085
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      # Read by infra/supabase/init/99-jwt.sql (app.settings.jwt_secret / jwt_exp).
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_EXP: "3600"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Role passwords + JWT settings, run after the image's built-in init scripts.
+      - ./infra/supabase/init/99-roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
+      - ./infra/supabase/init/99-jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
+      # Migrations land in supabase/migrations/ (issue #3). Once the folder
+      # exists, uncomment the line below and apply them on first boot with:
+      #   docker compose exec postgres psql -U supabase_admin -d postgres \
+      #     -f /opt/pokevault/migrations/NNN_name.sql   (or `supabase db push`)
+      # - ./supabase/migrations:/opt/pokevault/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supabase_admin -d $${POSTGRES_DB:-postgres} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging: *default-logging
+    networks:
+      - pokevault
+
+  # GoTrue — Supabase Auth, OAuth only (Google + Discord, docs/06-securite.md §1).
+  auth:
+    image: supabase/gotrue:v2.188.1
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: "9999"
+      # Single external URL variable (GoTrue reads API_EXTERNAL_URL); the OAuth
+      # callbacks below carry the /auth/v1 prefix explicitly, as in supabase/docker.
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL:-http://localhost}
+      GOTRUE_SITE_URL: ${SITE_URL:-http://localhost}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS:-${SITE_URL:-http://localhost}}
+      GOTRUE_DISABLE_SIGNUP: ${GOTRUE_DISABLE_SIGNUP:-true}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}?search_path=auth&sslmode=disable
+      GOTRUE_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_EXP: "3600"
+      # OAuth only: no email/password, no phone, no anonymous users.
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "false"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      # OAuth Google
+      GOTRUE_EXTERNAL_GOOGLE_ENABLED: ${GOTRUE_EXTERNAL_GOOGLE_ENABLED:-false}
+      GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOTRUE_EXTERNAL_GOOGLE_SECRET:-}
+      GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: ${API_EXTERNAL_URL:-http://localhost}/auth/v1/callback
+      # OAuth Discord
+      GOTRUE_EXTERNAL_DISCORD_ENABLED: ${GOTRUE_EXTERNAL_DISCORD_ENABLED:-false}
+      GOTRUE_EXTERNAL_DISCORD_CLIENT_ID: ${GOTRUE_EXTERNAL_DISCORD_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_DISCORD_SECRET: ${GOTRUE_EXTERNAL_DISCORD_SECRET:-}
+      GOTRUE_EXTERNAL_DISCORD_REDIRECT_URI: ${API_EXTERNAL_URL:-http://localhost}/auth/v1/callback
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9999/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - pokevault
+
+  # Supabase Storage — local file backend on a persistent volume.
+  # Bucket `binder-covers` holds binder covers, 2 MiB max per image,
+  # jpeg/png/webp only (docs/06-securite.md §3, enforced by migrations + policies).
+  # storage-api talks to Postgres directly (no PostgREST container needed).
+  storage:
+    image: supabase/storage-api:v1.29.3
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ANON_KEY: ${ANON_KEY:?set ANON_KEY in .env}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY in .env}
+      PGRST_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: stub
+      REGION: stub
+      GLOBAL_S3_BUCKET: stub
+      ENABLE_IMAGE_TRANSFORMATION: "false"
+      # 2 MiB per upload (docs/06-securite.md §3).
+      FILE_SIZE_LIMIT: "2097152"
+    volumes:
+      - storage_data:/var/lib/storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5000/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - pokevault
+
+  web:
+    image: ghcr.io/taurinese/pokevault-web:${POKEVAULT_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOST: 0.0.0.0
+      # Browser-facing URL (through Caddy, same origin → cookies).
+      SUPABASE_PUBLIC_URL: ${SITE_URL:-http://localhost}
+      # Server-to-server URLs, straight on the internal network (SSR).
+      SUPABASE_INTERNAL_AUTH_URL: http://auth:9999
+      SUPABASE_INTERNAL_STORAGE_URL: http://storage:5000
+      # Never give the web app the service_role key (docs/06-securite.md §2).
+      SUPABASE_ANON_KEY: ${ANON_KEY:?set ANON_KEY in .env}
+    depends_on:
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *default-logging
+    networks:
+      - pokevault
+
+  worker:
+    image: ghcr.io/taurinese/pokevault-worker:${POKEVAULT_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      WORKER_HEARTBEAT_INTERVAL_MS: ${WORKER_HEARTBEAT_INTERVAL_MS:-30000}
+      SUPABASE_INTERNAL_AUTH_URL: http://auth:9999
+      SUPABASE_INTERNAL_STORAGE_URL: http://storage:5000
+      # service_role is strictly confined to the worker (docs/06-securite.md §2).
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY in .env}
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Graceful shutdown: the worker handles SIGTERM/SIGINT and exits 0.
+    stop_grace_period: 15s
+    logging: *default-logging
+    networks:
+      - pokevault
+
+networks:
+  pokevault:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  storage_data:
+  caddy_data:
+  caddy_config:

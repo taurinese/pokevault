@@ -1,0 +1,53 @@
+# PokéVault reverse proxy (docs/03-architecture.md §5, docs/06-securite.md §4).
+#
+# CADDY_SITE_ADDRESS comes from the environment (.env):
+#   ":80"                   -> local, plain HTTP only
+#   "pokevault.example.com" -> automatic HTTPS via Let's Encrypt
+{$CADDY_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# Security headers (docs/06-securite.md §4). HSTS is ignored by browsers
+	# over plain HTTP and only applies once the site address is a domain.
+	# includeSubDomains/preload are deliberately NOT set: they are irreversible
+	# for a whole registrable domain and unsafe for a self-hosted subdomain.
+	#
+	# CSP: TanStack Start SSR emits inline <script> tags for hydration, so
+	# script-src needs 'unsafe-inline' for now. Everything else stays locked
+	# down (default-src, img-src, object-src, base-uri, form-action,
+	# frame-ancestors). Storage images are served same-origin through
+	# /storage/v1/*, so 'self' covers them; assets.tcgdex.net is the only
+	# external origin allowed.
+	# TODO(csp-nonce): replace 'unsafe-inline' by a per-request nonce emitted by
+	# the SSR layer, then drop it from script-src (track in a dedicated issue).
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Strict-Transport-Security "max-age=31536000"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://assets.tcgdex.net; connect-src 'self' https://assets.tcgdex.net; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	}
+
+	# GoTrue admin API requires the service_role key and must never be reachable
+	# from the Internet. Matched before the generic /auth/v1/* handler.
+	@auth_admin path /auth/v1/admin /auth/v1/admin/*
+	handle @auth_admin {
+		respond 403
+	}
+
+	# Supabase Auth (GoTrue). The /auth/v1 prefix is stripped: GoTrue serves at
+	# the root, and the OAuth redirect URIs carry the prefix explicitly
+	# (GOTRUE_EXTERNAL_*_REDIRECT_URI, same contract as Kong in supabase/docker).
+	handle_path /auth/v1/* {
+		reverse_proxy auth:9999
+	}
+
+	# Supabase Storage. Same prefix stripping for /storage/v1/*.
+	handle_path /storage/v1/* {
+		reverse_proxy storage:5000
+	}
+
+	# Everything else -> TanStack Start web app (SSR + /api/health).
+	reverse_proxy web:3000
+}
