@@ -1,0 +1,34 @@
+# PokéVault reverse proxy (docs/03-architecture.md §5, docs/06-securite.md §4).
+#
+# CADDY_SITE_ADDRESS comes from the environment (.env):
+#   ":80"                   -> local, plain HTTP only
+#   "pokevault.example.com" -> automatic HTTPS via Let's Encrypt
+{$CADDY_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# Security headers (docs/06-securite.md §4). HSTS is ignored by browsers
+	# over plain HTTP and only applies once the site address is a domain.
+	# Storage images are served same-origin through /storage/v1/*, so
+	# 'self' covers them; assets.tcgdex.net is the only external origin allowed.
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://assets.tcgdex.net; connect-src 'self' https://assets.tcgdex.net wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	}
+
+	# Supabase Auth (GoTrue). The /auth/v1 prefix is stripped: GoTrue serves at
+	# the root and advertises API_EXTERNAL_URL *with* the prefix (same contract
+	# as Kong in the official supabase/docker stack).
+	handle_path /auth/v1/* {
+		reverse_proxy auth:9999
+	}
+
+	# Supabase Storage. Same prefix stripping for /storage/v1/*.
+	handle_path /storage/v1/* {
+		reverse_proxy storage:5000
+	}
+
+	# Everything else -> TanStack Start web app (SSR + /api/health).
+	reverse_proxy web:3000
+}
