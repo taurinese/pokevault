@@ -13,6 +13,7 @@ export interface CatalogSyncConfig {
 }
 
 export * from "./binder-service.ts";
+export * from "./burst-import.ts";
 export * from "./catalog-repo.ts";
 export * from "./catalog-search.ts";
 export * from "./catalog-sync.ts";
