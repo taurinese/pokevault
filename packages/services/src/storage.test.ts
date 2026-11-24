@@ -57,6 +57,28 @@ describe("BinderCoverStorageLive", () => {
     expect(call?.init.body).toEqual(WEBP);
   });
 
+  it.each([
+    ["http://storage:5000", `http://storage:5000/object/binder-covers/${USER}/${BINDER}.webp`],
+    ["http://storage:5000///", `http://storage:5000/object/binder-covers/${USER}/${BINDER}.webp`],
+    [
+      "http://localhost:54321/storage/v1",
+      `http://localhost:54321/storage/v1/object/binder-covers/${USER}/${BINDER}.webp`,
+    ],
+  ])(
+    "storageUrl %s est utilisée telle quelle (sans /storage/v1 ajouté)",
+    async (storageUrl, expected) => {
+      const { calls, fetch } = fakeFetch(() => new Response("{}", { status: 200 }));
+      const result = await run(
+        Effect.flatMap(BinderCoverStorage, (storage) =>
+          storage.upload({ userId: USER, binderId: BINDER, accessToken: "jwt-1", bytes: WEBP }),
+        ),
+        BinderCoverStorageLive({ storageUrl, anonKey: "anon-key", fetch }),
+      );
+      expect(result._tag).toBe("Success");
+      expect(calls[0]?.url).toBe(expected);
+    },
+  );
+
   it("remove : DELETE du même chemin ; 404 = succès", async () => {
     const { calls, fetch } = fakeFetch(() => new Response("not found", { status: 404 }));
     const result = await run(

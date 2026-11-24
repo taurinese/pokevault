@@ -41,9 +41,7 @@ export class BinderCoverStorage extends Context.Service<
 // Live — API HTTP Supabase Storage
 // ---------------------------------------------------------------------------
 
-export interface BinderCoverStorageLiveOptions {
-  /** URL de base de l'API Supabase (ex. `http://kong:8000` ou `https://x.supabase.co`). */
-  readonly supabaseUrl: string;
+interface BinderCoverStorageCommonOptions {
   /** Clé publique (`anon`) : header `apikey`. */
   readonly anonKey: string;
   /** Timeout par requête (défaut 15 s). */
@@ -52,8 +50,31 @@ export interface BinderCoverStorageLiveOptions {
   readonly fetch?: typeof globalThis.fetch | undefined;
 }
 
-const objectUrl = (baseUrl: string, path: string): string =>
-  `${baseUrl.replace(/\/+$/, "")}/storage/v1/object/${BINDER_COVERS_BUCKET}/${path}`;
+/**
+ * Où joindre l'API Storage — exactement une des deux formes :
+ * - `supabaseUrl` : racine publique de l'API Supabase **derrière le proxy** qui expose
+ *   `/storage/v1/*` (ex. Caddy `http://localhost:54321`, `https://x.supabase.co`) ; le
+ *   préfixe `/storage/v1` est ajouté ;
+ * - `storageUrl` : base **déjà complète** de l'API Storage, utilisée telle quelle
+ *   (ex. `http://storage:5000` sur le réseau Docker interne, qui sert `/object/...` à la
+ *   racine, ou `http://localhost:54321/storage/v1`).
+ */
+export type BinderCoverStorageLiveOptions = BinderCoverStorageCommonOptions &
+  (
+    | { readonly supabaseUrl: string; readonly storageUrl?: undefined }
+    | { readonly storageUrl: string; readonly supabaseUrl?: undefined }
+  );
+
+const stripTrailingSlashes = (value: string): string => value.replace(/\/+$/, "");
+
+/** Base de l'API Storage (sans slash final) pour ces options. */
+export const resolveStorageApiBase = (options: BinderCoverStorageLiveOptions): string =>
+  options.storageUrl !== undefined
+    ? stripTrailingSlashes(options.storageUrl)
+    : `${stripTrailingSlashes(options.supabaseUrl)}/storage/v1`;
+
+const objectUrl = (apiBase: string, path: string): string =>
+  `${apiBase}/object/${BINDER_COVERS_BUCKET}/${path}`;
 
 const checkParams = (
   params: BinderCoverObject & { readonly accessToken: string },
@@ -77,6 +98,7 @@ export const BinderCoverStorageLive = (
 ): Layer.Layer<BinderCoverStorage> => {
   const doFetch = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 15_000;
+  const apiBase = resolveStorageApiBase(options);
 
   const request = (
     method: "POST" | "DELETE",
@@ -86,7 +108,7 @@ export const BinderCoverStorageLive = (
   ): Effect.Effect<Response, StorageServiceError> =>
     Effect.tryPromise({
       try: (signal) =>
-        doFetch(objectUrl(options.supabaseUrl, path), {
+        doFetch(objectUrl(apiBase, path), {
           method,
           headers: {
             Authorization: `Bearer ${accessToken}`,

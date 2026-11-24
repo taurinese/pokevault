@@ -8,7 +8,11 @@ import {
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { BindersPayload, CatalogSetEntry } from "../lib/binders-client.ts";
+import {
+  type BindersPayload,
+  type CatalogSetEntry,
+  DEFAULT_COLLECTION_FILTERS,
+} from "../lib/binders-client.ts";
 import {
   buildSeriesGroups,
   CollectionScreen,
@@ -164,12 +168,23 @@ const actions: CollectionViewActions = {
   onCreateTitleChange: noop,
   onCreatePinnedChange: noop,
   onSubmitCreate: noop,
+  onOpenFilters: noop,
+  onCloseFilters: noop,
+  onApplyFilters: noop,
+  onOpenSettings: noop,
+  onCloseSettings: noop,
+  onSettingsChanged: noop,
+  onSettingsDeleted: noop,
+  onUnauthorized: noop,
 };
 
 const baseState: CollectionViewState = {
   tab: "sets",
   data: { status: "ready", data: FULL },
   seriesId: null,
+  filters: DEFAULT_COLLECTION_FILTERS,
+  filtersOpen: false,
+  settingsBinderId: null,
   follow: { open: false, query: "", pendingSetId: null, error: false },
   create: { open: false, title: "", pinned: false, submitting: false, error: null },
   announcement: "",
@@ -177,14 +192,12 @@ const baseState: CollectionViewState = {
 
 const render = (
   state: Partial<CollectionViewState> = {},
-  hooks: Parameters<typeof CollectionView>[0]["hooks"] = undefined,
   overrides: Partial<CollectionViewActions> = {},
 ): string =>
   renderToStaticMarkup(
     h(CollectionView, {
       state: { ...baseState, ...state },
       actions: { ...actions, ...overrides },
-      hooks,
     }),
   );
 
@@ -202,13 +215,22 @@ describe("CollectionView — en-tête & contrôle segmenté", () => {
     expect(html).toContain("Saisie rafale");
   });
 
-  it("disables the Filters button until a handler is wired (T3.4 hook)", () => {
+  it("always enables the Filters button (T3.4) with no badge by default", () => {
     const html = render();
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Ouvrir les filtres et le tri"/);
-    const wired = render({}, { onOpenFilters: noop });
-    expect(wired).not.toMatch(
+    expect(html).toMatch(/<button[^>]*aria-label="Ouvrir les filtres et le tri"/);
+    expect(html).not.toMatch(
       /<button[^>]*disabled=""[^>]*aria-label="Ouvrir les filtres et le tri"/,
     );
+    expect(html).not.toContain('data-testid="filters-badge"');
+  });
+
+  it("shows the active-filter count on the Filters button (badge + screen-reader text)", () => {
+    const html = render({
+      filters: { ...DEFAULT_COLLECTION_FILTERS, hideEmptySets: true, progress: ["completed"] },
+    });
+    expect(html).toMatch(/data-testid="filters-badge"[^>]*>2</);
+    expect(html).toContain("2 filtres actifs");
+    expect(html).toContain("tabular-nums");
   });
 
   it("renders a tablist with Extensions and Dossiers perso, selection exposed via ARIA", () => {
@@ -294,9 +316,10 @@ describe("CollectionView — onglet Extensions (02)", () => {
 
   it("ignores custom folders in the Extensions tab and vice-versa", () => {
     expect(buildSeriesGroups(FULL).flatMap((group) => group.binders)).toHaveLength(3);
+    // Tri par défaut (complétion ↓, titre) : le dossier épinglé passe en tête.
     expect(customBinders(FULL).map(({ binder }) => binder.title)).toEqual([
-      "Évolitions Favs",
       "Doublons Échange",
+      "Évolitions Favs",
     ]);
   });
 });
@@ -429,6 +452,97 @@ describe("CollectionView — feuille de création de dossier", () => {
   });
 });
 
+describe("CollectionView — filtres & tri (02C) et réglages (T3.4)", () => {
+  const sectionTitles = (html: string): ReadonlyArray<string> =>
+    [...html.matchAll(/<h3 class="truncate text-sm font-bold text-primary">([^<]*)</g)].map(
+      (match) => match[1] ?? "",
+    );
+
+  it("applies the sort inside each block (name A–Z) and keeps pinned binders first", () => {
+    const html = render({
+      data: {
+        status: "ready",
+        data: payload([
+          setBinder(1, "sv08"),
+          setBinder(2, "sv03.5"),
+          setBinder(3, "sv01", { isPinned: true }),
+        ]),
+      },
+      filters: { ...DEFAULT_COLLECTION_FILTERS, sort: "name_asc" },
+    });
+    expect(sectionTitles(html)).toEqual(["Écarlate et Violet", "151", "Étincelles Déferlantes"]);
+  });
+
+  it("filters the grid by block while keeping every block pill available", () => {
+    const html = render({
+      filters: { ...DEFAULT_COLLECTION_FILTERS, seriesIds: ["swsh"] },
+    });
+    expect(html.match(/data-testid="series-section"/g)).toHaveLength(1);
+    expect(sectionTitles(html)).toEqual(["Tempête Argentée"]);
+    // Les pills restent celles de toute la collection.
+    expect(html).toContain("Écarlate et Violet");
+    expect(html).toContain("Épée et Bouclier");
+  });
+
+  it("hides sets with 0 owned cards and explains an empty result with a reset action", () => {
+    const html = render({ filters: { ...DEFAULT_COLLECTION_FILTERS, hideEmptySets: true } });
+    expect(html).toContain('data-testid="filtered-empty"');
+    expect(html).toContain("Aucun classeur ne correspond");
+    expect(html).toContain("Réinitialiser les filtres");
+    expect(html).not.toContain('data-testid="binder-card"');
+    // Sans filtre, pas de message.
+    expect(render()).not.toContain('data-testid="filtered-empty"');
+  });
+
+  it("filters the custom folders tab too (hide empty folders)", () => {
+    const withEmpty = payload([
+      folder(4, "Plein"),
+      { ...folder(5, "Vide"), cardCount: 0, ownedCount: 0 },
+    ]);
+    const html = render({
+      tab: "custom",
+      data: { status: "ready", data: withEmpty },
+      filters: { ...DEFAULT_COLLECTION_FILTERS, hideEmptySets: true },
+    });
+    expect(html).toContain("Plein");
+    expect(html).not.toContain("Vide");
+    // La card « + Nouveau dossier » reste toujours disponible.
+    expect(html).toContain('data-testid="new-folder-card"');
+  });
+
+  it("renders the filter sheet only when opened and data is ready", () => {
+    expect(render()).not.toContain('data-testid="filter-sheet"');
+    const open = render({ filtersOpen: true });
+    expect(open).toContain('data-testid="filter-sheet"');
+    expect(open).toContain("Filtres &amp; tri");
+    // Les blocs proposés viennent de overview.series (blocs suivis).
+    expect(open).toContain('data-testid="filter-series-sv"');
+    expect(open).toContain('data-testid="filter-series-swsh"');
+    expect(render({ filtersOpen: true, data: { status: "loading" } })).not.toContain(
+      'data-testid="filter-sheet"',
+    );
+  });
+
+  it("opens the settings sheet for the selected binder, with its current data", () => {
+    expect(render()).not.toContain('data-testid="binder-settings"');
+    const html = render({ settingsBinderId: uuid(1) });
+    expect(html).toContain('data-testid="binder-settings"');
+    expect(html).toContain("Réglages du classeur");
+    expect(html).toContain('value="Étincelles Déferlantes"');
+  });
+
+  it("closes the settings sheet when its binder disappeared (deleted)", () => {
+    expect(render({ settingsBinderId: uuid(999) })).not.toContain('data-testid="binder-settings"');
+  });
+
+  it("shows a settings button on every binder card (sets and folders)", () => {
+    const sets = render();
+    expect(sets.match(/aria-label="Réglages du classeur /g)).toHaveLength(3);
+    const custom = render({ tab: "custom" });
+    expect(custom.match(/aria-label="Réglages du classeur /g)).toHaveLength(2);
+  });
+});
+
 describe("CollectionView — états chargement, erreur & annonces", () => {
   it("renders skeletons (not the tabs content) while loading", () => {
     const html = render({ data: { status: "loading" } });
@@ -441,7 +555,7 @@ describe("CollectionView — états chargement, erreur & annonces", () => {
 
   it("renders an error state with a retry button wired to onRetry", () => {
     const onRetry = vi.fn();
-    const html = render({ data: { status: "error" } }, undefined, { onRetry });
+    const html = render({ data: { status: "error" } }, { onRetry });
     expect(html).toContain('data-testid="collection-error"');
     expect(html).toContain("Collection indisponible");
     expect(html).toContain("Réessayer");
