@@ -15,15 +15,21 @@
 
 import {
   BinderConflictError,
+  BinderNotFoundError,
   type BinderSummary,
   buildCollectionOverview,
   CatalogItemNotFoundError,
+  COVER_MAX_BYTES,
+  type CompletionOptions,
   type CreateCustomBinderInput,
   type CreateSetBinderInput,
   InvalidCoverImageError,
   isBinderCoverStoragePathOf,
   isUuid,
+  type SetBinderCoverInput,
+  StorageServiceError,
   UnauthorizedBinderAccess,
+  type UpdateBinderInput,
   ValidationError,
 } from "@pokevault/domain";
 import {
@@ -34,11 +40,13 @@ import {
   CollectionService,
   CollectionServiceLive,
   type CollectionServiceShape,
-  CoverImageProcessor,
   Database,
   DatabaseError,
   DatabaseLive,
 } from "@pokevault/services";
+// ⚠️ Sous-chemin dédié (hors `index.ts`) : `sharp` (addon natif) ne doit exister que dans le
+// bundle SERVEUR de l'app web — jamais côté client ni dans le worker.
+import { CoverImageProcessorSharp } from "@pokevault/services/cover-image-sharp";
 import { Cause, Effect, Exit, Layer, ManagedRuntime } from "effect";
 import { isRequestSameOrigin, resolveAppOrigin } from "./auth.ts";
 import { type AuthDeps, defaultAuthDeps, getServerSession } from "./auth-server.ts";
@@ -165,28 +173,19 @@ const makeCatalog = (sql: Database["Service"]["sql"]): BindersCatalogShape => ({
 });
 
 /**
- * Le téléversement de cover (T3.4) n'est pas branché sur cette route : le
- * processeur `sharp` (binaire natif) reste hors du bundle de l'écran Collection.
- */
-const CoverUploadDisabled = Layer.succeed(CoverImageProcessor, {
-  process: () =>
-    Effect.fail(
-      new InvalidCoverImageError({
-        reason: "unsupported_format",
-        message: "cover upload is not enabled on /api/binders",
-      }),
-    ),
-});
-
-/**
  * Services Postgres (pool `postgres.js` paresseux, rôle `authenticated` à
  * moindre privilège : RLS). Mis en cache sur `globalThis` pour survivre au HMR
  * Vite sans fuiter de pools ; une promesse rejetée est immédiatement purgée du
  * cache.
  */
-const getLiveServices = (databaseUrl: string, auth: AuthDeps): Promise<LiveServices> => {
+const getLiveServices = (
+  databaseUrl: string,
+  auth: AuthDeps,
+  storageApiBase: string,
+): Promise<LiveServices> => {
   const existing = readCachedRuntime();
-  if (existing !== undefined && existing.url === databaseUrl) return existing.services;
+  const cacheKey = `${databaseUrl}\u0000${storageApiBase}`;
+  if (existing !== undefined && existing.url === cacheKey) return existing.services;
   if (existing !== undefined) {
     void existing.runtime.dispose();
     writeCachedRuntime(undefined);
@@ -194,11 +193,10 @@ const getLiveServices = (databaseUrl: string, auth: AuthDeps): Promise<LiveServi
   const layer = Layer.mergeAll(BinderServiceLive, CollectionServiceLive).pipe(
     Layer.provide(
       Layer.mergeAll(
-        BinderCoverStorageLive({
-          supabaseUrl: auth.config.publicUrl,
-          anonKey: auth.config.anonKey,
-        }),
-        CoverUploadDisabled,
+        // Même base que le proxy `GET .../cover` : Storage interne Docker (`http://storage:5000`,
+        // sans `/storage/v1`) ou `<SUPABASE_PUBLIC_URL>/storage/v1` en dev.
+        BinderCoverStorageLive({ storageUrl: storageApiBase, anonKey: auth.config.anonKey }),
+        CoverImageProcessorSharp,
       ),
     ),
     Layer.provideMerge(
@@ -220,28 +218,44 @@ const getLiveServices = (databaseUrl: string, auth: AuthDeps): Promise<LiveServi
       void runtime.dispose();
       throw error;
     });
-  writeCachedRuntime({ url: databaseUrl, runtime, services });
+  writeCachedRuntime({ url: cacheKey, runtime, services });
   return services;
 };
 
 const stripTrailingSlashes = (value: string): string => value.replace(/\/+$/, "");
 
+/**
+ * Base de l'API Storage (sans slash final), préfixe de `/object/binder-covers/...` :
+ * - `SUPABASE_INTERNAL_STORAGE_URL` (Docker : `http://storage:5000`) sert `/object/...`
+ *   **directement à la racine** (le `/storage/v1` est retiré par Caddy `handle_path`) ;
+ * - sinon l'URL publique (dev : `http://localhost:54321`) + `/storage/v1`.
+ */
+export const resolveStorageApiBase = (
+  publicUrl: string,
+  internalStorageUrl: string | undefined,
+): string => {
+  const internal = internalStorageUrl?.trim();
+  return internal === undefined || internal === ""
+    ? `${stripTrailingSlashes(publicUrl)}/storage/v1`
+    : stripTrailingSlashes(internal);
+};
+
 /** Dépendances de production : session GoTrue + Postgres (`DATABASE_URL`) + Storage Supabase. */
 export const defaultBindersDeps = async (): Promise<BindersServerDeps> => {
   const auth = defaultAuthDeps();
   const databaseUrl = process.env["DATABASE_URL"]?.trim();
-  const internalStorage = process.env["SUPABASE_INTERNAL_STORAGE_URL"]?.trim();
+  const storageApiBase = resolveStorageApiBase(
+    auth.config.publicUrl,
+    process.env["SUPABASE_INTERNAL_STORAGE_URL"],
+  );
   return {
     auth,
     services:
       databaseUrl === undefined || databaseUrl === ""
         ? null
-        : await getLiveServices(databaseUrl, auth),
+        : await getLiveServices(databaseUrl, auth, storageApiBase),
     storage: {
-      baseUrl:
-        internalStorage === undefined || internalStorage === ""
-          ? `${auth.config.publicUrl}/storage/v1`
-          : stripTrailingSlashes(internalStorage),
+      baseUrl: storageApiBase,
       anonKey: auth.config.anonKey,
       fetch: (input, init) => fetch(input, init),
     },
@@ -312,6 +326,15 @@ const emptyPayload = (): BindersPayload => ({
   catalogSets: [],
 });
 
+/**
+ * `?extras=0` : exclut les cartes secrètes et les exemplaires promo du calcul de complétion
+ * (option « Inclure les cartes promos / secrètes » désactivée du bottom sheet 02C).
+ */
+const completionOptionsOf = (request: Request): CompletionOptions | undefined => {
+  const extras = new URL(request.url).searchParams.get("extras");
+  return extras === "0" ? { includeSecrets: false, includePromos: false } : undefined;
+};
+
 export const handleListBinders = async (
   request: Request,
   deps: BindersServerDeps,
@@ -326,11 +349,20 @@ export const handleListBinders = async (
   }
   const { binders, collection, catalog } = deps.services;
   const userId = session.user.id;
+  const options = completionOptionsOf(request);
 
   const exit = await Effect.runPromiseExit(
     Effect.gen(function* () {
       const [list, overview, catalogSets] = yield* Effect.all(
-        [binders.listBinders(userId), collection.getCollectionOverview(userId), catalog.listSets()],
+        [
+          options === undefined
+            ? binders.listBinders(userId)
+            : binders.listBinders(userId, options),
+          options === undefined
+            ? collection.getCollectionOverview(userId)
+            : collection.getCollectionOverview(userId, options),
+          catalog.listSets(),
+        ],
         { concurrency: "unbounded" },
       );
       const coverCardIds = [
@@ -508,17 +540,23 @@ export const handleBinderCover = async (
   }
 
   let upstream: Response;
+  // Le délai ne couvre que l'attente des en-têtes : un `AbortSignal.timeout` resterait armé
+  // pendant la lecture du corps et couperait en plein flux le streaming d'un client lent.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), COVER_FETCH_TIMEOUT_MS);
   try {
     upstream = await deps.storage.fetch(`${deps.storage.baseUrl}/object/binder-covers/${path}`, {
       method: "GET",
       headers: { Authorization: `Bearer ${session.accessToken}`, apikey: deps.storage.anonKey },
-      signal: AbortSignal.timeout(COVER_FETCH_TIMEOUT_MS),
+      signal: controller.signal,
     });
   } catch (error) {
     deps.log("binders.cover_fetch_failed", {
       reason: error instanceof Error ? error.name : "unknown",
     });
     return json({ error: "cover_unavailable" }, 502, "no-store", cookies);
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!upstream.ok || upstream.body === null) {
@@ -543,4 +581,266 @@ export const handleBinderCover = async (
   });
   for (const cookie of cookies) headers.append("Set-Cookie", cookie);
   return new Response(upstream.body, { status: 200, headers });
+};
+
+// ---------------------------------------------------------------------------
+// Mutations d'un classeur : PATCH / DELETE /api/binders/$id · PUT /api/binders/$id/cover
+// ---------------------------------------------------------------------------
+
+/** Enveloppe multipart tolérée au-delà des 2 Mio d'image (frontières, en-têtes de partie). */
+const MULTIPART_OVERHEAD_BYTES = 16 * 1024;
+
+/** Type de média des images de cover acceptées en corps binaire brut. */
+const RAW_IMAGE_TYPES: ReadonlySet<string> = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+type CappedBody =
+  | { readonly kind: "ok"; readonly bytes: Uint8Array<ArrayBuffer> }
+  | { readonly kind: "too_large" };
+
+/**
+ * Lit le corps en le plafonnant : le `Content-Length` déclaré est vérifié d'abord, puis le flux
+ * est interrompu dès que le cumul dépasse `maxBytes` (jamais un corps géant en mémoire).
+ */
+const readCappedBody = async (request: Request, maxBytes: number): Promise<CappedBody> => {
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > maxBytes) return { kind: "too_large" };
+  if (request.body === null) return { kind: "ok", bytes: new Uint8Array(0) };
+  const reader = request.body.getReader();
+  const chunks: Array<Uint8Array> = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      void reader.cancel().catch(() => {});
+      return { kind: "too_large" };
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { kind: "ok", bytes };
+};
+
+/** Corps JSON plafonné (`MAX_BODY_BYTES`) → valeur, ou `undefined` (400). */
+const readJsonRecord = async (request: Request): Promise<Record<string, unknown> | undefined> => {
+  const body = await readCappedBody(request, MAX_BODY_BYTES);
+  if (body.kind !== "ok") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(body.bytes));
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+interface HttpFailure {
+  readonly status: number;
+  readonly error: string;
+}
+
+/** Erreur typée du `BinderService` → réponse HTTP, ou `null` si elle doit rester une 503 loguée. */
+const failureToHttp = (failure: unknown): HttpFailure | null => {
+  if (failure instanceof InvalidCoverImageError) {
+    switch (failure.reason) {
+      case "too_large":
+        return { status: 413, error: "image_too_large" };
+      case "svg_not_allowed":
+        return { status: 415, error: "svg_not_allowed" };
+      case "unsupported_format":
+        return { status: 415, error: "unsupported_format" };
+      default:
+        return { status: 400, error: "invalid_image" };
+    }
+  }
+  if (failure instanceof ValidationError) return { status: 400, error: "invalid_input" };
+  // Classeur absent ou d'un autre utilisateur : indiscernables (jamais de 403).
+  if (
+    failure instanceof BinderNotFoundError ||
+    failure instanceof CatalogItemNotFoundError ||
+    failure instanceof UnauthorizedBinderAccess
+  ) {
+    return { status: 404, error: "not_found" };
+  }
+  if (failure instanceof StorageServiceError) return { status: 502, error: "storage_unavailable" };
+  return null;
+};
+
+/** Garde commune des mutations : CSRF → session → identifiant → base disponible. */
+type MutationContext =
+  | {
+      readonly ok: true;
+      readonly userId: string;
+      readonly accessToken: string;
+      readonly cookies: ReadonlyArray<string>;
+      readonly binders: BinderServiceShape;
+    }
+  | { readonly ok: false; readonly response: Response };
+
+const prepareBinderMutation = async (
+  request: Request,
+  binderId: string,
+  deps: BindersServerDeps,
+  operation: string,
+): Promise<MutationContext> => {
+  // CSRF : une mutation n'est acceptée que depuis l'origine de l'application.
+  if (!isRequestSameOrigin(request, resolveAppOrigin(deps.auth.config, request.url))) {
+    return { ok: false, response: json({ error: "forbidden_origin" }, 403, "no-store") };
+  }
+  const session = await getServerSession(request, deps.auth);
+  if (session === null) return { ok: false, response: unauthorized() };
+  const cookies = session.refreshedCookies ?? [];
+  // Un identifiant non UUID ne peut désigner aucun classeur.
+  if (!isUuid(binderId)) return { ok: false, response: notFound(cookies) };
+  if (deps.services === null) {
+    warnNoDatabase(deps, operation);
+    return { ok: false, response: unavailable(cookies) };
+  }
+  return {
+    ok: true,
+    userId: session.user.id,
+    accessToken: session.accessToken,
+    cookies,
+    binders: deps.services.binders,
+  };
+};
+
+const failureResponse = (
+  exit: Exit.Failure<unknown, unknown>,
+  deps: BindersServerDeps,
+  operation: string,
+  cookies: ReadonlyArray<string>,
+): Response => {
+  const mapped = failureToHttp(Cause.squash(exit.cause));
+  if (mapped !== null) return json({ error: mapped.error }, mapped.status, "no-store", cookies);
+  deps.log("binders.query_failed", { operation, ...extractErrorMeta(exit.cause) });
+  return unavailable(cookies);
+};
+
+/** Corps JSON → patch (`title`, `isPinned`, `sortOrder` uniquement ; validé par le domaine). */
+const parseUpdateBody = (body: Record<string, unknown>): UpdateBinderInput =>
+  ({
+    ...(body["title"] === undefined ? {} : { title: body["title"] }),
+    ...(body["isPinned"] === undefined ? {} : { isPinned: body["isPinned"] }),
+    ...(body["sortOrder"] === undefined ? {} : { sortOrder: body["sortOrder"] }),
+  }) as UpdateBinderInput;
+
+export const handleUpdateBinder = async (
+  request: Request,
+  binderId: string,
+  deps: BindersServerDeps,
+): Promise<Response> => {
+  const ctx = await prepareBinderMutation(request, binderId, deps, "update");
+  if (!ctx.ok) return ctx.response;
+  const body = await readJsonRecord(request);
+  if (body === undefined) return json({ error: "invalid_input" }, 400, "no-store", ctx.cookies);
+
+  const exit = await Effect.runPromiseExit(
+    ctx.binders.updateBinder(ctx.userId, binderId, parseUpdateBody(body)),
+  );
+  if (!Exit.isSuccess(exit)) return failureResponse(exit, deps, "update", ctx.cookies);
+  const summary: BinderSummary = exit.value;
+  return json(summary, 200, "no-store", ctx.cookies);
+};
+
+export const handleDeleteBinder = async (
+  request: Request,
+  binderId: string,
+  deps: BindersServerDeps,
+): Promise<Response> => {
+  const ctx = await prepareBinderMutation(request, binderId, deps, "delete");
+  if (!ctx.ok) return ctx.response;
+
+  // Le service supprime aussi l'objet Storage de la cover uploadée (best-effort).
+  const exit = await Effect.runPromiseExit(
+    ctx.binders.deleteBinder(ctx.userId, binderId, ctx.accessToken),
+  );
+  if (!Exit.isSuccess(exit)) return failureResponse(exit, deps, "delete", ctx.cookies);
+  const headers = new Headers({ "Cache-Control": "no-store" });
+  for (const cookie of ctx.cookies) headers.append("Set-Cookie", cookie);
+  return new Response(null, { status: 204, headers });
+};
+
+type CoverInput =
+  | { readonly kind: "ok"; readonly input: SetBinderCoverInput }
+  | { readonly kind: "error"; readonly status: number; readonly error: string };
+
+const coverError = (status: number, error: string): CoverInput => ({
+  kind: "error",
+  status,
+  error,
+});
+
+const parseCoverJson = async (request: Request): Promise<CoverInput> => {
+  const body = await readJsonRecord(request);
+  if (body === undefined) return coverError(400, "invalid_input");
+  if (body["type"] === "set_logo") return { kind: "ok", input: { type: "set_logo" } };
+  if (body["type"] === "card" && typeof body["cardId"] === "string") {
+    return { kind: "ok", input: { type: "card", cardId: body["cardId"] } };
+  }
+  return coverError(400, "invalid_input");
+};
+
+const parseCoverMultipart = async (request: Request, contentType: string): Promise<CoverInput> => {
+  const body = await readCappedBody(request, COVER_MAX_BYTES + MULTIPART_OVERHEAD_BYTES);
+  if (body.kind !== "ok") return coverError(413, "image_too_large");
+  let form: FormData;
+  try {
+    form = await new Response(body.bytes, { headers: { "content-type": contentType } }).formData();
+  } catch {
+    return coverError(400, "invalid_input");
+  }
+  const image = form.get("image");
+  if (!(image instanceof File)) return coverError(400, "invalid_input");
+  if (image.size > COVER_MAX_BYTES) return coverError(413, "image_too_large");
+  return {
+    kind: "ok",
+    input: { type: "upload", image: new Uint8Array(await image.arrayBuffer()) },
+  };
+};
+
+const parseCoverRaw = async (request: Request): Promise<CoverInput> => {
+  const body = await readCappedBody(request, COVER_MAX_BYTES);
+  if (body.kind !== "ok") return coverError(413, "image_too_large");
+  return { kind: "ok", input: { type: "upload", image: body.bytes } };
+};
+
+/**
+ * Corps de `PUT /api/binders/$id/cover` : JSON (`set_logo` / `card`), `multipart/form-data`
+ * (champ `image`) ou image binaire brute (`image/jpeg|png|webp`). Le format réel est de toute
+ * façon contrôlé par les magic bytes dans le service (jamais le `Content-Type` déclaré).
+ */
+const parseCoverRequest = (request: Request): Promise<CoverInput> => {
+  const contentType = request.headers.get("content-type") ?? "";
+  const mediaType = (contentType.split(";")[0] ?? "").trim().toLowerCase();
+  if (mediaType === "application/json") return parseCoverJson(request);
+  if (mediaType === "multipart/form-data") return parseCoverMultipart(request, contentType);
+  if (RAW_IMAGE_TYPES.has(mediaType)) return parseCoverRaw(request);
+  if (mediaType === "image/svg+xml") return Promise.resolve(coverError(415, "svg_not_allowed"));
+  return Promise.resolve(coverError(415, "unsupported_media_type"));
+};
+
+export const handleSetBinderCover = async (
+  request: Request,
+  binderId: string,
+  deps: BindersServerDeps,
+): Promise<Response> => {
+  const ctx = await prepareBinderMutation(request, binderId, deps, "set_cover");
+  if (!ctx.ok) return ctx.response;
+  const parsed = await parseCoverRequest(request);
+  if (parsed.kind === "error") {
+    return json({ error: parsed.error }, parsed.status, "no-store", ctx.cookies);
+  }
+
+  const exit = await Effect.runPromiseExit(
+    ctx.binders.setBinderCover(ctx.userId, binderId, parsed.input, ctx.accessToken),
+  );
+  if (!Exit.isSuccess(exit)) return failureResponse(exit, deps, "set_cover", ctx.cookies);
+  const summary: BinderSummary = exit.value;
+  return json(summary, 200, "no-store", ctx.cookies);
 };

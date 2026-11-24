@@ -18,10 +18,14 @@ import { useEffect, useMemo, useState } from "react";
 import { type TranslationKey, t, tPlural } from "../i18n/index.ts";
 import { loginRedirectTo } from "../lib/auth-shared.ts";
 import {
+  applyCollectionFiltersAndSort,
   type BindersPayload,
   type CatalogSetEntry,
   COLLECTION_PATH,
+  type CollectionFilters,
   type CreateBinderResult,
+  countActiveCollectionFilters,
+  DEFAULT_COLLECTION_FILTERS,
   fetchBinders,
   filterTrackableSets,
   followSet,
@@ -30,7 +34,9 @@ import {
   trackedSetIdsOf,
 } from "../lib/binders-client.ts";
 import { BinderCard } from "./BinderCard.tsx";
+import { type BinderSettingsChange, BinderSettingsSheet } from "./BinderSettingsSheet.tsx";
 import { BottomSheet } from "./BottomSheet.tsx";
+import { CollectionFilterSheet } from "./CollectionFilterSheet.tsx";
 
 // ---------------------------------------------------------------------------
 // Modèle de vue (pur : rendu testable via `renderToStaticMarkup`)
@@ -68,6 +74,11 @@ export interface CollectionViewState {
   readonly data: Loadable<BindersPayload>;
   /** Bloc sélectionné (`null` = Tous). */
   readonly seriesId: string | null;
+  /** Filtres & tri appliqués (bottom sheet `02C`). */
+  readonly filters: CollectionFilters;
+  readonly filtersOpen: boolean;
+  /** Classeur dont les réglages sont ouverts (`null` : feuille fermée). */
+  readonly settingsBinderId: string | null;
   readonly follow: FollowSheetState;
   readonly create: CreateSheetState;
   /** Message annoncé aux lecteurs d'écran (région `role="status"`). */
@@ -87,13 +98,14 @@ export interface CollectionViewActions {
   readonly onCreateTitleChange: (title: string) => void;
   readonly onCreatePinnedChange: (pinned: boolean) => void;
   readonly onSubmitCreate: () => void;
-}
-
-export interface CollectionViewHooks {
-  /** Bottom sheet Filtres & Tri (`02C`, T3.4) ; absent : bouton désactivé. */
-  readonly onOpenFilters?: (() => void) | undefined;
-  /** Réglages d'un classeur (T3.4) ; absent : aucun bouton sur les cards. */
-  readonly onOpenSettings?: ((summary: BinderSummary) => void) | undefined;
+  readonly onOpenFilters: () => void;
+  readonly onCloseFilters: () => void;
+  readonly onApplyFilters: (filters: CollectionFilters) => void;
+  readonly onOpenSettings: (summary: BinderSummary) => void;
+  readonly onCloseSettings: () => void;
+  readonly onSettingsChanged: (change: BinderSettingsChange) => void;
+  readonly onSettingsDeleted: (title: string) => void;
+  readonly onUnauthorized: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,8 +124,14 @@ export interface SeriesGroup {
  * `overview.series` (blocs récents d'abord). Seuls les blocs comportant au
  * moins un classeur suivi sont retournés.
  */
-export const buildSeriesGroups = (data: BindersPayload): ReadonlyArray<SeriesGroup> => {
-  const setBinders = data.binders.filter(({ binder }) => binder.kind === "set");
+export const buildSeriesGroups = (
+  data: BindersPayload,
+  filters: CollectionFilters = DEFAULT_COLLECTION_FILTERS,
+): ReadonlyArray<SeriesGroup> => {
+  const setBinders = applyCollectionFiltersAndSort(
+    data.binders.filter(({ binder }) => binder.kind === "set"),
+    filters,
+  );
   return data.overview.series.flatMap((series) => {
     const binders = setBinders.filter(({ set }) => set?.seriesId === series.seriesId);
     if (binders.length === 0) return [];
@@ -128,8 +146,23 @@ export const buildSeriesGroups = (data: BindersPayload): ReadonlyArray<SeriesGro
   });
 };
 
-export const customBinders = (data: BindersPayload): ReadonlyArray<BinderSummary> =>
-  data.binders.filter(({ binder }) => binder.kind === "custom");
+export const customBinders = (
+  data: BindersPayload,
+  filters: CollectionFilters = DEFAULT_COLLECTION_FILTERS,
+): ReadonlyArray<BinderSummary> =>
+  applyCollectionFiltersAndSort(
+    data.binders.filter(({ binder }) => binder.kind === "custom"),
+    filters,
+  );
+
+/** Blocs proposés par le filtre « Bloc / Série » : ceux qui comptent au moins un classeur suivi. */
+export const filterSeriesOptions = (
+  data: BindersPayload,
+): ReadonlyArray<{ readonly id: string; readonly name: string }> =>
+  buildSeriesGroups(data).map((group) => ({
+    id: group.series.seriesId,
+    name: group.series.nameFr,
+  }));
 
 const CREATE_ERROR_KEYS: Readonly<Record<Exclude<CreateFolderError, null>, TranslationKey>> = {
   empty: "collection.create.error.empty",
@@ -243,11 +276,14 @@ const ProgressBar = ({ percent, label }: { readonly percent: number; readonly la
 
 const CollectionHeader = ({
   data,
-  hooks,
+  filters,
+  onOpenFilters,
 }: {
   readonly data: Loadable<BindersPayload>;
-  readonly hooks: CollectionViewHooks;
+  readonly filters: CollectionFilters;
+  readonly onOpenFilters: () => void;
 }) => {
+  const activeFilters = countActiveCollectionFilters(filters);
   const global = data.status === "ready" ? data.data.overview.global : null;
   return (
     <header className="flex flex-col gap-3">
@@ -280,14 +316,30 @@ const CollectionHeader = ({
           </a>
           <button
             type="button"
-            onClick={hooks.onOpenFilters}
-            disabled={hooks.onOpenFilters === undefined}
+            onClick={onOpenFilters}
             aria-label={t("collection.filters.aria")}
+            data-testid="filters-button"
             style={{ minWidth: "var(--touch-target-min)", minHeight: "var(--touch-target-min)" }}
-            className={`flex items-center justify-center rounded-pill border border-line bg-surface-1 text-secondary transition-colors hover:text-primary disabled:opacity-50 ${focusRing}`}
+            className={`relative flex items-center justify-center rounded-pill border bg-surface-1 transition-colors hover:text-primary ${focusRing} ${
+              activeFilters > 0 ? "border-gold text-gold" : "border-line text-secondary"
+            }`}
           >
             <SlidersHorizontal size={18} aria-hidden="true" />
             <span className="sr-only">{t("collection.filters")}</span>
+            {activeFilters > 0 ? (
+              <>
+                <span
+                  aria-hidden="true"
+                  data-testid="filters-badge"
+                  className="absolute -top-1 -right-1 flex min-w-5 items-center justify-center rounded-pill border border-gold bg-surface-1 px-1 font-mono text-xs font-bold tabular-nums text-gold"
+                >
+                  {activeFilters}
+                </span>
+                <span className="sr-only">
+                  {tPlural("collection.filters.active", activeFilters)}
+                </span>
+              </>
+            ) : null}
           </button>
         </div>
       </div>
@@ -406,12 +458,12 @@ const SeriesPills = ({
 const SeriesSection = ({
   group,
   coverCardImageById,
-  hooks,
+  onOpenSettings,
   priorityFirst,
 }: {
   readonly group: SeriesGroup;
   readonly coverCardImageById: BindersPayload["coverCardImageById"];
-  readonly hooks: CollectionViewHooks;
+  readonly onOpenSettings: (summary: BinderSummary) => void;
   readonly priorityFirst: boolean;
 }) => {
   const { series } = group;
@@ -453,7 +505,7 @@ const SeriesSection = ({
                 : (coverCardImageById[summary.binder.coverCardId] ?? null)
             }
             priority={priorityFirst && index < 2}
-            onOpenSettings={hooks.onOpenSettings}
+            onOpenSettings={onOpenSettings}
           />
         ))}
       </div>
@@ -474,27 +526,37 @@ const FollowButton = ({ onClick }: { readonly onClick: () => void }) => (
   </button>
 );
 
+const FilteredEmpty = ({ onReset }: { readonly onReset: () => void }) => (
+  <StateNotice
+    testId="filtered-empty"
+    icon={<SlidersHorizontal size={32} strokeWidth={1.5} />}
+    title={t("collection.filtered.empty.title")}
+    description={t("collection.filtered.empty.description")}
+    action={{ label: t("collection.filtered.empty.reset"), onClick: onReset }}
+  />
+);
+
 const SetsPanel = ({
   state,
   data,
   actions,
-  hooks,
 }: {
   readonly state: CollectionViewState;
   readonly data: BindersPayload;
   readonly actions: CollectionViewActions;
-  readonly hooks: CollectionViewHooks;
 }) => {
-  const groups = buildSeriesGroups(data);
+  // Les pills de bloc restent celles de la collection entière : un filtre ne les fait pas disparaître.
+  const allGroups = buildSeriesGroups(data);
+  const groups = buildSeriesGroups(data, state.filters);
   // Un bloc sélectionné qui n'existe plus (suppression…) retombe sur « Tous ».
-  const activeSeriesId = groups.some((group) => group.series.seriesId === state.seriesId)
+  const activeSeriesId = allGroups.some((group) => group.series.seriesId === state.seriesId)
     ? state.seriesId
     : null;
   const visible = groups.filter(
     (group) => activeSeriesId === null || group.series.seriesId === activeSeriesId,
   );
 
-  if (groups.length === 0) {
+  if (allGroups.length === 0) {
     return (
       <StateNotice
         testId="sets-empty"
@@ -509,16 +571,19 @@ const SetsPanel = ({
   return (
     <div className="flex flex-col gap-5">
       <SeriesPills
-        groups={groups}
+        groups={allGroups}
         seriesId={activeSeriesId}
         onSelectSeries={actions.onSelectSeries}
       />
+      {visible.length === 0 ? (
+        <FilteredEmpty onReset={() => actions.onApplyFilters(DEFAULT_COLLECTION_FILTERS)} />
+      ) : null}
       {visible.map((group, index) => (
         <SeriesSection
           key={group.series.seriesId}
           group={group}
           coverCardImageById={data.coverCardImageById}
-          hooks={hooks}
+          onOpenSettings={actions.onOpenSettings}
           priorityFirst={index === 0}
         />
       ))}
@@ -548,17 +613,21 @@ const NewFolderCard = ({ onClick }: { readonly onClick: () => void }) => (
 
 const CustomPanel = ({
   data,
+  filters,
   actions,
-  hooks,
 }: {
   readonly data: BindersPayload;
+  readonly filters: CollectionFilters;
   readonly actions: CollectionViewActions;
-  readonly hooks: CollectionViewHooks;
 }) => {
-  const folders = customBinders(data);
+  const folders = customBinders(data, filters);
+  const hasFolders = customBinders(data).length > 0;
   return (
     <div className="flex flex-col gap-4">
-      {folders.length === 0 ? (
+      {hasFolders && folders.length === 0 ? (
+        <FilteredEmpty onReset={() => actions.onApplyFilters(DEFAULT_COLLECTION_FILTERS)} />
+      ) : null}
+      {!hasFolders ? (
         <div data-testid="custom-empty" className="flex flex-col gap-1">
           <h2 className="text-base font-bold text-primary">{t("collection.custom.empty.title")}</h2>
           <p className="text-sm text-secondary">{t("collection.custom.empty.description")}</p>
@@ -575,7 +644,7 @@ const CustomPanel = ({
                 : (data.coverCardImageById[summary.binder.coverCardId] ?? null)
             }
             priority={index < 2}
-            onOpenSettings={hooks.onOpenSettings}
+            onOpenSettings={actions.onOpenSettings}
           />
         ))}
         <NewFolderCard onClick={actions.onOpenCreate} />
@@ -800,14 +869,24 @@ const CreateSheet = ({
 export interface CollectionViewProps {
   readonly state: CollectionViewState;
   readonly actions: CollectionViewActions;
-  readonly hooks?: CollectionViewHooks | undefined;
 }
 
-export const CollectionView = ({ state, actions, hooks = {} }: CollectionViewProps) => {
+export const CollectionView = ({ state, actions }: CollectionViewProps) => {
   const ready = state.data.status === "ready" ? state.data.data : null;
+  const settingsSummary =
+    ready === null || state.settingsBinderId === null
+      ? null
+      : (ready.binders.find(({ binder }) => binder.id === state.settingsBinderId) ?? null);
+  // Compteur live de la feuille Filtres : classeurs de l'onglet affiché.
+  const tabKind = state.tab === "sets" ? "set" : "custom";
+  const tabBinders = ready?.binders.filter(({ binder }) => binder.kind === tabKind) ?? [];
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-4 px-4 pt-10 pb-40">
-      <CollectionHeader data={state.data} hooks={hooks} />
+      <CollectionHeader
+        data={state.data}
+        filters={state.filters}
+        onOpenFilters={actions.onOpenFilters}
+      />
       <SegmentedTabs tab={state.tab} onTabChange={actions.onTabChange} />
       <div
         role="tabpanel"
@@ -828,10 +907,10 @@ export const CollectionView = ({ state, actions, hooks = {} }: CollectionViewPro
           />
         ) : null}
         {ready !== null && state.tab === "sets" ? (
-          <SetsPanel state={state} data={ready} actions={actions} hooks={hooks} />
+          <SetsPanel state={state} data={ready} actions={actions} />
         ) : null}
         {ready !== null && state.tab === "custom" ? (
-          <CustomPanel data={ready} actions={actions} hooks={hooks} />
+          <CustomPanel data={ready} filters={state.filters} actions={actions} />
         ) : null}
       </div>
       <p role="status" aria-live="polite" data-testid="collection-announcer" className="sr-only">
@@ -839,6 +918,21 @@ export const CollectionView = ({ state, actions, hooks = {} }: CollectionViewPro
       </p>
       <FollowSheet state={state.follow} data={ready} actions={actions} />
       <CreateSheet state={state.create} actions={actions} />
+      <CollectionFilterSheet
+        open={state.filtersOpen && ready !== null}
+        filters={state.filters}
+        series={ready === null ? [] : filterSeriesOptions(ready)}
+        binders={tabBinders}
+        onApply={actions.onApplyFilters}
+        onClose={actions.onCloseFilters}
+      />
+      <BinderSettingsSheet
+        summary={settingsSummary}
+        onClose={actions.onCloseSettings}
+        onChanged={actions.onSettingsChanged}
+        onDeleted={actions.onSettingsDeleted}
+        onUnauthorized={actions.onUnauthorized}
+      />
     </main>
   );
 };
@@ -846,8 +940,6 @@ export const CollectionView = ({ state, actions, hooks = {} }: CollectionViewPro
 // ---------------------------------------------------------------------------
 // Conteneur : chargement, mutations, rafraîchissement
 // ---------------------------------------------------------------------------
-
-export interface CollectionScreenProps extends CollectionViewHooks {}
 
 const isAbort = (error: unknown): boolean =>
   error instanceof DOMException && error.name === "AbortError";
@@ -871,10 +963,13 @@ const CLOSED_CREATE: CreateSheetState = {
   error: null,
 };
 
-export const CollectionScreen = ({ onOpenFilters, onOpenSettings }: CollectionScreenProps) => {
+export const CollectionScreen = () => {
   const [tab, setTab] = useState<CollectionTab>("sets");
   const [data, setData] = useState<Loadable<BindersPayload>>({ status: "loading" });
   const [seriesId, setSeriesId] = useState<string | null>(null);
+  const [filters, setFilters] = useState<CollectionFilters>(DEFAULT_COLLECTION_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [settingsBinderId, setSettingsBinderId] = useState<string | null>(null);
   const [follow, setFollow] = useState<FollowSheetState>(CLOSED_FOLLOW);
   const [create, setCreate] = useState<CreateSheetState>(CLOSED_CREATE);
   const [announcement, setAnnouncement] = useState("");
@@ -882,11 +977,14 @@ export const CollectionScreen = ({ onOpenFilters, onOpenSettings }: CollectionSc
   // Les rechargements après mutation gardent l'écran affiché (pas de retour au squelette).
   const [silentReload, setSilentReload] = useState(false);
 
+  // « Inclure les cartes promos / secrètes » est un paramètre de calcul serveur : le changer recharge.
+  const includeExtras = filters.includeSecretsAndPromos;
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: `reloadToken` relance volontairement le chargement
   useEffect(() => {
     const controller = new AbortController();
     if (!silentReload) setData({ status: "loading" });
-    fetchBinders(controller.signal)
+    fetchBinders(controller.signal, undefined, { includeSecretsAndPromos: includeExtras })
       .then((result) => {
         if (result.kind === "ok") setData({ status: "ready", data: result.data });
         else if (result.kind === "unauthorized") redirectToLogin();
@@ -899,7 +997,7 @@ export const CollectionScreen = ({ onOpenFilters, onOpenSettings }: CollectionSc
         if (!isAbort(error)) setData({ status: "error" });
       });
     return () => controller.abort();
-  }, [reloadToken]);
+  }, [reloadToken, includeExtras]);
 
   const reload = (silent: boolean): void => {
     setSilentReload(silent);
@@ -930,6 +1028,41 @@ export const CollectionScreen = ({ onOpenFilters, onOpenSettings }: CollectionSc
     },
     onOpenCreate: () => setCreate({ ...CLOSED_CREATE, open: true }),
     onCloseCreate: () => setCreate(CLOSED_CREATE),
+    onOpenFilters: () => setFiltersOpen(true),
+    onCloseFilters: () => setFiltersOpen(false),
+    onApplyFilters: (next) => {
+      setFilters(next);
+      setFiltersOpen(false);
+      // Un changement d'« extras » relance le chargement (silencieux) via `includeExtras`.
+      if (next.includeSecretsAndPromos !== includeExtras) setSilentReload(true);
+      if (data.status === "ready") {
+        const tabKind = tab === "sets" ? "set" : "custom";
+        const count = applyCollectionFiltersAndSort(
+          data.data.binders.filter(({ binder }) => binder.kind === tabKind),
+          next,
+        ).length;
+        setAnnouncement(tPlural("collection.filtered.announce", count));
+      }
+    },
+    onOpenSettings: (summary) => setSettingsBinderId(summary.binder.id),
+    onCloseSettings: () => setSettingsBinderId(null),
+    onSettingsChanged: (change) => {
+      setAnnouncement(
+        t(
+          change.kind === "cover"
+            ? "collection.settings.announce.cover"
+            : "collection.settings.announce.saved",
+          { title: change.title },
+        ),
+      );
+      reload(true);
+    },
+    onSettingsDeleted: (title) => {
+      setSettingsBinderId(null);
+      setAnnouncement(t("collection.settings.announce.deleted", { title }));
+      reload(true);
+    },
+    onUnauthorized: redirectToLogin,
     onCreateTitleChange: (title) => setCreate((current) => ({ ...current, title, error: null })),
     onCreatePinnedChange: (pinned) => setCreate((current) => ({ ...current, pinned })),
     onSubmitCreate: () => {
@@ -951,9 +1084,18 @@ export const CollectionScreen = ({ onOpenFilters, onOpenSettings }: CollectionSc
 
   return (
     <CollectionView
-      state={{ tab, data, seriesId, follow, create, announcement }}
+      state={{
+        tab,
+        data,
+        seriesId,
+        filters,
+        filtersOpen,
+        settingsBinderId,
+        follow,
+        create,
+        announcement,
+      }}
       actions={actions}
-      hooks={{ onOpenFilters, onOpenSettings }}
     />
   );
 };
