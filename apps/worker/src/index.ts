@@ -1,4 +1,7 @@
+import type { PriceBatchReport } from "@pokevault/domain";
 import {
+  CardmarketPriceLayer,
+  CardmarketPriceService,
   type CatalogSyncError,
   CatalogSyncLayer,
   type CatalogSyncReport,
@@ -30,10 +33,28 @@ const main = Effect.gen(function* () {
           ),
         }
       : undefined;
+  const priceRefresh =
+    config.cardmarketPriceSyncEnabled === true
+      ? {
+          intervalMs: config.cardmarketPriceSyncIntervalMs,
+          batchLimit: config.cardmarketPriceBatchLimit,
+          run: Effect.flatMap(CardmarketPriceService, (service) =>
+            service.runScheduledRefresh({ batchLimit: config.cardmarketPriceBatchLimit }),
+          ).pipe(
+            Effect.provide(
+              CardmarketPriceLayer({
+                databaseUrl: config.databaseUrl,
+                tcgdexBaseUrl: config.tcgdexBaseUrl,
+              }),
+            ),
+          ) satisfies Effect.Effect<PriceBatchReport, unknown>,
+        }
+      : undefined;
   yield* runWorker({
     heartbeatIntervalMs: config.heartbeatIntervalMs,
     signals: process,
     catalogSync,
+    priceRefresh,
   });
 }).pipe(
   Effect.tapCause((cause) =>
