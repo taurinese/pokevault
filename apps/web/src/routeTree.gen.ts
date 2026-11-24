@@ -33,6 +33,10 @@ import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/searc
 import { Route as ApiCatalogSuggestRouteImport } from './routes/api/catalog/suggest'
 import { Route as ApiBindersIdIndexRouteImport } from './routes/api/binders/$id/index'
 import { Route as ApiBindersIdCoverRouteImport } from './routes/api/binders/$id/cover'
+import { Route as ApiCardsCardIdIndexRouteImport } from './routes/api/cards/$cardId/index'
+import { Route as ApiCardsCardIdBindersRouteImport } from './routes/api/cards/$cardId/binders'
+import { Route as ApiCardsCardIdCopiesRouteImport } from './routes/api/cards/$cardId/copies'
+import { Route as ApiCardsCopiesCopyIdRouteImport } from './routes/api/cards/copies/$copyId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -154,6 +158,26 @@ const ApiBindersIdCoverRoute = ApiBindersIdCoverRouteImport.update({
   path: '/api/binders/$id/cover',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCardsCardIdIndexRoute = ApiCardsCardIdIndexRouteImport.update({
+  id: '/api/cards/$cardId/',
+  path: '/api/cards/$cardId/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCardsCardIdBindersRoute = ApiCardsCardIdBindersRouteImport.update({
+  id: '/api/cards/$cardId/binders',
+  path: '/api/cards/$cardId/binders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCardsCardIdCopiesRoute = ApiCardsCardIdCopiesRouteImport.update({
+  id: '/api/cards/$cardId/copies',
+  path: '/api/cards/$cardId/copies',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCardsCopiesCopyIdRoute = ApiCardsCopiesCopyIdRouteImport.update({
+  id: '/api/cards/copies/$copyId',
+  path: '/api/cards/copies/$copyId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -179,7 +203,11 @@ export interface FileRoutesByFullPath {
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
   '/api/binders/': typeof ApiBindersIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
+  '/api/cards/$cardId/binders': typeof ApiCardsCardIdBindersRoute
+  '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
+  '/api/cards/copies/$copyId': typeof ApiCardsCopiesCopyIdRoute
   '/api/binders/$id/': typeof ApiBindersIdIndexRoute
+  '/api/cards/$cardId/': typeof ApiCardsCardIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -205,7 +233,11 @@ export interface FileRoutesByTo {
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
   '/api/binders': typeof ApiBindersIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
+  '/api/cards/$cardId/binders': typeof ApiCardsCardIdBindersRoute
+  '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
+  '/api/cards/copies/$copyId': typeof ApiCardsCopiesCopyIdRoute
   '/api/binders/$id': typeof ApiBindersIdIndexRoute
+  '/api/cards/$cardId': typeof ApiCardsCardIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -232,7 +264,11 @@ export interface FileRoutesById {
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
   '/api/binders/': typeof ApiBindersIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
+  '/api/cards/$cardId/binders': typeof ApiCardsCardIdBindersRoute
+  '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
+  '/api/cards/copies/$copyId': typeof ApiCardsCopiesCopyIdRoute
   '/api/binders/$id/': typeof ApiBindersIdIndexRoute
+  '/api/cards/$cardId/': typeof ApiCardsCardIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -260,7 +296,11 @@ export interface FileRouteTypes {
     | '/api/catalog/suggest'
     | '/api/binders/'
     | '/api/binders/$id/cover'
+    | '/api/cards/$cardId/binders'
+    | '/api/cards/$cardId/copies'
+    | '/api/cards/copies/$copyId'
     | '/api/binders/$id/'
+    | '/api/cards/$cardId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -286,7 +326,11 @@ export interface FileRouteTypes {
     | '/api/catalog/suggest'
     | '/api/binders'
     | '/api/binders/$id/cover'
+    | '/api/cards/$cardId/binders'
+    | '/api/cards/$cardId/copies'
+    | '/api/cards/copies/$copyId'
     | '/api/binders/$id'
+    | '/api/cards/$cardId'
   id:
     | '__root__'
     | '/'
@@ -312,7 +356,11 @@ export interface FileRouteTypes {
     | '/api/catalog/suggest'
     | '/api/binders/'
     | '/api/binders/$id/cover'
+    | '/api/cards/$cardId/binders'
+    | '/api/cards/$cardId/copies'
+    | '/api/cards/copies/$copyId'
     | '/api/binders/$id/'
+    | '/api/cards/$cardId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -339,7 +387,11 @@ export interface RootRouteChildren {
   ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
   ApiBindersIndexRoute: typeof ApiBindersIndexRoute
   ApiBindersIdCoverRoute: typeof ApiBindersIdCoverRoute
+  ApiCardsCardIdBindersRoute: typeof ApiCardsCardIdBindersRoute
+  ApiCardsCardIdCopiesRoute: typeof ApiCardsCardIdCopiesRoute
+  ApiCardsCopiesCopyIdRoute: typeof ApiCardsCopiesCopyIdRoute
   ApiBindersIdIndexRoute: typeof ApiBindersIdIndexRoute
+  ApiCardsCardIdIndexRoute: typeof ApiCardsCardIdIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -512,6 +564,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBindersIdCoverRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/cards/$cardId/': {
+      id: '/api/cards/$cardId/'
+      path: '/api/cards/$cardId'
+      fullPath: '/api/cards/$cardId/'
+      preLoaderRoute: typeof ApiCardsCardIdIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cards/$cardId/binders': {
+      id: '/api/cards/$cardId/binders'
+      path: '/api/cards/$cardId/binders'
+      fullPath: '/api/cards/$cardId/binders'
+      preLoaderRoute: typeof ApiCardsCardIdBindersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cards/$cardId/copies': {
+      id: '/api/cards/$cardId/copies'
+      path: '/api/cards/$cardId/copies'
+      fullPath: '/api/cards/$cardId/copies'
+      preLoaderRoute: typeof ApiCardsCardIdCopiesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cards/copies/$copyId': {
+      id: '/api/cards/copies/$copyId'
+      path: '/api/cards/copies/$copyId'
+      fullPath: '/api/cards/copies/$copyId'
+      preLoaderRoute: typeof ApiCardsCopiesCopyIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -539,7 +619,11 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
   ApiBindersIndexRoute: ApiBindersIndexRoute,
   ApiBindersIdCoverRoute: ApiBindersIdCoverRoute,
+  ApiCardsCardIdBindersRoute: ApiCardsCardIdBindersRoute,
+  ApiCardsCardIdCopiesRoute: ApiCardsCardIdCopiesRoute,
+  ApiCardsCopiesCopyIdRoute: ApiCardsCopiesCopyIdRoute,
   ApiBindersIdIndexRoute: ApiBindersIdIndexRoute,
+  ApiCardsCardIdIndexRoute: ApiCardsCardIdIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

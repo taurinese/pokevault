@@ -760,6 +760,13 @@ export interface BinderGridScreenProps {
   readonly binderId: string;
   /** Prêt pour le branchement direct du Bottom Sheet `04 · Fiche Carte` (T4.2). */
   readonly onSelectCard?: ((card: BinderGridCard) => void) | undefined;
+  /**
+   * Jeton de rechargement silencieux (T4.2) : quand il change, la grille est
+   * rechargée sans repasser par l'état `loading` ni perdre les filtres actifs
+   * (badges `×N` et barre de complétion mis à jour en direct après une
+   * mutation dans la Fiche Carte).
+   */
+  readonly reloadToken?: number | undefined;
   /** Hook prêt pour T3.4 (réglages du classeur). */
   readonly onOpenSettings?: (() => void) | undefined;
   /** Hook prêt pour M4 (partage lecture seule). */
@@ -776,6 +783,7 @@ const isAbort = (error: unknown): boolean =>
 export const BinderGridScreen = ({
   binderId,
   onSelectCard,
+  reloadToken = 0,
   onOpenSettings,
   onOpenShare,
 }: BinderGridScreenProps) => {
@@ -784,32 +792,46 @@ export const BinderGridScreen = ({
   const [advanced, setAdvanced] = useState<BinderGridAdvancedFilters>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
+  // Identifiant du classeur actuellement chargé : les rechargements suivants
+  // sur le MÊME classeur (`reloadToken`, mutations Fiche Carte T4.2) sont
+  // silencieux ; un changement de `binderId` repasse proprement en `loading`.
+  const loadedBinderIdRef = useRef<string | null>(null);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `retryToken` relance volontairement le chargement
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `retryToken`/`reloadToken` relancent volontairement le chargement
   useEffect(() => {
     const controller = new AbortController();
-    setLoad({ status: "loading" });
+    const silent = loadedBinderIdRef.current === binderId;
+    if (!silent) {
+      loadedBinderIdRef.current = null;
+      setLoad({ status: "loading" });
+    }
     fetchBinderGrid(binderId, controller.signal)
       .then((result) => {
         if (result.kind === "ok") {
+          loadedBinderIdRef.current = result.payload.binder === null ? null : binderId;
           setLoad(
             result.payload.binder === null
               ? { status: "not-found" }
               : { status: "ready", payload: result.payload },
           );
         } else if (result.kind === "not-found") {
+          loadedBinderIdRef.current = null;
           setLoad({ status: "not-found" });
         } else if (result.kind === "unauthorized") {
           window.location.assign(loginRedirectTo(`/binder/${encodeURIComponent(binderId)}`));
         } else {
+          loadedBinderIdRef.current = null;
           setLoad({ status: "error" });
         }
       })
       .catch((error: unknown) => {
-        if (!isAbort(error)) setLoad({ status: "error" });
+        if (!isAbort(error)) {
+          loadedBinderIdRef.current = null;
+          setLoad({ status: "error" });
+        }
       });
     return () => controller.abort();
-  }, [binderId, retryToken]);
+  }, [binderId, retryToken, reloadToken]);
 
   const actions: BinderGridViewActions = {
     onQuickFilterChange: setQuickFilter,
@@ -820,7 +842,10 @@ export const BinderGridScreen = ({
     },
     onToggleAdvanced: () => setAdvancedOpen((open) => !open),
     onSelectCard: (card) => onSelectCard?.(card),
-    onRetry: () => setRetryToken((token) => token + 1),
+    onRetry: () => {
+      loadedBinderIdRef.current = null;
+      setRetryToken((token) => token + 1);
+    },
     ...(onOpenSettings === undefined ? {} : { onOpenSettings }),
     ...(onOpenShare === undefined ? {} : { onOpenShare }),
   };
