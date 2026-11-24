@@ -21,9 +21,11 @@ import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthLinkRouteImport } from './routes/api/auth/link'
 import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
+import { Route as ApiBindersIndexRouteImport } from './routes/api/binders/index'
 import { Route as ApiCatalogDiscoverRouteImport } from './routes/api/catalog/discover'
 import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/search'
 import { Route as ApiCatalogSuggestRouteImport } from './routes/api/catalog/suggest'
+import { Route as ApiBindersIdCoverRouteImport } from './routes/api/binders/$id/cover'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -85,6 +87,11 @@ const ApiAuthLogoutRoute = ApiAuthLogoutRouteImport.update({
   path: '/api/auth/logout',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiBindersIndexRoute = ApiBindersIndexRouteImport.update({
+  id: '/api/binders/',
+  path: '/api/binders/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiCatalogDiscoverRoute = ApiCatalogDiscoverRouteImport.update({
   id: '/api/catalog/discover',
   path: '/api/catalog/discover',
@@ -98,6 +105,11 @@ const ApiCatalogSearchRoute = ApiCatalogSearchRouteImport.update({
 const ApiCatalogSuggestRoute = ApiCatalogSuggestRouteImport.update({
   id: '/api/catalog/suggest',
   path: '/api/catalog/suggest',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiBindersIdCoverRoute = ApiBindersIdCoverRouteImport.update({
+  id: '/api/binders/$id/cover',
+  path: '/api/binders/$id/cover',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -117,6 +129,8 @@ export interface FileRoutesByFullPath {
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/binders/': typeof ApiBindersIndexRoute
+  '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -134,6 +148,8 @@ export interface FileRoutesByTo {
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/binders': typeof ApiBindersIndexRoute
+  '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -152,6 +168,8 @@ export interface FileRoutesById {
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/binders/': typeof ApiBindersIndexRoute
+  '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -171,6 +189,8 @@ export interface FileRouteTypes {
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/binders/'
+    | '/api/binders/$id/cover'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -188,6 +208,8 @@ export interface FileRouteTypes {
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/binders'
+    | '/api/binders/$id/cover'
   id:
     | '__root__'
     | '/'
@@ -205,6 +227,8 @@ export interface FileRouteTypes {
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/binders/'
+    | '/api/binders/$id/cover'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -223,6 +247,8 @@ export interface RootRouteChildren {
   ApiCatalogDiscoverRoute: typeof ApiCatalogDiscoverRoute
   ApiCatalogSearchRoute: typeof ApiCatalogSearchRoute
   ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
+  ApiBindersIndexRoute: typeof ApiBindersIndexRoute
+  ApiBindersIdCoverRoute: typeof ApiBindersIdCoverRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -311,6 +337,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthLogoutRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/binders/': {
+      id: '/api/binders/'
+      path: '/api/binders'
+      fullPath: '/api/binders/'
+      preLoaderRoute: typeof ApiBindersIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/catalog/discover': {
       id: '/api/catalog/discover'
       path: '/api/catalog/discover'
@@ -332,6 +365,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCatalogSuggestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/binders/$id/cover': {
+      id: '/api/binders/$id/cover'
+      path: '/api/binders/$id/cover'
+      fullPath: '/api/binders/$id/cover'
+      preLoaderRoute: typeof ApiBindersIdCoverRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -351,6 +391,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCatalogDiscoverRoute: ApiCatalogDiscoverRoute,
   ApiCatalogSearchRoute: ApiCatalogSearchRoute,
   ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
+  ApiBindersIndexRoute: ApiBindersIndexRoute,
+  ApiBindersIdCoverRoute: ApiBindersIdCoverRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
