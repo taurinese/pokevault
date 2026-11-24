@@ -9,6 +9,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
+  type AccountLinkError,
   isLoginError,
   isOAuthProvider,
   LOGIN_ERRORS,
@@ -16,10 +17,18 @@ import {
   type LoginError,
   OAUTH_PROVIDERS,
   type OAuthProvider,
+  sanitizeRedirectPath,
 } from "./auth-shared.ts";
 
-export type { LoginError, OAuthProvider };
-export { isLoginError, isOAuthProvider, LOGIN_ERRORS, LOGIN_PATH, OAUTH_PROVIDERS };
+export type { AccountLinkError, LoginError, OAuthProvider };
+export {
+  isLoginError,
+  isOAuthProvider,
+  LOGIN_ERRORS,
+  LOGIN_PATH,
+  OAUTH_PROVIDERS,
+  sanitizeRedirectPath,
+};
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -149,30 +158,6 @@ export const isRequestSameOrigin = (request: Request, expectedOrigin: string): b
   }
 };
 
-/**
- * N'autorise qu'un chemin relatif interne : commence par un unique `/`, sans
- * `//`, `/\`, schéma, caractères de contrôle ni retour ligne. Repli : `/`.
- * Retourne la forme ASCII percent-encodée (évite un crash ByteString sur `Location`).
- */
-export const sanitizeRedirectPath = (input: string | null | undefined): string => {
-  if (typeof input !== "string" || input === "") return "/";
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: détection volontaire des caractères de contrôle (CR/LF…)
-  if (/[\u0000-\u001f\u007f\\]/.test(input) || /%(0[0-9a-f]|1[0-9a-f]|7f|5c)/i.test(input)) {
-    return "/";
-  }
-  if (!input.startsWith("/") || input.startsWith("//")) return "/";
-  try {
-    // Un chemin interne reste sur la même origine une fois résolu.
-    const resolved = new URL(input, "http://pokevault.invalid");
-    if (resolved.origin !== "http://pokevault.invalid") return "/";
-    const normalized = `${resolved.pathname}${resolved.search}${resolved.hash}`;
-    // La normalisation WHATWG retire `.` / `..` et peut produire `//evil.com` depuis `/.//evil.com`.
-    return !normalized.startsWith("/") || normalized.startsWith("//") ? "/" : normalized;
-  } catch {
-    return "/";
-  }
-};
-
 // ---------------------------------------------------------------------------
 // URL d'autorisation
 // ---------------------------------------------------------------------------
@@ -240,10 +225,15 @@ export const parseCookies = (
   return cookies;
 };
 
+/** `login` : connexion initiale (09A) ; `link` : liaison d'un provider depuis 09B. */
+export type PkceFlowMode = "login" | "link";
+
 export interface PkceCookiePayload {
   readonly verifier: string;
   readonly state: string;
   readonly redirectTo: string;
+  /** Absent des anciens cookies : traité comme `login`. */
+  readonly mode?: PkceFlowMode | undefined;
 }
 
 export const encodePkceCookie = (payload: PkceCookiePayload): string =>
@@ -255,11 +245,16 @@ export const decodePkceCookie = (raw: string | undefined): PkceCookiePayload | n
   try {
     const parsed: unknown = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
     if (typeof parsed !== "object" || parsed === null) return null;
-    const { verifier, state, redirectTo } = parsed as Record<string, unknown>;
+    const { verifier, state, redirectTo, mode } = parsed as Record<string, unknown>;
     if (typeof verifier !== "string" || verifier === "") return null;
     if (typeof state !== "string" || state === "") return null;
     if (typeof redirectTo !== "string") return null;
-    return { verifier, state, redirectTo: sanitizeRedirectPath(redirectTo) };
+    return {
+      verifier,
+      state,
+      redirectTo: sanitizeRedirectPath(redirectTo),
+      mode: mode === "link" ? "link" : "login",
+    };
   } catch {
     return null;
   }
@@ -373,16 +368,36 @@ export const mapGoTrueError = (details: GoTrueCallbackError): LoginError => {
 export const loginRedirectPath = (error?: LoginError): string =>
   error === undefined ? LOGIN_PATH : `${LOGIN_PATH}?error=${error}`;
 
+/**
+ * Erreurs d'un retour de liaison (`mode: "link"`) : un refus explicite côté
+ * fournisseur est une annulation ; tout le reste (identité déjà rattachée à un
+ * autre compte, liaison désactivée, état expiré…) est un échec.
+ */
+export const mapLinkError = (details: GoTrueCallbackError): AccountLinkError =>
+  (details.error ?? "").toLowerCase() === "access_denied" ? "link_cancelled" : "link_failed";
+
 // ---------------------------------------------------------------------------
 // Client GoTrue (fetch injectable → tests sans réseau)
 // ---------------------------------------------------------------------------
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** Identité OAuth rattachée à l'utilisateur (`identities[]` de `GET /user`). */
+export interface SessionIdentity {
+  readonly provider: OAuthProvider;
+  /** Identifiant de l'utilisateur chez le fournisseur (Google `sub`, Discord snowflake). */
+  readonly providerUserId: string;
+  readonly email: string | null;
+}
+
 export interface SessionUser {
   readonly id: string;
   readonly email: string | null;
   readonly provider: string | null;
+  /** Nom affiché (métadonnées du fournisseur, sinon partie locale de l'e-mail). */
+  readonly displayName: string | null;
+  /** Identités Google / Discord liées (les autres providers sont ignorés). */
+  readonly identities: ReadonlyArray<SessionIdentity>;
 }
 
 export interface GoTrueSession {
@@ -409,17 +424,57 @@ const parseTokenResponse = (body: unknown): GoTrueSession | null => {
   };
 };
 
+const nonEmptyString = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+
+const parseIdentities = (value: unknown): ReadonlyArray<SessionIdentity> => {
+  if (!Array.isArray(value)) return [];
+  const identities: SessionIdentity[] = [];
+  for (const item of value as unknown[]) {
+    const record = asRecord(item);
+    if (record === null) continue;
+    const provider = record["provider"];
+    if (!isOAuthProvider(provider)) continue;
+    if (identities.some((identity) => identity.provider === provider)) continue;
+    const data = asRecord(record["identity_data"]);
+    // GoTrue expose l'ID chez le fournisseur dans `id` (`identity_id` = UUID de la ligne).
+    const providerUserId =
+      nonEmptyString(record["id"]) ??
+      nonEmptyString(data?.["provider_id"]) ??
+      nonEmptyString(data?.["sub"]);
+    if (providerUserId === null) continue;
+    identities.push({
+      provider,
+      providerUserId,
+      email: nonEmptyString(record["email"]) ?? nonEmptyString(data?.["email"]),
+    });
+  }
+  return identities;
+};
+
+const parseDisplayName = (
+  metadata: Record<string, unknown> | null,
+  email: string | null,
+): string | null =>
+  nonEmptyString(metadata?.["full_name"]) ??
+  nonEmptyString(metadata?.["name"]) ??
+  nonEmptyString(metadata?.["user_name"]) ??
+  nonEmptyString(metadata?.["preferred_username"]) ??
+  nonEmptyString(email?.split("@")[0]);
+
 export const parseSessionUser = (body: unknown): SessionUser | null => {
   const record = asRecord(body);
   if (record === null) return null;
   const id = record["id"];
   if (typeof id !== "string" || id === "") return null;
-  const email = record["email"];
+  const email = nonEmptyString(record["email"]);
   const provider = asRecord(record["app_metadata"])?.["provider"];
   return {
     id,
-    email: typeof email === "string" && email !== "" ? email : null,
+    email,
     provider: typeof provider === "string" ? provider : null,
+    displayName: parseDisplayName(asRecord(record["user_metadata"]), email),
+    identities: parseIdentities(record["identities"]),
   };
 };
 
@@ -496,6 +551,61 @@ export const fetchSessionUser = async (
     return user === null ? { kind: "unauthorized" } : { kind: "ok", user };
   } catch {
     return { kind: "unavailable" };
+  }
+};
+
+export interface LinkIdentityInput {
+  readonly provider: OAuthProvider;
+  readonly appOrigin: string;
+  readonly pkce: PkcePair;
+}
+
+/**
+ * Valide l'URL d'autorisation renvoyée par GoTrue : `http(s)` uniquement, sans
+ * identifiants embarqués. GoTrue renvoie déjà l'URL du fournisseur (hôte public
+ * `accounts.google.com` / `discord.com`) : aucun hôte interne à réécrire.
+ */
+export const parseAuthorizationUrl = (value: unknown): string | null => {
+  if (typeof value !== "string" || value === "") return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    if (url.username !== "" || url.password !== "") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Liaison manuelle GoTrue (`linkIdentity`) : `GET /user/identities/authorize`
+ * avec le jeton de l'utilisateur connecté. Exige
+ * `GOTRUE_SECURITY_MANUAL_LINKING_ENABLED=true` (sinon `404 manual_linking_disabled`).
+ * Retourne l'URL d'autorisation du fournisseur, `null` en cas d'échec.
+ */
+export const startLinkIdentity = async (
+  config: AuthConfig,
+  fetchImpl: FetchLike,
+  accessToken: string,
+  input: LinkIdentityInput,
+): Promise<string | null> => {
+  const params = new URLSearchParams({
+    provider: input.provider,
+    redirect_to: buildCallbackUrl(input.appOrigin, input.pkce.state),
+    code_challenge: input.pkce.codeChallenge,
+    code_challenge_method: "s256",
+    scopes: OAUTH_SCOPES[input.provider],
+    skip_http_redirect: "true",
+  });
+  try {
+    const response = await fetchImpl(
+      `${config.internalAuthBase}/user/identities/authorize?${params.toString()}`,
+      { method: "GET", headers: goTrueHeaders(config, accessToken) },
+    );
+    if (!response.ok) return null;
+    return parseAuthorizationUrl(asRecord(await safeJson(response))?.["url"]);
+  } catch {
+    return null;
   }
 };
 

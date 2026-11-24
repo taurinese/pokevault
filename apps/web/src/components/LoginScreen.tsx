@@ -58,10 +58,10 @@ const CardFan = () => (
 const oauthButtonClass =
   "flex w-full items-center justify-center gap-3 rounded-pill border border-line bg-surface-1 px-5 text-sm font-semibold text-primary shadow-card transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold";
 
-const OAuthButtons = () => (
+const OAuthButtons = ({ redirectTo }: { readonly redirectTo?: string | undefined }) => (
   <div className="flex flex-col gap-3">
     <a
-      href={oauthLoginHref("google")}
+      href={oauthLoginHref("google", redirectTo)}
       className={oauthButtonClass}
       style={{ minHeight: "var(--touch-target-min)" }}
     >
@@ -69,7 +69,7 @@ const OAuthButtons = () => (
       {t("login.continueGoogle")}
     </a>
     <a
-      href={oauthLoginHref("discord")}
+      href={oauthLoginHref("discord", redirectTo)}
       className={oauthButtonClass}
       style={{ minHeight: "var(--touch-target-min)" }}
     >
@@ -108,6 +108,8 @@ const InviteOnlyCard = () => (
 
 export interface LoginScreenProps {
   readonly error?: LoginError | undefined;
+  /** Chemin interne (déjà assaini) où revenir après la connexion. */
+  readonly redirectTo?: string | undefined;
 }
 
 /**
@@ -115,7 +117,7 @@ export interface LoginScreenProps {
  * deux boutons OAuth (Google, Discord) — aucun formulaire e-mail / mot de passe.
  * `?error=invite_only` remplace les boutons par la carte « Accès sur invitation ».
  */
-export const LoginScreen = ({ error }: LoginScreenProps) => (
+export const LoginScreen = ({ error, redirectTo }: LoginScreenProps) => (
   <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-8 px-6 pt-6 pb-10">
     <header className="flex items-center justify-between gap-4">
       <span className="text-sm font-bold tracking-wide text-gold">{t("app.name")}</span>
@@ -146,7 +148,7 @@ export const LoginScreen = ({ error }: LoginScreenProps) => (
             )}
           </p>
         ) : null}
-        <OAuthButtons />
+        <OAuthButtons redirectTo={redirectTo} />
       </>
     )}
   </main>

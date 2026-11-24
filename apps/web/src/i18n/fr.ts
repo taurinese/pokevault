@@ -5,6 +5,7 @@ export const fr = {
   "home.title": "PokéVault — Collection de cartes Pokémon",
   "home.heading": "Bienvenue dans PokéVault",
   "home.description": "Le squelette de l'application est en place. La suite arrive bientôt.",
+  "home.accountLink": "Mon compte et paramètres",
   "home.cardPlaceholder": "Emplacement de carte",
   "home.cardRatio": "Ratio officiel des cartes : {ratio}",
   "notFound.title": "Page introuvable",
@@ -25,6 +26,12 @@ export const fr = {
   "theme.toggle": "Basculer entre le thème sombre et le thème clair (thème actuel : {theme})",
   "theme.dark": "sombre",
   "theme.light": "clair",
+
+  // Sélecteur d'apparence (09B)
+  "theme.selector.label": "Apparence",
+  "theme.selector.system": "Auto",
+  "theme.selector.dark": "Sombre",
+  "theme.selector.light": "Clair",
 
   // BottomSheet
   "bottomSheet.close": "Fermer la feuille",
@@ -81,6 +88,52 @@ export const fr = {
   "login.error.oauth_cancelled":
     "Connexion annulée. Vous pouvez réessayer quand vous le souhaitez.",
   "login.error.auth_failed": "La connexion a échoué. Veuillez réessayer dans un instant.",
+
+  // Écran 09B · Compte & paramètres
+  "account.title": "Compte & paramètres — PokéVault",
+  "account.heading": "Compte & paramètres",
+  "account.back": "Retour à l'accueil",
+  "account.profile.label": "Profil",
+  "account.profile.fallbackName": "Collectionneur",
+  "account.profile.noEmail": "Adresse e-mail non communiquée",
+  "account.profile.linkedProviders": "Comptes liés : {providers}",
+  "account.profile.noLinkedProvider": "Aucun compte lié",
+
+  "account.linked.heading": "Comptes liés",
+  "account.linked.description":
+    "Reliez Google et Discord au même profil : vous vous connectez avec l'un ou l'autre, vos données restent uniques.",
+  "account.provider.google": "Google",
+  "account.provider.discord": "Discord",
+  "account.linked.badge": "Lié",
+  "account.linked.notLinked": "Non lié",
+  "account.linked.linkGoogle": "Lier Google",
+  "account.linked.linkDiscord": "Lier Discord",
+  "account.linked.linkAria": "Lier le compte {provider}",
+  "account.linked.success": "Compte {provider} lié avec succès.",
+  "account.linked.error.link_cancelled":
+    "Liaison annulée. Vous pouvez réessayer quand vous le souhaitez.",
+  "account.linked.error.link_failed":
+    "La liaison a échoué (compte déjà rattaché à un autre profil ou service indisponible). Veuillez réessayer.",
+
+  "account.appearance.heading": "Apparence",
+  "account.appearance.description":
+    "Auto suit le réglage de votre appareil. Le raccourci soleil / lune de l'accueil reste disponible.",
+
+  "account.notifications.heading": "Notifications & préférences",
+  "account.notifications.discord": "Alertes Discord",
+  "account.notifications.discordLinked":
+    "Compte Discord lié : les alertes Discord pourront vous être envoyées.",
+  "account.notifications.discordNotLinked":
+    "Liez votre compte Discord pour activer les alertes Discord.",
+  "account.notifications.soon": "La configuration des notifications arrive bientôt.",
+  "account.preferences.language": "Langue de l'interface",
+  "account.preferences.languageValue": "Français (fr-FR)",
+  "account.preferences.currency": "Devise",
+  "account.preferences.currencyValue": "Euro (EUR)",
+
+  "account.session.heading": "Session",
+  "account.logout": "Se déconnecter",
+  "account.logout.description": "Vous devrez vous reconnecter via Google ou Discord.",
 } as const;
 
 export type TranslationKey = keyof typeof fr;

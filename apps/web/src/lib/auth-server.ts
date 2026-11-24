@@ -1,10 +1,11 @@
 /**
- * Handlers HTTP serveur de l'auth OAuth PKCE (login / callback / logout) et
+ * Handlers HTTP serveur de l'auth OAuth PKCE (login / link / callback / logout) et
  * lecture de session SSR. Aucune dépendance TanStack : fonctions
  * `Request → Response` testables avec un `fetch` mocké.
  */
 
 import {
+  type AccountLinkError,
   type AuthConfig,
   buildAuthorizeUrl,
   decodePkceCookie,
@@ -20,6 +21,7 @@ import {
   type LoginError,
   loginRedirectPath,
   mapGoTrueError,
+  mapLinkError,
   PKCE_COOKIE,
   parseCookies,
   pkceCookie,
@@ -33,7 +35,9 @@ import {
   safeTokenEqual,
   sanitizeRedirectPath,
   sessionCookies,
+  startLinkIdentity,
 } from "./auth.ts";
+import { ACCOUNT_PATH, accountRedirectPath, loginRedirectTo } from "./auth-shared.ts";
 
 export interface AuthDeps {
   readonly config: AuthConfig;
@@ -92,25 +96,84 @@ export const handleCallback = async (
 ): Promise<Response> => {
   const url = new URL(request.url);
   const secure = isSecureRequest(deps, request);
-  const fail = (error: LoginError): Response =>
-    redirect(loginRedirectPath(error), 302, [expirePkceCookie(secure)]);
+  const pkce = decodePkceCookie(parseCookies(request.headers.get("cookie"))[PKCE_COOKIE]);
+  // Mode `link` (liaison depuis 09B) : les erreurs ramènent sur `/account`, pas `/login`.
+  const linkMode = pkce?.mode === "link";
+  const fail = (error: LoginError, linkError: AccountLinkError): Response =>
+    redirect(linkMode ? accountRedirectPath({ error: linkError }) : loginRedirectPath(error), 302, [
+      expirePkceCookie(secure),
+    ]);
 
   const callbackError = readCallbackError(url.searchParams);
-  if (callbackError !== null) return fail(mapGoTrueError(callbackError));
+  if (callbackError !== null) {
+    return fail(mapGoTrueError(callbackError), mapLinkError(callbackError));
+  }
 
   const code = url.searchParams.get("code");
-  const pkce = decodePkceCookie(parseCookies(request.headers.get("cookie"))[PKCE_COOKIE]);
-  if (code === null || code === "" || pkce === null) return fail("auth_failed");
+  if (code === null || code === "" || pkce === null) return fail("auth_failed", "link_failed");
 
   // CSRF : le `state` renvoyé via `redirect_to` doit correspondre à celui du cookie.
-  if (!safeTokenEqual(url.searchParams.get("state"), pkce.state)) return fail("auth_failed");
+  if (!safeTokenEqual(url.searchParams.get("state"), pkce.state)) {
+    return fail("auth_failed", "link_failed");
+  }
 
   const session = await exchangeCodeForSession(deps.config, deps.fetch, code, pkce.verifier);
-  if (session === null) return fail("auth_failed");
+  if (session === null) return fail("auth_failed", "link_failed");
 
   return redirect(sanitizeRedirectPath(pkce.redirectTo), 302, [
     ...sessionCookies(session, secure),
     expirePkceCookie(secure),
+  ]);
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/auth/link?provider=google|discord   (liaison `linkIdentity`, 09B)
+// ---------------------------------------------------------------------------
+
+export const handleLinkIdentity = async (
+  request: Request,
+  deps: AuthDeps = defaultAuthDeps(),
+): Promise<Response> => {
+  const session = await getServerSession(request, deps);
+  // Docs/06 §1 : la liaison n'est possible que depuis une session authentifiée valide.
+  if (session === null) return redirect(loginRedirectTo(ACCOUNT_PATH), 302);
+  const refreshed = session.refreshedCookies ?? [];
+
+  const provider = new URL(request.url).searchParams.get("provider");
+  if (!isOAuthProvider(provider)) {
+    const headers = new Headers({ "Cache-Control": "no-store" });
+    for (const cookie of refreshed) headers.append("Set-Cookie", cookie);
+    return Response.json({ error: "invalid_provider" }, { status: 400, headers });
+  }
+
+  // Déjà lié : rien à faire côté GoTrue.
+  if (session.user.identities.some((identity) => identity.provider === provider)) {
+    return redirect(accountRedirectPath({ linked: provider }), 302, refreshed);
+  }
+
+  const appOrigin = resolveAppOrigin(deps.config, request.url);
+  const secure = isSecureContext(deps.config, appOrigin);
+  const pkce = generatePkcePair();
+  const authorizationUrl = await startLinkIdentity(deps.config, deps.fetch, session.accessToken, {
+    provider,
+    appOrigin,
+    pkce,
+  });
+  if (authorizationUrl === null) {
+    return redirect(accountRedirectPath({ error: "link_failed" }), 302, refreshed);
+  }
+
+  return redirect(authorizationUrl, 302, [
+    ...refreshed,
+    pkceCookie(
+      {
+        verifier: pkce.codeVerifier,
+        state: pkce.state,
+        redirectTo: accountRedirectPath({ linked: provider }),
+        mode: "link",
+      },
+      secure,
+    ),
   ]);
 };
 
@@ -154,6 +217,8 @@ export const handleLogout = async (
 
 export interface ServerSession {
   readonly user: SessionUser;
+  /** Jeton d'accès valide (éventuellement fraîchement rafraîchi) — jamais renvoyé au client. */
+  readonly accessToken: string;
   /**
    * `Set-Cookie` à renvoyer au client quand la session a été rafraîchie.
    * Absent si les jetons existants étaient encore valides.
@@ -174,7 +239,7 @@ export const getServerSession = async (
 
   if (accessToken !== undefined) {
     const result = await fetchSessionUser(deps.config, deps.fetch, accessToken);
-    if (result.kind === "ok") return { user: result.user };
+    if (result.kind === "ok") return { user: result.user, accessToken };
     if (result.kind === "unavailable") return null;
   }
 
@@ -186,6 +251,7 @@ export const getServerSession = async (
   if (result.kind !== "ok") return null;
   return {
     user: result.user,
+    accessToken: refreshed.accessToken,
     refreshedCookies: sessionCookies(refreshed, isSecureRequest(deps, request)),
   };
 };

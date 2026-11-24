@@ -1,5 +1,6 @@
 import { CardAspectRatio } from "@pokevault/domain";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { UserRound } from "lucide-react";
 import { useState } from "react";
 import { BottomSheet } from "../components/BottomSheet.tsx";
 import { CardTile } from "../components/CardTile.tsx";
@@ -23,7 +24,18 @@ const Home = () => {
           <h1 className="text-2xl font-bold text-primary">{t("home.heading")}</h1>
           <p className="text-sm text-secondary">{t("app.tagline")}</p>
         </div>
-        <ThemeToggle />
+        <div className="flex shrink-0 items-center gap-2">
+          <ThemeToggle />
+          <Link
+            to="/account"
+            aria-label={t("home.accountLink")}
+            data-testid="home-account-link"
+            className="flex items-center justify-center rounded-pill border border-line bg-surface-1 text-secondary shadow-card transition-colors hover:bg-surface-2 hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
+            style={{ minWidth: "var(--touch-target-min)", minHeight: "var(--touch-target-min)" }}
+          >
+            <UserRound size={20} aria-hidden="true" />
+          </Link>
+        </div>
       </header>
 
       <p className="text-secondary">{t("home.description")}</p>
