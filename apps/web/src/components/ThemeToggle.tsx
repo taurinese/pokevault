@@ -2,10 +2,11 @@ import { Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { t } from "../i18n/index.ts";
 import {
+  applyThemePreference,
   DEFAULT_THEME,
-  parseThemePreference,
+  readThemePreference,
   resolveTheme,
-  THEME_STORAGE_KEY,
+  THEME_CHANGE_EVENT,
 } from "../lib/theme.ts";
 
 const systemPrefersLight = (): boolean => {
@@ -18,32 +19,27 @@ const systemPrefersLight = (): boolean => {
 
 /** Thème effectif lu sur `<html data-theme>` (posé avant le rendu par le script inline). */
 const readAppliedTheme = (): "dark" | "light" =>
-  resolveTheme(
-    parseThemePreference(document.documentElement.dataset["theme"]),
-    systemPrefersLight(),
-  );
+  resolveTheme(readThemePreference(), systemPrefersLight());
 
 /**
- * Bascule Dark / Light : écrit `data-theme` sur `<html>` (consommé par
+ * Raccourci 1-tap Dark / Light : écrit `data-theme` sur `<html>` (consommé par
  * `tokens.css`) et persiste le choix en `localStorage` (clé partagée avec le
- * script anti-FOUC de `__root.tsx`). Repli `dark` en SSR (zéro hydration mismatch).
+ * script anti-FOUC de `__root.tsx`). Suit aussi les changements faits depuis le
+ * `ThemeSelector` (Auto / Sombre / Clair). Repli `dark` en SSR (zéro hydration mismatch).
  */
 export const ThemeToggle = () => {
   const [theme, setTheme] = useState<"dark" | "light">(DEFAULT_THEME);
 
   useEffect(() => {
-    setTheme(readAppliedTheme());
+    const sync = () => setTheme(readAppliedTheme());
+    sync();
+    window.addEventListener(THEME_CHANGE_EVENT, sync);
+    return () => window.removeEventListener(THEME_CHANGE_EVENT, sync);
   }, []);
 
   const toggle = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-    document.documentElement.dataset["theme"] = next;
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, next);
-    } catch {
-      // Stockage indisponible (mode privé, quota…) : le thème reste appliqué pour la session.
-    }
+    // Émet THEME_CHANGE_EVENT : l'état local se resynchronise via l'écouteur ci-dessus.
+    applyThemePreference(theme === "dark" ? "light" : "dark");
   };
 
   const Icon = theme === "dark" ? Sun : Moon;

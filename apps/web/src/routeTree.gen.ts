@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AccountRouteImport } from './routes/account'
 import { Route as AlertsRouteImport } from './routes/alerts'
 import { Route as CollectionRouteImport } from './routes/collection'
 import { Route as LoginRouteImport } from './routes/login'
@@ -17,12 +18,18 @@ import { Route as SearchRouteImport } from './routes/search'
 import { Route as WishlistRouteImport } from './routes/wishlist'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
+import { Route as ApiAuthLinkRouteImport } from './routes/api/auth/link'
 import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AccountRoute = AccountRouteImport.update({
+  id: '/account',
+  path: '/account',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AlertsRoute = AlertsRouteImport.update({
@@ -60,6 +67,11 @@ const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
   path: '/api/auth/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAuthLinkRoute = ApiAuthLinkRouteImport.update({
+  id: '/api/auth/link',
+  path: '/api/auth/link',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthLoginRoute = ApiAuthLoginRouteImport.update({
   id: '/api/auth/login',
   path: '/api/auth/login',
@@ -73,6 +85,7 @@ const ApiAuthLogoutRoute = ApiAuthLogoutRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/account': typeof AccountRoute
   '/alerts': typeof AlertsRoute
   '/collection': typeof CollectionRoute
   '/login': typeof LoginRoute
@@ -80,11 +93,13 @@ export interface FileRoutesByFullPath {
   '/wishlist': typeof WishlistRoute
   '/api/health': typeof ApiHealthRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
+  '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/account': typeof AccountRoute
   '/alerts': typeof AlertsRoute
   '/collection': typeof CollectionRoute
   '/login': typeof LoginRoute
@@ -92,12 +107,14 @@ export interface FileRoutesByTo {
   '/wishlist': typeof WishlistRoute
   '/api/health': typeof ApiHealthRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
+  '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/account': typeof AccountRoute
   '/alerts': typeof AlertsRoute
   '/collection': typeof CollectionRoute
   '/login': typeof LoginRoute
@@ -105,6 +122,7 @@ export interface FileRoutesById {
   '/wishlist': typeof WishlistRoute
   '/api/health': typeof ApiHealthRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
+  '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
 }
@@ -112,6 +130,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/account'
     | '/alerts'
     | '/collection'
     | '/login'
@@ -119,11 +138,13 @@ export interface FileRouteTypes {
     | '/wishlist'
     | '/api/health'
     | '/api/auth/callback'
+    | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/account'
     | '/alerts'
     | '/collection'
     | '/login'
@@ -131,11 +152,13 @@ export interface FileRouteTypes {
     | '/wishlist'
     | '/api/health'
     | '/api/auth/callback'
+    | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
   id:
     | '__root__'
     | '/'
+    | '/account'
     | '/alerts'
     | '/collection'
     | '/login'
@@ -143,12 +166,14 @@ export interface FileRouteTypes {
     | '/wishlist'
     | '/api/health'
     | '/api/auth/callback'
+    | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AccountRoute: typeof AccountRoute
   AlertsRoute: typeof AlertsRoute
   CollectionRoute: typeof CollectionRoute
   LoginRoute: typeof LoginRoute
@@ -156,6 +181,7 @@ export interface RootRouteChildren {
   WishlistRoute: typeof WishlistRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
+  ApiAuthLinkRoute: typeof ApiAuthLinkRoute
   ApiAuthLoginRoute: typeof ApiAuthLoginRoute
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
 }
@@ -167,6 +193,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/account': {
+      id: '/account'
+      path: '/account'
+      fullPath: '/account'
+      preLoaderRoute: typeof AccountRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/alerts': {
@@ -218,6 +251,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/auth/link': {
+      id: '/api/auth/link'
+      path: '/api/auth/link'
+      fullPath: '/api/auth/link'
+      preLoaderRoute: typeof ApiAuthLinkRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/login': {
       id: '/api/auth/login'
       path: '/api/auth/login'
@@ -237,6 +277,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AccountRoute: AccountRoute,
   AlertsRoute: AlertsRoute,
   CollectionRoute: CollectionRoute,
   LoginRoute: LoginRoute,
@@ -244,6 +285,7 @@ const rootRouteChildren: RootRouteChildren = {
   WishlistRoute: WishlistRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
+  ApiAuthLinkRoute: ApiAuthLinkRoute,
   ApiAuthLoginRoute: ApiAuthLoginRoute,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
 }

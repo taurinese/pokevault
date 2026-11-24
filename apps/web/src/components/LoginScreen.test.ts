@@ -5,8 +5,8 @@ import { describe, expect, it } from "vitest";
 import { fr } from "../i18n/fr.ts";
 import { LoginScreen } from "./LoginScreen.tsx";
 
-const render = (error?: Parameters<typeof LoginScreen>[0]["error"]): string =>
-  renderToStaticMarkup(h(LoginScreen, { error }));
+const render = (error?: Parameters<typeof LoginScreen>[0]["error"], redirectTo?: string): string =>
+  renderToStaticMarkup(h(LoginScreen, { error, redirectTo }));
 
 describe("LoginScreen (09A)", () => {
   it("renders exactly the two OAuth buttons", () => {
@@ -16,6 +16,12 @@ describe("LoginScreen (09A)", () => {
     expect(html).toContain("Continuer avec Google");
     expect(html).toContain("Continuer avec Discord");
     expect(html.match(/\/api\/auth\/login\?provider=/g)).toHaveLength(2);
+  });
+
+  it("forwards the post-login redirect to both OAuth buttons", () => {
+    const html = render(undefined, "/account");
+    expect(html).toContain('href="/api/auth/login?provider=google&amp;redirect=%2Faccount"');
+    expect(html).toContain('href="/api/auth/login?provider=discord&amp;redirect=%2Faccount"');
   });
 
   it("has no email / password form", () => {

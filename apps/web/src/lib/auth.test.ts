@@ -9,19 +9,24 @@ import {
   encodePkceCookie,
   generatePkcePair,
   mapGoTrueError,
+  mapLinkError,
   PKCE_COOKIE,
+  parseAuthorizationUrl,
   parseCookies,
+  parseSessionUser,
   pkceCookie,
   REFRESH_TOKEN_COOKIE,
   readAuthConfig,
   resolveAppOrigin,
   sanitizeRedirectPath,
   sessionCookies,
+  startLinkIdentity,
 } from "./auth.ts";
 import {
   type AuthDeps,
   getServerSession,
   handleCallback,
+  handleLinkIdentity,
   handleLogin,
   handleLogout,
 } from "./auth-server.ts";
@@ -202,7 +207,14 @@ describe("cookies", () => {
 
   it("round-trips and validates the pkce payload", () => {
     const payload = { verifier: "v", state: "s", redirectTo: "/wishlist" };
-    expect(decodePkceCookie(encodePkceCookie(payload))).toEqual(payload);
+    // Un cookie sans `mode` (ancien format) reste un flux de connexion.
+    expect(decodePkceCookie(encodePkceCookie(payload))).toEqual({ ...payload, mode: "login" });
+    const link = { ...payload, redirectTo: "/account?linked=discord", mode: "link" as const };
+    expect(decodePkceCookie(encodePkceCookie(link))).toEqual(link);
+    expect(
+      decodePkceCookie(encodePkceCookie({ ...payload, mode: "hacked" as unknown as "login" }))
+        ?.mode,
+    ).toBe("login");
     expect(decodePkceCookie(undefined)).toBeNull();
     expect(decodePkceCookie("%%%")).toBeNull();
     expect(decodePkceCookie(Buffer.from('{"verifier":1}').toString("base64url"))).toBeNull();
@@ -459,7 +471,10 @@ describe("getServerSession", () => {
   it("validates the access token via GET /user", async () => {
     const { deps, fetchMock } = makeDeps(() => jsonResponse(user));
     const session = await getServerSession(withCookies(`${ACCESS_TOKEN_COOKIE}=tok`), deps);
-    expect(session).toEqual({ user: { id: "u1", email: "a@b.test", provider: "discord" } });
+    expect(session).toEqual({
+      user: { id: "u1", email: "a@b.test", provider: "discord", displayName: "a", identities: [] },
+      accessToken: "tok",
+    });
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("http://auth:9999/user");
     expect(headerOf(init, "Authorization")).toBe("Bearer tok");
@@ -600,5 +615,358 @@ describe("POST /api/auth/logout", () => {
       expect(response.headers.getSetCookie()).toHaveLength(0);
     }
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Liaison d'identités OAuth (09B)
+// ---------------------------------------------------------------------------
+
+const goTrueUser = {
+  id: "u1",
+  email: "a@b.test",
+  app_metadata: { provider: "google", providers: ["google"] },
+  user_metadata: { full_name: "Ada Lovelace", email_verified: true },
+  identities: [
+    {
+      identity_id: "5f6c0000-0000-4000-8000-000000000001",
+      id: "google-sub-1",
+      user_id: "u1",
+      identity_data: { email: "a@b.test", sub: "google-sub-1" },
+      provider: "google",
+      email: "a@b.test",
+    },
+  ],
+};
+
+describe("parseSessionUser (identities)", () => {
+  it("parses the Google identity (provider id from `id`, not the row UUID)", () => {
+    expect(parseSessionUser(goTrueUser)).toEqual({
+      id: "u1",
+      email: "a@b.test",
+      provider: "google",
+      displayName: "Ada Lovelace",
+      identities: [{ provider: "google", providerUserId: "google-sub-1", email: "a@b.test" }],
+    });
+  });
+
+  it("parses two linked identities and keeps only google / discord", () => {
+    const user = parseSessionUser({
+      ...goTrueUser,
+      identities: [
+        ...goTrueUser.identities,
+        {
+          id: "111222333",
+          provider: "discord",
+          identity_data: { email: "d@b.test", provider_id: "111222333" },
+        },
+        { id: "gh-1", provider: "github", identity_data: {} },
+        { id: "", provider: "discord", identity_data: {} },
+        "garbage",
+        null,
+      ],
+    });
+    expect(user?.identities).toEqual([
+      { provider: "google", providerUserId: "google-sub-1", email: "a@b.test" },
+      { provider: "discord", providerUserId: "111222333", email: "d@b.test" },
+    ]);
+  });
+
+  it("falls back to identity_data and ignores duplicated providers", () => {
+    const user = parseSessionUser({
+      id: "u2",
+      identities: [
+        { provider: "discord", identity_data: { sub: "sub-9" } },
+        { provider: "discord", id: "other", identity_data: {} },
+      ],
+    });
+    expect(user?.identities).toEqual([
+      { provider: "discord", providerUserId: "sub-9", email: null },
+    ]);
+  });
+
+  it("returns an empty identities array when GoTrue omits or garbles them", () => {
+    expect(parseSessionUser({ id: "u3" })?.identities).toEqual([]);
+    expect(parseSessionUser({ id: "u3", identities: "nope" })?.identities).toEqual([]);
+  });
+
+  it("derives displayName from metadata, then from the e-mail local part", () => {
+    expect(parseSessionUser({ id: "u", user_metadata: { user_name: "ash" } })?.displayName).toBe(
+      "ash",
+    );
+    expect(parseSessionUser({ id: "u", email: "misty@b.test" })?.displayName).toBe("misty");
+    expect(parseSessionUser({ id: "u" })?.displayName).toBeNull();
+  });
+});
+
+describe("parseAuthorizationUrl", () => {
+  it("accepts http(s) URLs only, without embedded credentials", () => {
+    expect(parseAuthorizationUrl("https://discord.com/api/oauth2/authorize?x=1")).toBe(
+      "https://discord.com/api/oauth2/authorize?x=1",
+    );
+    expect(parseAuthorizationUrl("javascript:alert(1)")).toBeNull();
+    expect(parseAuthorizationUrl("data:text/html,x")).toBeNull();
+    expect(parseAuthorizationUrl("https://user:pw@evil.test/")).toBeNull();
+    expect(parseAuthorizationUrl("/relative")).toBeNull();
+    expect(parseAuthorizationUrl("")).toBeNull();
+    expect(parseAuthorizationUrl(42)).toBeNull();
+  });
+});
+
+describe("mapLinkError", () => {
+  it("maps access_denied to link_cancelled and everything else to link_failed", () => {
+    const map = (error: string | null, errorCode: string | null = null) =>
+      mapLinkError({ error, errorCode, errorDescription: null });
+    expect(map("access_denied")).toBe("link_cancelled");
+    expect(map("server_error", "identity_already_exists")).toBe("link_failed");
+    expect(map(null, "bad_oauth_callback")).toBe("link_failed");
+  });
+});
+
+describe("startLinkIdentity", () => {
+  const pkce = generatePkcePair();
+
+  it("calls GET /user/identities/authorize with the Bearer token and returns the provider URL", async () => {
+    const { deps, fetchMock } = makeDeps(() =>
+      jsonResponse({ url: "https://discord.com/api/oauth2/authorize?state=gotrue" }),
+    );
+    const url = await startLinkIdentity(deps.config, deps.fetch, "tok", {
+      provider: "discord",
+      appOrigin: "http://localhost:3000",
+      pkce,
+    });
+    expect(url).toBe("https://discord.com/api/oauth2/authorize?state=gotrue");
+
+    const [requested, init] = fetchMock.mock.calls[0] ?? [];
+    const target = new URL(requested ?? "");
+    expect(target.origin + target.pathname).toBe("http://auth:9999/user/identities/authorize");
+    expect(init?.method).toBe("GET");
+    expect(headerOf(init, "Authorization")).toBe("Bearer tok");
+    expect(headerOf(init, "apikey")).toBe("anon-key");
+    expect(target.searchParams.get("provider")).toBe("discord");
+    expect(target.searchParams.get("scopes")).toBe("identify email");
+    expect(target.searchParams.get("code_challenge")).toBe(pkce.codeChallenge);
+    expect(target.searchParams.get("code_challenge_method")).toBe("s256");
+    expect(target.searchParams.get("skip_http_redirect")).toBe("true");
+    const redirectTo = new URL(target.searchParams.get("redirect_to") ?? "");
+    expect(redirectTo.origin + redirectTo.pathname).toBe("http://localhost:3000/api/auth/callback");
+    expect(redirectTo.searchParams.get("state")).toBe(pkce.state);
+  });
+
+  it("returns null on GoTrue errors (e.g. manual linking disabled), bad URLs and network errors", async () => {
+    const input = { provider: "google", appOrigin: "http://localhost:3000", pkce } as const;
+    const disabled = makeDeps(() =>
+      jsonResponse({ code: 404, error_code: "manual_linking_disabled" }, 404),
+    );
+    expect(
+      await startLinkIdentity(disabled.deps.config, disabled.deps.fetch, "tok", input),
+    ).toBeNull();
+    const badUrl = makeDeps(() => jsonResponse({ url: "javascript:alert(1)" }));
+    expect(await startLinkIdentity(badUrl.deps.config, badUrl.deps.fetch, "tok", input)).toBeNull();
+    const noUrl = makeDeps(() => jsonResponse({}));
+    expect(await startLinkIdentity(noUrl.deps.config, noUrl.deps.fetch, "tok", input)).toBeNull();
+    const down = makeDeps(() => {
+      throw new Error("ECONNREFUSED");
+    });
+    expect(await startLinkIdentity(down.deps.config, down.deps.fetch, "tok", input)).toBeNull();
+  });
+});
+
+describe("GET /api/auth/link", () => {
+  const linkRequest = (query: string, cookie: string | null = `${ACCESS_TOKEN_COOKIE}=tok`) =>
+    new Request(`http://localhost:3000/api/auth/link?${query}`, {
+      headers: cookie === null ? {} : { cookie },
+    });
+
+  const authenticatedDeps = (identities = goTrueUser.identities) =>
+    makeDeps((url) => {
+      if (url.endsWith("/user")) return jsonResponse({ ...goTrueUser, identities });
+      if (url.includes("/user/identities/authorize")) {
+        return jsonResponse({ url: "https://discord.com/api/oauth2/authorize?state=gotrue" });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+
+  it("redirects an anonymous visitor to /login?redirect=/account without calling GoTrue links", async () => {
+    const { deps, fetchMock } = noNetwork();
+    const response = await handleLinkIdentity(linkRequest("provider=discord", null), deps);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/login?redirect=%2Faccount");
+    expect(response.headers.getSetCookie()).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("redirects to /login when the token is rejected and cannot be refreshed", async () => {
+    const { deps, fetchMock } = makeDeps(() => new Response("{}", { status: 401 }));
+    const response = await handleLinkIdentity(linkRequest("provider=discord"), deps);
+    expect(response.headers.get("location")).toBe("/login?redirect=%2Faccount");
+    expect(fetchMock.mock.calls.some(([url]) => url.includes("identities/authorize"))).toBe(false);
+  });
+
+  it("rejects an unknown or missing provider with 400 (authenticated)", async () => {
+    const { deps } = authenticatedDeps();
+    for (const query of ["provider=github", "provider=", ""]) {
+      const response = await handleLinkIdentity(linkRequest(query), deps);
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+    }
+  });
+
+  it("starts the link flow: PKCE S256 cookie in link mode + 302 to the provider", async () => {
+    const { deps, fetchMock } = authenticatedDeps();
+    const response = await handleLinkIdentity(linkRequest("provider=discord"), deps);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "https://discord.com/api/oauth2/authorize?state=gotrue",
+    );
+
+    const [cookie] = response.headers.getSetCookie();
+    expect(cookie).toContain(`${PKCE_COOKIE}=`);
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Lax");
+    expect(cookie).toContain("Path=/api/auth");
+    const payload = decodePkceCookie(parseCookies((cookie ?? "").split(";")[0])[PKCE_COOKIE]);
+    expect(payload?.mode).toBe("link");
+    expect(payload?.redirectTo).toBe("/account?linked=discord");
+
+    const authorizeCall = fetchMock.mock.calls.find(([url]) =>
+      url.includes("identities/authorize"),
+    );
+    const target = new URL(authorizeCall?.[0] ?? "");
+    expect(target.searchParams.get("code_challenge")).toBe(
+      codeChallengeFor(payload?.verifier ?? ""),
+    );
+    expect(new URL(target.searchParams.get("redirect_to") ?? "").searchParams.get("state")).toBe(
+      payload?.state,
+    );
+    expect(headerOf(authorizeCall?.[1], "Authorization")).toBe("Bearer tok");
+  });
+
+  it("uses the refreshed access token and forwards the refreshed cookies", async () => {
+    const { deps, fetchMock } = makeDeps((url, init) => {
+      if (url.includes("grant_type=refresh_token")) {
+        return jsonResponse({
+          access_token: "new-tok",
+          refresh_token: "new-ref",
+          expires_in: 3600,
+        });
+      }
+      if (url.endsWith("/user")) {
+        return headerOf(init, "Authorization") === "Bearer new-tok"
+          ? jsonResponse(goTrueUser)
+          : new Response("{}", { status: 401 });
+      }
+      return jsonResponse({ url: "https://discord.com/api/oauth2/authorize" });
+    });
+    const response = await handleLinkIdentity(
+      linkRequest("provider=discord", `${ACCESS_TOKEN_COOKIE}=old; ${REFRESH_TOKEN_COOKIE}=ref`),
+      deps,
+    );
+    expect(response.status).toBe(302);
+    const cookies = response.headers.getSetCookie();
+    expect(cookies.some((c) => c.startsWith(`${ACCESS_TOKEN_COOKIE}=new-tok`))).toBe(true);
+    expect(cookies.some((c) => c.startsWith(`${PKCE_COOKIE}=`))).toBe(true);
+    const authorizeCall = fetchMock.mock.calls.find(([url]) =>
+      url.includes("identities/authorize"),
+    );
+    expect(headerOf(authorizeCall?.[1], "Authorization")).toBe("Bearer new-tok");
+  });
+
+  it("does not call GoTrue again when the provider is already linked", async () => {
+    const { deps, fetchMock } = authenticatedDeps();
+    const response = await handleLinkIdentity(linkRequest("provider=google"), deps);
+    expect(response.headers.get("location")).toBe("/account?linked=google");
+    expect(fetchMock.mock.calls.some(([url]) => url.includes("identities/authorize"))).toBe(false);
+  });
+
+  it("falls back to /account?error=link_failed when GoTrue refuses (manual linking disabled)", async () => {
+    const { deps } = makeDeps((url) =>
+      url.endsWith("/user")
+        ? jsonResponse(goTrueUser)
+        : jsonResponse({ error_code: "manual_linking_disabled" }, 404),
+    );
+    const response = await handleLinkIdentity(linkRequest("provider=discord"), deps);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/account?error=link_failed");
+    expect(response.headers.getSetCookie().some((c) => c.startsWith(`${PKCE_COOKIE}=`))).toBe(
+      false,
+    );
+  });
+});
+
+describe("GET /api/auth/callback (link mode)", () => {
+  const linkPkce = {
+    verifier: "verifier-123",
+    state: "state-123",
+    redirectTo: "/account?linked=discord",
+    mode: "link" as const,
+  };
+  const cookieHeader = `${PKCE_COOKIE}=${encodePkceCookie(linkPkce)}`;
+  const callback = (query: string, cookie: string | null = cookieHeader): Request =>
+    new Request(`http://localhost:3000/api/auth/callback?${query}`, {
+      headers: cookie === null ? {} : { cookie },
+    });
+
+  it("sets the new session cookies and returns to /account?linked=<provider>", async () => {
+    const { deps, fetchMock } = makeDeps(() =>
+      jsonResponse({ access_token: "acc", refresh_token: "ref", expires_in: 3600 }),
+    );
+    const response = await handleCallback(callback("code=abc&state=state-123"), deps);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/account?linked=discord");
+    const cookies = response.headers.getSetCookie();
+    expect(cookies.some((c) => c.startsWith(`${ACCESS_TOKEN_COOKIE}=acc`))).toBe(true);
+    expect(cookies.some((c) => c.startsWith(`${REFRESH_TOKEN_COOKIE}=ref`))).toBe(true);
+    expect(cookies.some((c) => c.startsWith(`${PKCE_COOKIE}=;`))).toBe(true);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://auth:9999/token?grant_type=pkce");
+  });
+
+  it("sends a provider refusal back to /account?error=link_cancelled", async () => {
+    const { deps, fetchMock } = noNetwork();
+    const response = await handleCallback(
+      callback("error=access_denied&error_description=The+user+denied"),
+      deps,
+    );
+    expect(response.headers.get("location")).toBe("/account?error=link_cancelled");
+    expect(response.headers.getSetCookie().some((c) => c.startsWith(`${PKCE_COOKIE}=;`))).toBe(
+      true,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends a GoTrue linking error to /account?error=link_failed (never /login)", async () => {
+    const { deps } = noNetwork();
+    const response = await handleCallback(
+      callback(
+        "error=server_error&error_code=identity_already_exists&error_description=Identity+is+already+linked",
+      ),
+      deps,
+    );
+    expect(response.headers.get("location")).toBe("/account?error=link_failed");
+  });
+
+  it("fails to /account?error=link_failed on CSRF state mismatch, failed exchange or lost code", async () => {
+    const rejected = makeDeps(() => new Response("{}", { status: 400 }));
+    expect(
+      (await handleCallback(callback("code=abc&state=forged"), rejected.deps)).headers.get(
+        "location",
+      ),
+    ).toBe("/account?error=link_failed");
+    expect(rejected.fetchMock).not.toHaveBeenCalled();
+
+    expect(
+      (await handleCallback(callback("code=abc&state=state-123"), rejected.deps)).headers.get(
+        "location",
+      ),
+    ).toBe("/account?error=link_failed");
+    expect(
+      (await handleCallback(callback("state=state-123"), rejected.deps)).headers.get("location"),
+    ).toBe("/account?error=link_failed");
+  });
+
+  it("keeps the login behaviour when the cookie is missing", async () => {
+    const { deps } = noNetwork();
+    const response = await handleCallback(callback("error=access_denied", null), deps);
+    expect(response.headers.get("location")).toBe("/login?error=oauth_cancelled");
   });
 });
