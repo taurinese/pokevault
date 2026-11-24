@@ -21,6 +21,9 @@ import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthLinkRouteImport } from './routes/api/auth/link'
 import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
+import { Route as ApiCatalogDiscoverRouteImport } from './routes/api/catalog/discover'
+import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/search'
+import { Route as ApiCatalogSuggestRouteImport } from './routes/api/catalog/suggest'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -82,6 +85,21 @@ const ApiAuthLogoutRoute = ApiAuthLogoutRouteImport.update({
   path: '/api/auth/logout',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCatalogDiscoverRoute = ApiCatalogDiscoverRouteImport.update({
+  id: '/api/catalog/discover',
+  path: '/api/catalog/discover',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCatalogSearchRoute = ApiCatalogSearchRouteImport.update({
+  id: '/api/catalog/search',
+  path: '/api/catalog/search',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCatalogSuggestRoute = ApiCatalogSuggestRouteImport.update({
+  id: '/api/catalog/suggest',
+  path: '/api/catalog/suggest',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -96,6 +114,9 @@ export interface FileRoutesByFullPath {
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
+  '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
+  '/api/catalog/search': typeof ApiCatalogSearchRoute
+  '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -110,6 +131,9 @@ export interface FileRoutesByTo {
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
+  '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
+  '/api/catalog/search': typeof ApiCatalogSearchRoute
+  '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -125,6 +149,9 @@ export interface FileRoutesById {
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
+  '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
+  '/api/catalog/search': typeof ApiCatalogSearchRoute
+  '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -141,6 +168,9 @@ export interface FileRouteTypes {
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
+    | '/api/catalog/discover'
+    | '/api/catalog/search'
+    | '/api/catalog/suggest'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -155,6 +185,9 @@ export interface FileRouteTypes {
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
+    | '/api/catalog/discover'
+    | '/api/catalog/search'
+    | '/api/catalog/suggest'
   id:
     | '__root__'
     | '/'
@@ -169,6 +202,9 @@ export interface FileRouteTypes {
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
+    | '/api/catalog/discover'
+    | '/api/catalog/search'
+    | '/api/catalog/suggest'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -184,6 +220,9 @@ export interface RootRouteChildren {
   ApiAuthLinkRoute: typeof ApiAuthLinkRoute
   ApiAuthLoginRoute: typeof ApiAuthLoginRoute
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
+  ApiCatalogDiscoverRoute: typeof ApiCatalogDiscoverRoute
+  ApiCatalogSearchRoute: typeof ApiCatalogSearchRoute
+  ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -272,6 +311,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthLogoutRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/catalog/discover': {
+      id: '/api/catalog/discover'
+      path: '/api/catalog/discover'
+      fullPath: '/api/catalog/discover'
+      preLoaderRoute: typeof ApiCatalogDiscoverRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/catalog/search': {
+      id: '/api/catalog/search'
+      path: '/api/catalog/search'
+      fullPath: '/api/catalog/search'
+      preLoaderRoute: typeof ApiCatalogSearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/catalog/suggest': {
+      id: '/api/catalog/suggest'
+      path: '/api/catalog/suggest'
+      fullPath: '/api/catalog/suggest'
+      preLoaderRoute: typeof ApiCatalogSuggestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -288,6 +348,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthLinkRoute: ApiAuthLinkRoute,
   ApiAuthLoginRoute: ApiAuthLoginRoute,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
+  ApiCatalogDiscoverRoute: ApiCatalogDiscoverRoute,
+  ApiCatalogSearchRoute: ApiCatalogSearchRoute,
+  ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

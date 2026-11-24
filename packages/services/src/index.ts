@@ -13,6 +13,7 @@ export interface CatalogSyncConfig {
 }
 
 export * from "./catalog-repo.ts";
+export * from "./catalog-search.ts";
 export * from "./catalog-sync.ts";
 export * from "./db.ts";
 export * from "./tcgdex.ts";
