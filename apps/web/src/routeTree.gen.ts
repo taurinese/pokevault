@@ -12,22 +12,22 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountRouteImport } from './routes/account'
 import { Route as AlertsRouteImport } from './routes/alerts'
-import { Route as BurstRouteImport } from './routes/burst'
 import { Route as CollectionRouteImport } from './routes/collection'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SearchRouteImport } from './routes/search'
 import { Route as WishlistRouteImport } from './routes/wishlist'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as BinderIdRouteImport } from './routes/binder/$id'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthLinkRouteImport } from './routes/api/auth/link'
 import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
-import { Route as ApiBurstCommitRouteImport } from './routes/api/burst/commit'
-import { Route as ApiBurstPreviewRouteImport } from './routes/api/burst/preview'
-import { Route as ApiBurstSetsRouteImport } from './routes/api/burst/sets'
+import { Route as ApiBinderGridIdRouteImport } from './routes/api/binder-grid/$id'
+import { Route as ApiBindersIndexRouteImport } from './routes/api/binders/index'
 import { Route as ApiCatalogDiscoverRouteImport } from './routes/api/catalog/discover'
 import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/search'
 import { Route as ApiCatalogSuggestRouteImport } from './routes/api/catalog/suggest'
+import { Route as ApiBindersIdCoverRouteImport } from './routes/api/binders/$id/cover'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -42,11 +42,6 @@ const AccountRoute = AccountRouteImport.update({
 const AlertsRoute = AlertsRouteImport.update({
   id: '/alerts',
   path: '/alerts',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const BurstRoute = BurstRouteImport.update({
-  id: '/burst',
-  path: '/burst',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CollectionRoute = CollectionRouteImport.update({
@@ -74,6 +69,11 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
   path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BinderIdRoute = BinderIdRouteImport.update({
+  id: '/binder/$id',
+  path: '/binder/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
   id: '/api/auth/callback',
   path: '/api/auth/callback',
@@ -94,19 +94,14 @@ const ApiAuthLogoutRoute = ApiAuthLogoutRouteImport.update({
   path: '/api/auth/logout',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiBurstCommitRoute = ApiBurstCommitRouteImport.update({
-  id: '/api/burst/commit',
-  path: '/api/burst/commit',
+const ApiBinderGridIdRoute = ApiBinderGridIdRouteImport.update({
+  id: '/api/binder-grid/$id',
+  path: '/api/binder-grid/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiBurstPreviewRoute = ApiBurstPreviewRouteImport.update({
-  id: '/api/burst/preview',
-  path: '/api/burst/preview',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiBurstSetsRoute = ApiBurstSetsRouteImport.update({
-  id: '/api/burst/sets',
-  path: '/api/burst/sets',
+const ApiBindersIndexRoute = ApiBindersIndexRouteImport.update({
+  id: '/api/binders/',
+  path: '/api/binders/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiCatalogDiscoverRoute = ApiCatalogDiscoverRouteImport.update({
@@ -124,70 +119,75 @@ const ApiCatalogSuggestRoute = ApiCatalogSuggestRouteImport.update({
   path: '/api/catalog/suggest',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiBindersIdCoverRoute = ApiBindersIdCoverRouteImport.update({
+  id: '/api/binders/$id/cover',
+  path: '/api/binders/$id/cover',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/account': typeof AccountRoute
   '/alerts': typeof AlertsRoute
-  '/burst': typeof BurstRoute
   '/collection': typeof CollectionRoute
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
   '/api/health': typeof ApiHealthRoute
+  '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
-  '/api/burst/commit': typeof ApiBurstCommitRoute
-  '/api/burst/preview': typeof ApiBurstPreviewRoute
-  '/api/burst/sets': typeof ApiBurstSetsRoute
+  '/api/binder-grid/$id': typeof ApiBinderGridIdRoute
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/binders/': typeof ApiBindersIndexRoute
+  '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/account': typeof AccountRoute
   '/alerts': typeof AlertsRoute
-  '/burst': typeof BurstRoute
   '/collection': typeof CollectionRoute
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
   '/api/health': typeof ApiHealthRoute
+  '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
-  '/api/burst/commit': typeof ApiBurstCommitRoute
-  '/api/burst/preview': typeof ApiBurstPreviewRoute
-  '/api/burst/sets': typeof ApiBurstSetsRoute
+  '/api/binder-grid/$id': typeof ApiBinderGridIdRoute
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/binders': typeof ApiBindersIndexRoute
+  '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/account': typeof AccountRoute
   '/alerts': typeof AlertsRoute
-  '/burst': typeof BurstRoute
   '/collection': typeof CollectionRoute
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
   '/api/health': typeof ApiHealthRoute
+  '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
-  '/api/burst/commit': typeof ApiBurstCommitRoute
-  '/api/burst/preview': typeof ApiBurstPreviewRoute
-  '/api/burst/sets': typeof ApiBurstSetsRoute
+  '/api/binder-grid/$id': typeof ApiBinderGridIdRoute
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/binders/': typeof ApiBindersIndexRoute
+  '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -195,86 +195,86 @@ export interface FileRouteTypes {
     | '/'
     | '/account'
     | '/alerts'
-    | '/burst'
     | '/collection'
     | '/login'
     | '/search'
     | '/wishlist'
     | '/api/health'
+    | '/binder/$id'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
-    | '/api/burst/commit'
-    | '/api/burst/preview'
-    | '/api/burst/sets'
+    | '/api/binder-grid/$id'
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/binders/'
+    | '/api/binders/$id/cover'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/account'
     | '/alerts'
-    | '/burst'
     | '/collection'
     | '/login'
     | '/search'
     | '/wishlist'
     | '/api/health'
+    | '/binder/$id'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
-    | '/api/burst/commit'
-    | '/api/burst/preview'
-    | '/api/burst/sets'
+    | '/api/binder-grid/$id'
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/binders'
+    | '/api/binders/$id/cover'
   id:
     | '__root__'
     | '/'
     | '/account'
     | '/alerts'
-    | '/burst'
     | '/collection'
     | '/login'
     | '/search'
     | '/wishlist'
     | '/api/health'
+    | '/binder/$id'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
-    | '/api/burst/commit'
-    | '/api/burst/preview'
-    | '/api/burst/sets'
+    | '/api/binder-grid/$id'
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/binders/'
+    | '/api/binders/$id/cover'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AccountRoute: typeof AccountRoute
   AlertsRoute: typeof AlertsRoute
-  BurstRoute: typeof BurstRoute
   CollectionRoute: typeof CollectionRoute
   LoginRoute: typeof LoginRoute
   SearchRoute: typeof SearchRoute
   WishlistRoute: typeof WishlistRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  BinderIdRoute: typeof BinderIdRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
   ApiAuthLinkRoute: typeof ApiAuthLinkRoute
   ApiAuthLoginRoute: typeof ApiAuthLoginRoute
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
-  ApiBurstCommitRoute: typeof ApiBurstCommitRoute
-  ApiBurstPreviewRoute: typeof ApiBurstPreviewRoute
-  ApiBurstSetsRoute: typeof ApiBurstSetsRoute
+  ApiBinderGridIdRoute: typeof ApiBinderGridIdRoute
   ApiCatalogDiscoverRoute: typeof ApiCatalogDiscoverRoute
   ApiCatalogSearchRoute: typeof ApiCatalogSearchRoute
   ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
+  ApiBindersIndexRoute: typeof ApiBindersIndexRoute
+  ApiBindersIdCoverRoute: typeof ApiBindersIdCoverRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -298,13 +298,6 @@ declare module '@tanstack/react-router' {
       path: '/alerts'
       fullPath: '/alerts'
       preLoaderRoute: typeof AlertsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/burst': {
-      id: '/burst'
-      path: '/burst'
-      fullPath: '/burst'
-      preLoaderRoute: typeof BurstRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/collection': {
@@ -342,6 +335,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/binder/$id': {
+      id: '/binder/$id'
+      path: '/binder/$id'
+      fullPath: '/binder/$id'
+      preLoaderRoute: typeof BinderIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/callback': {
       id: '/api/auth/callback'
       path: '/api/auth/callback'
@@ -370,25 +370,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthLogoutRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/burst/commit': {
-      id: '/api/burst/commit'
-      path: '/api/burst/commit'
-      fullPath: '/api/burst/commit'
-      preLoaderRoute: typeof ApiBurstCommitRouteImport
+    '/api/binder-grid/$id': {
+      id: '/api/binder-grid/$id'
+      path: '/api/binder-grid/$id'
+      fullPath: '/api/binder-grid/$id'
+      preLoaderRoute: typeof ApiBinderGridIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/burst/preview': {
-      id: '/api/burst/preview'
-      path: '/api/burst/preview'
-      fullPath: '/api/burst/preview'
-      preLoaderRoute: typeof ApiBurstPreviewRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/burst/sets': {
-      id: '/api/burst/sets'
-      path: '/api/burst/sets'
-      fullPath: '/api/burst/sets'
-      preLoaderRoute: typeof ApiBurstSetsRouteImport
+    '/api/binders/': {
+      id: '/api/binders/'
+      path: '/api/binders'
+      fullPath: '/api/binders/'
+      preLoaderRoute: typeof ApiBindersIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/catalog/discover': {
@@ -412,6 +405,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCatalogSuggestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/binders/$id/cover': {
+      id: '/api/binders/$id/cover'
+      path: '/api/binders/$id/cover'
+      fullPath: '/api/binders/$id/cover'
+      preLoaderRoute: typeof ApiBindersIdCoverRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -419,22 +419,22 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AccountRoute: AccountRoute,
   AlertsRoute: AlertsRoute,
-  BurstRoute: BurstRoute,
   CollectionRoute: CollectionRoute,
   LoginRoute: LoginRoute,
   SearchRoute: SearchRoute,
   WishlistRoute: WishlistRoute,
   ApiHealthRoute: ApiHealthRoute,
+  BinderIdRoute: BinderIdRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
   ApiAuthLinkRoute: ApiAuthLinkRoute,
   ApiAuthLoginRoute: ApiAuthLoginRoute,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
-  ApiBurstCommitRoute: ApiBurstCommitRoute,
-  ApiBurstPreviewRoute: ApiBurstPreviewRoute,
-  ApiBurstSetsRoute: ApiBurstSetsRoute,
+  ApiBinderGridIdRoute: ApiBinderGridIdRoute,
   ApiCatalogDiscoverRoute: ApiCatalogDiscoverRoute,
   ApiCatalogSearchRoute: ApiCatalogSearchRoute,
   ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
+  ApiBindersIndexRoute: ApiBindersIndexRoute,
+  ApiBindersIdCoverRoute: ApiBindersIdCoverRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
