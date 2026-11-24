@@ -1,10 +1,12 @@
 import {
   type CardSearchHit,
+  type CardSearchPrice,
   type CatalogCard,
   type CatalogSet,
   escapeLikePattern,
   type HoloEffect,
   type ParsedCardNumber,
+  type PriceSource,
   parseCardNumberQuery,
   SEARCH_MAX_QUERY_LENGTH,
   type SearchDiscoveryPayload,
@@ -134,6 +136,34 @@ interface SetRow {
 interface CountRow {
   readonly total: number;
 }
+
+/** Ligne de la jointure latérale `card_latest_prices` (champs prix `null` sans snapshot). */
+interface PriceRow {
+  readonly card_id: string;
+  readonly source: string | null;
+  readonly trend_cents: number | null;
+  readonly low_fr_cents: number | null;
+  readonly avg30_cents: number | null;
+  readonly fetched_at: Date | string | null;
+  readonly expires_at: Date | string | null;
+  readonly is_fresh: boolean | null;
+}
+
+const isoOf = (value: Date | string): string =>
+  value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+
+const toCardPrice = (row: PriceRow): CardSearchPrice | null => {
+  if (row.source === null || row.fetched_at === null || row.expires_at === null) return null;
+  return {
+    trendCents: row.trend_cents,
+    lowFrCents: row.low_fr_cents,
+    avg30Cents: row.avg30_cents,
+    source: row.source as PriceSource,
+    fetchedAt: isoOf(row.fetched_at),
+    expiresAt: isoOf(row.expires_at),
+    isFresh: row.is_fresh ?? false,
+  };
+};
 
 const toCardHit = (row: CardRow): CardSearchHit => ({
   id: row.id,
@@ -337,6 +367,48 @@ export const CatalogSearchServiceLive: Layer.Layer<CatalogSearchService, never, 
           catch: (cause) => new DatabaseError({ message: "postgres query failed", cause }),
         });
 
+      /**
+       * Enrichit une page de résultats (≤ 60 cartes) du dernier prix connu : un seul
+       * aller-retour `LEFT JOIN LATERAL (… LIMIT 1)` sur `card_latest_prices`
+       * (`(FR, normal)` d'abord, sinon snapshot le plus récent de la carte ; le
+       * `LIMIT 1` pousse `card_id` dans la vue `DISTINCT ON` → Index Scan sur
+       * `idx_price_snapshots_lookup`). Appliqué APRÈS la pagination (jamais sur le
+       * jeu complet) ; l'ordre des résultats est conservé. Best-effort : si la
+       * table de prix est absente ou en erreur, les cartes sont renvoyées sans
+       * `price` (la recherche ne casse jamais pour un prix).
+       */
+      const withLatestPrices = (
+        hits: ReadonlyArray<CardSearchHit>,
+      ): Effect.Effect<ReadonlyArray<CardSearchHit>> => {
+        if (hits.length === 0) return Effect.succeed(hits);
+        const cardIds = hits.map((hit) => hit.id);
+        return run(
+          (sql) => sql<PriceRow[]>`
+            SELECT c.id AS card_id, p.source, p.trend_cents, p.low_fr_cents, p.avg30_cents,
+                   p.fetched_at, p.expires_at, p.is_fresh
+            FROM catalog_cards c
+            LEFT JOIN LATERAL (
+              SELECT lp.source, lp.trend_cents, lp.low_fr_cents, lp.avg30_cents,
+                     lp.fetched_at, lp.expires_at, lp.is_fresh
+              FROM card_latest_prices lp
+              WHERE lp.card_id = c.id
+              ORDER BY (lp.language = 'FR' AND lp.variant = 'normal') DESC,
+                       lp.fetched_at DESC, lp.id DESC
+              LIMIT 1
+            ) p ON TRUE
+            WHERE c.id IN ${sql(cardIds)}
+          `,
+        ).pipe(
+          Effect.map((rows) => {
+            const byCard = new Map(rows.map((row) => [row.card_id, toCardPrice(row)] as const));
+            return hits.map(
+              (hit): CardSearchHit => ({ ...hit, price: byCard.get(hit.id) ?? null }),
+            );
+          }),
+          Effect.orElseSucceed(() => hits),
+        );
+      };
+
       const selectCards = (
         query: SearchQuery,
         scope: MatchScope,
@@ -351,7 +423,10 @@ export const CatalogSearchServiceLive: Layer.Layer<CatalogSearchService, never, 
             ORDER BY ${cardOrderBy(sql, query)}
             LIMIT ${limit} OFFSET ${offset}
           `,
-        ).pipe(Effect.map((rows) => rows.map(toCardHit)));
+        ).pipe(
+          Effect.map((rows) => rows.map(toCardHit)),
+          Effect.flatMap(withLatestPrices),
+        );
 
       const countCards = (
         query: SearchQuery,
@@ -441,11 +516,15 @@ export const CatalogSearchServiceLive: Layer.Layer<CatalogSearchService, never, 
             ],
             { concurrency: 2 },
           ).pipe(
-            Effect.map(
-              ([setRows, cardRows]): SearchDiscoveryPayload => ({
-                popularSets: setRows.map(toSetHit),
-                featuredCards: cardRows.map(toCardHit),
-              }),
+            Effect.flatMap(([setRows, cardRows]) =>
+              withLatestPrices(cardRows.map(toCardHit)).pipe(
+                Effect.map(
+                  (featuredCards): SearchDiscoveryPayload => ({
+                    popularSets: setRows.map(toSetHit),
+                    featuredCards,
+                  }),
+                ),
+              ),
             ),
           ),
         suggest: (rawQuery) => {

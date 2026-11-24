@@ -352,6 +352,129 @@ describe("SearchScreen · 05D résultats en grille", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Prix Cardmarket & fraîcheur sur les tuiles / lignes de résultats
+// ---------------------------------------------------------------------------
+
+const PRICE_NOW = Date.parse("2026-06-01T12:00:00.000Z");
+
+const searchPrice = (
+  minutes: number,
+  overrides: Partial<NonNullable<CardSearchHit["price"]>> = {},
+): NonNullable<CardSearchHit["price"]> => ({
+  trendCents: 1234,
+  lowFrCents: 900,
+  avg30Cents: 1100,
+  source: "cardmarket",
+  fetchedAt: new Date(PRICE_NOW - minutes * 60_000).toISOString(),
+  expiresAt: new Date(PRICE_NOW - minutes * 60_000 + 15 * 60_000).toISOString(),
+  isFresh: minutes < 15,
+  ...overrides,
+});
+
+const priceResults = (cards: ReadonlyArray<CardSearchHit>): Loadable<SearchResultsPayload> =>
+  ready(resultsPayload({ cards, totalCards: cards.length }));
+
+describe("SearchScreen · prix & fraîcheur", () => {
+  it("grille 05D : micro-pill prix + pastille verte / ambre / neutre sur chaque tuile", () => {
+    const html = render({
+      mode: "results",
+      viewMode: "grid",
+      nowMs: PRICE_NOW,
+      results: priceResults([
+        card({ id: "a", price: searchPrice(3) }),
+        card({ id: "b", price: searchPrice(120) }),
+        card({ id: "c", price: searchPrice(60 * 24) }),
+      ]),
+    });
+    expect(html.split('data-testid="card-tile-price"').length - 1).toBe(3);
+    expect(html).toContain('data-freshness="fresh"');
+    expect(html).toContain('data-freshness="aging"');
+    expect(html).toContain('data-freshness="stale"');
+    expect(html).toContain("bg-success");
+    expect(html).toContain("bg-warning");
+    expect(html).toContain("12,34");
+    expect(html).toContain("font-mono tabular-nums");
+    expect(html).toContain(`aspect-ratio:${63 / 88}`);
+  });
+
+  it("n'affiche aucune pill pour une carte sans prix (price null ou absent)", () => {
+    const html = render({
+      mode: "results",
+      viewMode: "grid",
+      nowMs: PRICE_NOW,
+      results: priceResults([card({ id: "a", price: null }), card({ id: "b" })]),
+    });
+    expect(html).not.toContain("card-tile-price");
+    expect(html).not.toContain("result-price");
+  });
+
+  it("liste 05C : prix + pastille en ligne (vignette 56 px trop étroite pour la pill)", () => {
+    const html = render({
+      mode: "results",
+      viewMode: "list",
+      nowMs: PRICE_NOW,
+      results: priceResults([card({ id: "a", price: searchPrice(3) })]),
+    });
+    expect(html).toContain('data-testid="result-price"');
+    expect(html).toContain('data-freshness="fresh"');
+    expect(html).toContain('data-testid="result-price-dot"');
+    expect(html).toContain("bg-success");
+    expect(html).toContain("12,34");
+    expect(html).toContain("Prix Cardmarket : 12,34");
+    // La vignette de la liste ne porte pas de pill (pas de doublon visuel).
+    expect(html).not.toContain('data-testid="card-tile-price"');
+  });
+
+  it("repli TCGdex : pastille neutre même pour un prix récent", () => {
+    const html = render({
+      mode: "results",
+      viewMode: "list",
+      nowMs: PRICE_NOW,
+      results: priceResults([
+        card({ id: "a", price: searchPrice(1, { source: "tcgdex_fallback" }) }),
+      ]),
+    });
+    expect(html).toContain('data-freshness="stale"');
+    expect(html).not.toContain("bg-success");
+  });
+
+  it("prix absent de la tendance : retombe sur la moyenne 30 j puis le plus bas FR", () => {
+    const html = render({
+      mode: "results",
+      viewMode: "list",
+      nowMs: PRICE_NOW,
+      results: priceResults([
+        card({ id: "a", price: searchPrice(1, { trendCents: null, avg30Cents: 777 }) }),
+      ]),
+    });
+    expect(html).toContain("7,77");
+  });
+
+  it("cartes phares du mode neutre : prix aussi branchés", () => {
+    const html = render({
+      nowMs: PRICE_NOW,
+      discovery: ready({
+        popularSets: [],
+        featuredCards: [card({ id: "a", price: searchPrice(2) })],
+      }),
+    });
+    expect(html).toContain('data-testid="card-tile-price"');
+    expect(html).toContain("12,34");
+  });
+
+  it("conserve les actions wishlist / ajout rapide avec une tuile pricée", () => {
+    const html = render({
+      mode: "results",
+      viewMode: "grid",
+      nowMs: PRICE_NOW,
+      results: priceResults([card({ id: "a", price: searchPrice(2) })]),
+    });
+    expect(html).toContain('data-testid="card-wishlist"');
+    expect(html).toContain('data-testid="card-quick-add"');
+  });
+});
+
 describe("SearchScreen · états de résultats", () => {
   it("affiche un état vide soigné (0 résultat) avec réinitialisation", () => {
     const html = render({

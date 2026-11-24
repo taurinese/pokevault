@@ -60,6 +60,8 @@ interface FakeDataset {
   readonly cards: ReadonlyArray<Record<string, unknown>>;
   readonly binderCards: ReadonlyArray<Record<string, unknown>>;
   readonly copies: ReadonlyArray<Record<string, unknown>>;
+  /** Prix par défaut de chaque carte (lignes `card_id` + colonnes `price_*`). */
+  readonly defaultPrices?: ReadonlyArray<Record<string, unknown>> | undefined;
 }
 
 const dataset: FakeDataset = {
@@ -243,6 +245,13 @@ const makeFakeSql = (ds: FakeDataset, onQuery?: QueryHook): Sql => {
               set_total_count: set?.["total_count"] ?? null,
             };
           }),
+      );
+    }
+    // Jointure latérale du prix par défaut des cartes (`tx(cardIds)` = tableau d'ids).
+    if (text.includes("from public.card_latest_prices") && text.includes("catalog_cards c")) {
+      const cardIds = new Set((values[0] as ReadonlyArray<string>).map(String));
+      return Promise.resolve(
+        (ds.defaultPrices ?? []).filter((row) => cardIds.has(String(row["card_id"]))),
       );
     }
     if (text.includes("public.binder_cards")) {
@@ -546,5 +555,144 @@ describe("GET /api/binder-grid/$id", () => {
       (text) => !text.includes("set_config") && text.includes(" ? "),
     );
     expect(dataQueries.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prix : jointure latérale, prix par carte, valeur réelle du classeur
+// ---------------------------------------------------------------------------
+
+const priceColumns = (
+  source: "cardmarket" | "tcgdex_fallback",
+  trend: number | null,
+  fetchedAt: string,
+  extra: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> => ({
+  price_source: source,
+  price_trend_cents: trend,
+  price_low_fr_cents: null,
+  price_avg30_cents: null,
+  price_fetched_at: new Date(fetchedAt),
+  price_expires_at: new Date(Date.parse(fetchedAt) + 15 * 60_000),
+  ...extra,
+});
+
+const NO_PRICE = {
+  price_source: null,
+  price_trend_cents: null,
+  price_low_fr_cents: null,
+  price_avg30_cents: null,
+  price_fetched_at: null,
+  price_expires_at: null,
+};
+
+const priced: FakeDataset = {
+  ...dataset,
+  // Salamèche : copy-1 (FR normal ×2) a SON prix (2000), copy-2 (EN holo ×1) n'en a pas.
+  copies: dataset.copies.map((row) => {
+    if (row["id"] === "copy-1") {
+      return { ...row, ...priceColumns("cardmarket", 2000, "2026-06-01T11:58:00.000Z") };
+    }
+    if (row["id"] === "copy-2") return { ...row, ...NO_PRICE };
+    if (row["id"] === "copy-3") {
+      // Bulbizarre : repli TCGdex indicatif.
+      return { ...row, ...priceColumns("tcgdex_fallback", 150, "2026-06-01T08:00:00.000Z") };
+    }
+    return { ...row, ...NO_PRICE };
+  }),
+  defaultPrices: [
+    { card_id: "sv03.5-4", ...priceColumns("cardmarket", 1900, "2026-06-01T11:00:00.000Z") },
+    { card_id: "sv03.5-1", ...priceColumns("cardmarket", 120, "2026-06-01T10:00:00.000Z") },
+    // Pikachu (non possédée) : prix par défaut ; Professeur : aucun snapshot.
+    { card_id: "sv03.5-25", ...priceColumns("cardmarket", 500, "2026-06-01T11:59:00.000Z") },
+    { card_id: "sv03.5-TG01", ...NO_PRICE },
+  ],
+};
+
+describe("GET /api/binder-grid/$id — prix", () => {
+  const load = async (
+    ds: FakeDataset,
+    binderId: string,
+    onQuery?: QueryHook,
+  ): Promise<BinderGridPayload> => {
+    const { deps } = makeDeps(makeFakeSql(ds, onQuery));
+    const response = await handleBinderGrid(
+      request(`/api/binder-grid/${binderId}`, signedIn),
+      binderId,
+      deps,
+    );
+    expect(response.status).toBe(200);
+    return (await response.json()) as BinderGridPayload;
+  };
+
+  it("joint card_latest_prices en LEFT JOIN LATERAL … LIMIT 1 (copies et cartes)", async () => {
+    const queries: Array<string> = [];
+    await load(priced, BINDER_SET, (text) => queries.push(text));
+    const lateral = queries.filter((text) => text.includes("from public.card_latest_prices"));
+    expect(lateral).toHaveLength(2);
+    for (const text of lateral) {
+      expect(text).toContain("left join lateral");
+      expect(text).toMatch(/limit 1\s*\) p on true/);
+    }
+    const copies = lateral.find((text) => text.includes("from public.user_card_copies")) ?? "";
+    expect(copies).toContain("lp.language = c.language");
+    expect(copies).toContain("lp.variant = c.variant");
+    const cards = lateral.find((text) => !text.includes("from public.user_card_copies")) ?? "";
+    expect(cards).toContain("lp.language = 'FR' and lp.variant = 'normal'");
+    // Le filtre user_id reste explicite sur les exemplaires.
+    expect(copies).toContain("c.user_id =");
+  });
+
+  it("expose le prix de l'exemplaire possédé (prioritaire) sinon le prix par défaut de la carte", async () => {
+    const payload = await load(priced, BINDER_SET);
+    const byId = new Map(payload.cards.map((card) => [card.id, card] as const));
+    // Salamèche : le prix de la copie FR normal (2000) prime sur le défaut (1900).
+    expect(byId.get("sv03.5-4")?.price).toEqual({
+      trendCents: 2000,
+      lowFrCents: null,
+      avg30Cents: null,
+      source: "cardmarket",
+      fetchedAt: "2026-06-01T11:58:00.000Z",
+      expiresAt: "2026-06-01T12:13:00.000Z",
+    });
+    // Bulbizarre : le repli TCGdex de la copie possédée est exposé tel quel.
+    expect(byId.get("sv03.5-1")?.price?.source).toBe("tcgdex_fallback");
+    // Pikachu (manquante) : prix par défaut ; Professeur : aucun snapshot → null.
+    expect(byId.get("sv03.5-25")?.price?.trendCents).toBe(500);
+    expect(byId.get("sv03.5-TG01")?.price).toBeNull();
+  });
+
+  it("calcule la valeur réelle du classeur : Σ quantité × prix de l'exemplaire (repli prix de la carte)", async () => {
+    const payload = await load(priced, BINDER_SET);
+    // copy-1 : 2 × 2000 = 4000 ; copy-2 (EN holo, sans snapshot) : repli 1 × 1900 = 1900 ;
+    // copy-3 (Bulbizarre) : 1 × 150 = 150 ; USER_B exclu ; cartes manquantes non comptées.
+    expect(payload.binder?.stats.totalValueCents).toBe(4000 + 1900 + 150);
+  });
+
+  it("valeur du classeur custom : exemplaires de ses seules cartes", async () => {
+    const payload = await load(
+      {
+        ...priced,
+        defaultPrices: [
+          ...(priced.defaultPrices ?? []),
+          { card_id: "sv08-10", ...priceColumns("cardmarket", 700, "2026-06-01T11:00:00.000Z") },
+        ],
+      },
+      BINDER_CUSTOM,
+    );
+    // sv03.5-4 : 4000 + 1900 ; sv08-10 (JP promo ×2, sans prix exact) : repli 2 × 700.
+    expect(payload.binder?.stats.totalValueCents).toBe(4000 + 1900 + 1400);
+  });
+
+  it("totalValueCents est null et price null quand aucun snapshot n'existe (jamais 0 trompeur)", async () => {
+    const payload = await load(dataset, BINDER_SET);
+    expect(payload.binder?.stats.totalValueCents).toBeNull();
+    expect(payload.cards.every((card) => card.price === null)).toBe(true);
+  });
+
+  it("n'expose jamais le prix d'achat privé avec les prix de marché", async () => {
+    const raw = JSON.stringify(await load(priced, BINDER_SET));
+    expect(raw).not.toContain("purchase");
+    expect(raw).not.toContain("secret note");
   });
 });

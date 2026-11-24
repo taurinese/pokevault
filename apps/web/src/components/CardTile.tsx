@@ -1,7 +1,8 @@
-import { CardAspectRatio } from "@pokevault/domain";
+import { CardAspectRatio, type PriceFreshness } from "@pokevault/domain";
 import { ImageOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { t, tPlural } from "../i18n/index.ts";
+import { type TranslationKey, t, tPlural } from "../i18n/index.ts";
+import { formatPriceCents } from "../lib/card-detail-client.ts";
 
 /**
  * Possession de la carte, en union discriminée (aucune combinaison invalide) :
@@ -30,6 +31,63 @@ export type CardTileProps = CardTileOwnership & {
   readonly burstCount?: number | undefined;
   /** Visuel au-dessus de la ligne de flottaison : chargement `eager` au lieu de `lazy`. */
   readonly priority?: boolean | undefined;
+  /**
+   * Prix Cardmarket en centimes d'euro : quand il est renseigné (`!= null`), une
+   * micro-pill (prix `font-mono tabular-nums` + pastille de fraîcheur) s'affiche en
+   * bas de la tuile. Optionnel : sans prix, la tuile est strictement inchangée.
+   */
+  readonly priceCents?: number | null | undefined;
+  /** Fraîcheur du prix (pastille verte / ambre / neutre) ; défaut : `stale` (neutre). */
+  readonly priceFreshness?: PriceFreshness | undefined;
+  /** Libellé accessible du prix (défaut : « Prix Cardmarket : {prix} ({fraîcheur}) »). */
+  readonly priceLabel?: string | undefined;
+};
+
+/** Pastille de fraîcheur : tokens uniquement (vert `success`, ambre `warning`, neutre `muted`). */
+const FRESHNESS_DOT: Readonly<Record<PriceFreshness, string>> = {
+  fresh: "bg-success",
+  aging: "bg-warning",
+  stale: "bg-muted",
+  missing: "bg-muted",
+};
+
+/** Pastille de fraîcheur du prix (décorative : le libellé accessible est porté ailleurs). */
+export const PriceFreshnessDot = ({
+  freshness,
+  testId = "card-tile-price-dot",
+}: {
+  readonly freshness: PriceFreshness | undefined;
+  readonly testId?: string | undefined;
+}) => (
+  <span
+    aria-hidden="true"
+    data-testid={testId}
+    className={`size-1.5 shrink-0 rounded-pill ${FRESHNESS_DOT[freshness ?? "stale"]}`}
+  />
+);
+
+const FRESHNESS_LABEL: Readonly<Record<PriceFreshness, TranslationKey>> = {
+  fresh: "price.freshness.fresh",
+  aging: "price.freshness.aging",
+  stale: "price.freshness.stale",
+  missing: "price.freshness.missing",
+};
+
+/**
+ * Libellé accessible de la micro-pill prix d'une tuile (`null` si pas de prix),
+ * réutilisable par les écrans pour composer le nom accessible d'un bouton-tuile.
+ */
+export const cardTilePriceLabel = (
+  priceCents: number | null | undefined,
+  priceFreshness: PriceFreshness | undefined,
+  priceLabel?: string | undefined,
+): string | null => {
+  if (priceCents === null || priceCents === undefined) return null;
+  if (priceLabel !== undefined) return priceLabel;
+  return t("cardTile.price", {
+    price: formatPriceCents(priceCents) ?? "",
+    freshness: t(FRESHNESS_LABEL[priceFreshness ?? "stale"]),
+  });
 };
 
 /**
@@ -41,7 +99,10 @@ export type CardTileProps = CardTileOwnership & {
  * Zéro couleur hex brute : uniquement des tokens.
  */
 export const CardTile = (props: CardTileProps) => {
-  const { name, imageUrl, burstCount, priority = false } = props;
+  const { name, imageUrl, burstCount, priority = false, priceCents, priceFreshness } = props;
+  const priceText =
+    priceCents === null || priceCents === undefined ? null : formatPriceCents(priceCents);
+  const pillLabel = cardTilePriceLabel(priceCents, priceFreshness, props.priceLabel);
   const duplicateCount = props.state === "duplicate" && props.count >= 2 ? props.count : undefined;
   const isMissing = props.state === "missing";
   const hasBurst = burstCount !== undefined && burstCount > 0;
@@ -64,9 +125,10 @@ export const CardTile = (props: CardTileProps) => {
         : isMissing
           ? t("cardTile.missing", { name })
           : t("cardTile.owned", { name });
-  const label = hasBurst
+  const burstLabel = hasBurst
     ? `${baseLabel} — ${t("cardTile.burst", { count: burstCount })}`
     : baseLabel;
+  const label = pillLabel === null ? burstLabel : `${burstLabel} — ${pillLabel}`;
 
   return (
     <div
@@ -113,6 +175,17 @@ export const CardTile = (props: CardTileProps) => {
           +{burstCount}
         </span>
       ) : null}
+      {priceText === null ? null : (
+        <span
+          aria-hidden="true"
+          data-testid="card-tile-price"
+          data-freshness={priceFreshness ?? "stale"}
+          className="absolute bottom-1 left-1 inline-flex max-w-[calc(100%-0.5rem)] items-center gap-1 rounded-pill border border-line bg-surface-1/90 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-primary backdrop-blur-sm"
+        >
+          <PriceFreshnessDot freshness={priceFreshness} />
+          <span className="truncate font-mono tabular-nums">{priceText}</span>
+        </span>
+      )}
     </div>
   );
 };
