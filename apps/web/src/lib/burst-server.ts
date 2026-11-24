@@ -7,13 +7,17 @@
  * `routes/api/burst/*` (handlers `server`, retirés du bundle client) — jamais
  * par un composant ou un module client.
  *
+ * `GET /api/burst/cards?setId=…` (étape 2 `08B`–`08D`) lit le catalogue d'une
+ * extension + la possession de l'utilisateur dans une transaction `withUserRls`
+ * (rôle `authenticated`, RLS + filtre explicite `user_id`).
+ *
  * Toutes les routes exigent une session SSR valide (`getServerSession`, 401
  * sinon) ; les cookies rafraîchis par la session sont propagés via `Set-Cookie`.
  * Les routes POST exigent en plus une requête same-origin (`isRequestSameOrigin`,
  * 403 sinon — CSRF). Réf. : docs/01 §6, docs/06, ADR-006.
  */
 
-import { tcgdexSetLogoUrl } from "@pokevault/domain";
+import { type CardVariant, type HoloEffect, tcgdexSetLogoUrl } from "@pokevault/domain";
 import {
   BurstImportService,
   BurstImportServiceLive,
@@ -21,11 +25,13 @@ import {
   Database,
   DatabaseError,
   DatabaseLive,
+  type Sql,
+  withUserRls,
 } from "@pokevault/services";
 import { Cause, Effect, Exit, Layer, ManagedRuntime } from "effect";
 import { isRequestSameOrigin, resolveAppOrigin } from "./auth.ts";
 import { type AuthDeps, defaultAuthDeps, getServerSession } from "./auth-server.ts";
-import type { BurstSetOption } from "./burst-client.ts";
+import type { BurstSetCardsPayload, BurstSetOption } from "./burst-client.ts";
 
 // ---------------------------------------------------------------------------
 // Dépendances injectables
@@ -36,10 +42,20 @@ export type BurstLogger = (event: string, fields?: Readonly<Record<string, unkno
 /** Service des extensions du catalogue : requête SQL `catalog_sets × catalog_series`. */
 export type ListBurstSets = () => Effect.Effect<ReadonlyArray<BurstSetOption>, DatabaseError>;
 
+/**
+ * Catalogue d'une extension + possession de `userId` ; `null` si l'extension
+ * n'existe pas. Exécuté dans une transaction RLS.
+ */
+export type LoadBurstSetCards = (
+  userId: string,
+  setId: string,
+) => Effect.Effect<BurstSetCardsPayload | null, unknown>;
+
 /** Bundle de services serveur de la saisie rafale. */
 export interface BurstServiceBundle {
   readonly importService: BurstImportServiceShape;
   readonly listSets: ListBurstSets;
+  readonly loadSetCards: LoadBurstSetCards;
 }
 
 export interface BurstServerDeps {
@@ -120,6 +136,111 @@ const listSetsQuery = (): Effect.Effect<ReadonlyArray<BurstSetOption>, DatabaseE
     return rows.map(mapBurstSetRow);
   });
 
+// ---------------------------------------------------------------------------
+// Catalogue d'une extension + possession (transaction RLS)
+// ---------------------------------------------------------------------------
+
+interface BurstSetCardsSetRow {
+  readonly id: string;
+  readonly code: string | null;
+  readonly name_fr: string;
+  readonly official_count: number;
+  readonly total_count: number;
+  readonly logo_url: string | null;
+}
+
+interface BurstCardRow {
+  readonly id: string;
+  readonly local_id: string;
+  readonly local_id_numeric: number | null;
+  readonly name_fr: string;
+  readonly rarity: string | null;
+  readonly image_base_url: string | null;
+  readonly available_variants: ReadonlyArray<CardVariant> | null;
+  readonly holo_effect: HoloEffect;
+}
+
+interface BurstOwnedRow {
+  readonly card_id: string;
+  readonly quantity: number | string;
+}
+
+interface BurstBinderRow {
+  readonly id: string;
+}
+
+/**
+ * Lit, dans la transaction RLS courante, l'extension, ses cartes (tri
+ * `local_id_numeric ASC NULLS LAST, local_id ASC`), la quantité déjà possédée
+ * par carte (toutes variantes / langues) et le classeur d'extension de
+ * l'utilisateur. Tous les accès aux données utilisateur filtrent
+ * explicitement `user_id` (défense en profondeur sous la RLS).
+ */
+export const loadBurstSetCardsTx = async (
+  tx: Sql,
+  userId: string,
+  setId: string,
+): Promise<BurstSetCardsPayload | null> => {
+  const setRows = await tx<BurstSetCardsSetRow[]>`
+    select s.id, s.code, s.name_fr, s.official_count, s.total_count, s.logo_url
+      from public.catalog_sets s
+     where s.id = ${setId}`;
+  const set = setRows[0];
+  if (set === undefined) return null;
+
+  const cardRows = await tx<BurstCardRow[]>`
+    select c.id, c.local_id, c.local_id_numeric, c.name_fr, c.rarity,
+           c.image_base_url, c.available_variants, c.holo_effect
+      from public.catalog_cards c
+     where c.set_id = ${setId}
+     order by c.local_id_numeric asc nulls last, c.local_id asc`;
+
+  const ownedRows = await tx<BurstOwnedRow[]>`
+    select u.card_id, sum(u.quantity) as quantity
+      from public.user_card_copies u
+      join public.catalog_cards c on c.id = u.card_id
+     where u.user_id = ${userId} and c.set_id = ${setId}
+     group by u.card_id`;
+  const ownedByCard = new Map(ownedRows.map((row) => [row.card_id, Number(row.quantity)] as const));
+
+  const binderRows = await tx<BurstBinderRow[]>`
+    select b.id
+      from public.binders b
+     where b.user_id = ${userId} and b.kind = 'set' and b.set_id = ${setId}
+     limit 1`;
+
+  return {
+    set: {
+      id: set.id,
+      code: set.code,
+      nameFr: set.name_fr,
+      officialCount: set.official_count,
+      totalCount: set.total_count,
+      logoUrl: tcgdexSetLogoUrl(set.logo_url) ?? null,
+    },
+    cards: cardRows.map((row) => ({
+      id: row.id,
+      localId: row.local_id,
+      localIdNumeric: row.local_id_numeric,
+      nameFr: row.name_fr,
+      rarity: row.rarity,
+      imageBaseUrl: row.image_base_url,
+      availableVariants: row.available_variants ?? [],
+      holoEffect: row.holo_effect,
+      ownedQuantity: ownedByCard.get(row.id) ?? 0,
+    })),
+    binderId: binderRows[0]?.id ?? null,
+  };
+};
+
+/** Version `Effect` : transaction `withUserRls` (auth.uid() = userId). */
+export const loadBurstSetCards = (
+  sql: Sql,
+  userId: string,
+  setId: string,
+): ReturnType<LoadBurstSetCards> =>
+  withUserRls(sql, userId, (tx) => loadBurstSetCardsTx(tx, userId, setId));
+
 /**
  * Services Postgres (pool `postgres.js` paresseux, rôle `authenticated` à
  * moindre privilège : RLS + lecture seule du catalogue). Mis en cache sur
@@ -152,7 +273,9 @@ const getLiveBundle = (databaseUrl: string): Promise<BurstServiceBundle> => {
         const db = yield* Database;
         const listSets: ListBurstSets = () =>
           listSetsQuery().pipe(Effect.provideService(Database, db));
-        return { importService, listSets };
+        const loadSetCards: LoadBurstSetCards = (userId, setId) =>
+          loadBurstSetCards(db.sql, userId, setId);
+        return { importService, listSets, loadSetCards };
       }),
     )
     .catch((error: unknown) => {
@@ -285,6 +408,57 @@ export const handleListBurstSets = async (
   }
   const exit = await runLogged(deps, "sets", deps.service.listSets());
   return Exit.isSuccess(exit) ? json({ sets: exit.value }, 200, cookies) : unavailable(cookies);
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/burst/cards?setId=…
+// ---------------------------------------------------------------------------
+
+/** Identifiants d'extension TCGdex : `sv03.5`, `swsh12tg`, `me01`… (≤ 64 caractères). */
+const SET_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** Les cartes d'un utilisateur ne doivent jamais être mises en cache (même privé). */
+const PRIVATE_NO_STORE = "private, no-store";
+
+const jsonPrivate = (
+  body: unknown,
+  status: number,
+  cookies: ReadonlyArray<string> = [],
+): Response => {
+  const headers = new Headers({ "Cache-Control": PRIVATE_NO_STORE });
+  for (const cookie of cookies) headers.append("Set-Cookie", cookie);
+  return Response.json(body, { status, headers });
+};
+
+/**
+ * Handler `GET /api/burst/cards?setId=…` :
+ * - 401 sans session SSR (`no-store`, aucun accès base) ;
+ * - 400 si `setId` est absent, vide, trop long ou mal formé ;
+ * - 404 si l'extension n'existe pas ;
+ * - 200 `{ set, cards, binderId }` (`Cache-Control: private, no-store`) ;
+ * - 503 sans détail SQL en cas d'échec, ou sans `DATABASE_URL`.
+ * Les cookies rafraîchis par la session sont propagés via `Set-Cookie`.
+ */
+export const handleBurstSetCards = async (
+  request: Request,
+  deps: BurstServerDeps,
+): Promise<Response> => {
+  const session = await getServerSession(request, deps.auth);
+  if (session === null) return unauthorized();
+  const cookies = session.refreshedCookies ?? [];
+
+  const setId = new URL(request.url).searchParams.get("setId")?.trim() ?? "";
+  if (!SET_ID_PATTERN.test(setId)) {
+    return jsonPrivate({ error: "invalid_set_id" }, 400, cookies);
+  }
+  if (deps.service === null) {
+    warnNoDatabase(deps, "cards");
+    return jsonPrivate({ error: "burst_unavailable" }, 503, cookies);
+  }
+  const exit = await runLogged(deps, "cards", deps.service.loadSetCards(session.user.id, setId));
+  if (!Exit.isSuccess(exit)) return jsonPrivate({ error: "burst_unavailable" }, 503, cookies);
+  if (exit.value === null) return jsonPrivate({ error: "set_not_found" }, 404, cookies);
+  return jsonPrivate(exit.value, 200, cookies);
 };
 
 // ---------------------------------------------------------------------------

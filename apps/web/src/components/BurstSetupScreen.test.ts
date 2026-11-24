@@ -54,7 +54,6 @@ const render = (state: BurstSetupState, start?: () => void): string =>
         onToggleWishlist: () => {},
         onModeChange: () => {},
         onStart: start ?? (() => {}),
-        onEditLot: () => {},
         onRetry: () => {},
         onBack: () => {},
       },
@@ -243,15 +242,21 @@ describe("BurstSetupScreen (08A) · CTA Démarrer la saisie", () => {
     expect(html).toMatch(/FR · Normal · NM/);
   });
 
-  it("affiche l'étape 2 (récapitulatif + Modifier le lot) après démarrage", () => {
-    const state = reduce(readyState(), [
-      { type: "set_selected", setId: "sv03.5" },
-      { type: "started" },
-    ]);
-    const html = render(state);
-    expect(html).toContain('data-testid="burst-step2"');
-    expect(html).toContain('data-testid="burst-edit"');
-    expect(html).toContain(fr["burst.step2.edit"]);
-    expect(html).toContain(fr["burst.step2.placeholder"]);
+  it("reprend tous les réglages du lot au retour depuis l'étape 2", () => {
+    const config: BurstSetupConfig = {
+      setId: "sv03.5",
+      language: "JP",
+      variant: "holo",
+      condition: "GD",
+      removeFromWishlist: false,
+      mode: "keypad",
+    };
+    const state = initialBurstSetupState(undefined, config);
+    expect(state.selectedSetId).toBe("sv03.5");
+    expect(burstSetupConfig(state)).toEqual(config);
+    const html = render({ ...state, status: "ready", sets: sets() });
+    expect(html).toMatch(/aria-pressed="true"[^>]*data-testid="burst-language-JP"/);
+    expect(html).toMatch(/aria-checked="true"[^>]*data-testid="burst-mode-keypad"/);
+    expect(html).not.toContain('data-testid="burst-step2"');
   });
 });
