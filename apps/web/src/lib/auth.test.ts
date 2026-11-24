@@ -143,6 +143,9 @@ describe("sanitizeRedirectPath (anti open-redirect)", () => {
   it.each([
     "//evil.test",
     "//evil.test/path",
+    "/.//evil.test",
+    "/a/..//evil.test",
+    "/%2e//evil.test",
     "/\\evil.test",
     "\\evil.test",
     "http://evil.test",

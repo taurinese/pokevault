@@ -165,7 +165,9 @@ export const sanitizeRedirectPath = (input: string | null | undefined): string =
     // Un chemin interne reste sur la même origine une fois résolu.
     const resolved = new URL(input, "http://pokevault.invalid");
     if (resolved.origin !== "http://pokevault.invalid") return "/";
-    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    const normalized = `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    // La normalisation WHATWG retire `.` / `..` et peut produire `//evil.com` depuis `/.//evil.com`.
+    return !normalized.startsWith("/") || normalized.startsWith("//") ? "/" : normalized;
   } catch {
     return "/";
   }
