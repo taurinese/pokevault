@@ -142,6 +142,37 @@ export const computeWishlistFreshness = (
   return "stale";
 };
 
+/** Âge relatif structuré d'un snapshot de prix (docs/04 §2.1 : `il y a 6 min`, `il y a 2 h`). */
+export type WishlistPriceAge =
+  | { readonly kind: "just_now" }
+  | { readonly kind: "minutes"; readonly count: number }
+  | { readonly kind: "hours"; readonly count: number }
+  | { readonly kind: "days"; readonly count: number };
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+export const computeWishlistPriceAge = (
+  priceFetchedAt: string | null,
+  nowMs: number,
+): WishlistPriceAge | null => {
+  if (priceFetchedAt === null) return null;
+  const fetchedMs = Date.parse(priceFetchedAt);
+  if (Number.isNaN(fetchedMs)) return null;
+  const ageMs = Math.max(0, nowMs - fetchedMs);
+  if (ageMs < MINUTE_MS) return { kind: "just_now" };
+  if (ageMs < HOUR_MS) return { kind: "minutes", count: Math.floor(ageMs / MINUTE_MS) };
+  if (ageMs < DAY_MS) return { kind: "hours", count: Math.floor(ageMs / HOUR_MS) };
+  return { kind: "days", count: Math.floor(ageMs / DAY_MS) };
+};
+
+/** Retourne `setId` seulement s'il existe encore dans les souhaits, sinon `null`. */
+export const resolveEffectiveWishlistSetId = (
+  items: ReadonlyArray<WishlistEnrichedItem>,
+  setId: string | null,
+): string | null => (setId !== null && items.some((item) => item.setId === setId) ? setId : null);
+
 // ---------------------------------------------------------------------------
 // Helpers purs — synthèse & filtres
 // ---------------------------------------------------------------------------

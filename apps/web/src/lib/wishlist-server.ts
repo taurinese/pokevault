@@ -377,9 +377,10 @@ const toEnrichedItem = (row: WishlistEnrichedRow): WishlistEnrichedItem => ({
 
 /**
  * Souhaits de l'utilisateur + carte + extension + dernier prix. `card_latest_prices` est
- * jointe en `LEFT JOIN LATERAL` : la condition de slot `(carte, langue, variante)` descend
- * ainsi dans la vue `DISTINCT ON` (lookup indexé par `idx_price_snapshots_lookup`, jamais
- * un balayage complet des snapshots) ; sans snapshot, tous les champs prix valent `null`.
+ * jointe en `LEFT JOIN LATERAL (... LIMIT 1)` : le `LIMIT 1` empêche Postgres de remonter la
+ * sous-requête latérale et pousse `(card_id, language, variant)` dans la vue `DISTINCT ON`
+ * (Index Scan O(1) par souhait sur `idx_price_snapshots_lookup`, jamais un balayage complet
+ * de `price_snapshots`) ; sans snapshot, tous les champs prix valent `null`.
  * Tri `priority ASC` (`high` < `normal`) puis récents d'abord : `idx_wishlist_items_user_priority`.
  */
 const loadWishlist = async (
@@ -403,6 +404,7 @@ const loadWishlist = async (
                lp.fetched_at, lp.expires_at, lp.is_fresh
           from public.card_latest_prices lp
          where lp.card_id = w.card_id and lp.language = w.language and lp.variant = w.variant
+         limit 1
       ) p on true
      where w.user_id = ${userId}
      order by w.priority asc, w.created_at desc, w.id desc`;

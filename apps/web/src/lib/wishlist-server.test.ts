@@ -278,6 +278,7 @@ describe("GET /api/wishlist", () => {
     expect(query).toContain("lp.card_id = w.card_id");
     expect(query).toContain("lp.language = w.language");
     expect(query).toContain("lp.variant = w.variant");
+    expect(query).toContain("limit 1");
     expect(query).toContain("w.user_id = ?");
     expect(query).toContain("order by w.priority asc, w.created_at desc");
     // Défense en profondeur : le user_id de la session est bien passé en paramètre.

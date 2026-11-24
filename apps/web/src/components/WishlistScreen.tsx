@@ -15,6 +15,7 @@ import {
   acquireWishlistItem,
   addWishlistItem,
   computeWishlistFreshness,
+  computeWishlistPriceAge,
   countWishlistTabs,
   DEFAULT_WISHLIST_FILTERS,
   deleteWishlistItem,
@@ -22,6 +23,7 @@ import {
   fetchWishlist,
   filterWishlistItems,
   isWishlistBelowThreshold,
+  resolveEffectiveWishlistSetId,
   summarizeWishlist,
   updateWishlistItem,
   WISHLIST_PATH,
@@ -198,39 +200,37 @@ const WishlistHeader = ({
 const SummaryBar = ({ items }: { readonly items: ReadonlyArray<WishlistEnrichedItem> }) => {
   const summary = summarizeWishlist(items);
   return (
-    <fieldset className="m-0 min-w-0 border-0 p-0">
-      <legend className="sr-only">{t("wishlist.summary.label")}</legend>
-      <div
-        data-testid="wishlist-summary"
-        className="flex items-center justify-between gap-2 rounded-card border border-line bg-surface-1 px-3 py-2"
-      >
-        <p className="flex min-w-0 items-baseline gap-x-2 whitespace-nowrap">
-          <span className="text-xs text-secondary">{t("wishlist.summary.budget")}</span>
+    <section
+      aria-label={t("wishlist.summary.label")}
+      data-testid="wishlist-summary"
+      className="flex items-center justify-between gap-2 rounded-card border border-line bg-surface-1 px-3 py-2"
+    >
+      <p className="flex min-w-0 items-baseline gap-x-2 whitespace-nowrap">
+        <span className="text-xs text-secondary">{t("wishlist.summary.budget")}</span>
+        <span
+          data-testid="wishlist-budget"
+          className="font-mono text-base font-bold tabular-nums text-primary"
+        >
+          {formatPriceCents(summary.estimatedTotalCents)}
+        </span>
+        {summary.unpricedCount > 0 ? (
           <span
-            data-testid="wishlist-budget"
-            className="font-mono text-base font-bold tabular-nums text-primary"
+            data-testid="wishlist-unpriced"
+            className="truncate font-mono text-xs tabular-nums text-muted"
           >
-            {formatPriceCents(summary.estimatedTotalCents)}
-          </span>
-          {summary.unpricedCount > 0 ? (
-            <span
-              data-testid="wishlist-unpriced"
-              className="truncate font-mono text-xs tabular-nums text-muted"
-            >
-              {tPlural("wishlist.summary.unpriced", summary.unpricedCount)}
-            </span>
-          ) : null}
-        </p>
-        {summary.belowThresholdCount > 0 ? (
-          <span
-            data-testid="wishlist-below-badge"
-            className="shrink-0 rounded-pill border border-success bg-success/15 px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-success-strong"
-          >
-            {t("wishlist.summary.belowThreshold", { count: summary.belowThresholdCount })}
+            {tPlural("wishlist.summary.unpriced", summary.unpricedCount)}
           </span>
         ) : null}
-      </div>
-    </fieldset>
+      </p>
+      {summary.belowThresholdCount > 0 ? (
+        <span
+          data-testid="wishlist-below-badge"
+          className="shrink-0 rounded-pill border border-success bg-success/15 px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-success-strong"
+        >
+          {t("wishlist.summary.belowThreshold", { count: summary.belowThresholdCount })}
+        </span>
+      ) : null}
+    </section>
   );
 };
 
@@ -311,7 +311,6 @@ const FRESHNESS: Readonly<
   Record<
     WishlistFreshness,
     {
-      readonly labelKey: TranslationKey;
       readonly hintKey: TranslationKey;
       readonly tone: string;
       readonly dot: string;
@@ -319,32 +318,62 @@ const FRESHNESS: Readonly<
   >
 > = {
   fresh: {
-    labelKey: "wishlist.price.fresh",
     hintKey: "wishlist.price.fresh.hint",
     tone: "border-success text-success-strong",
     dot: "bg-success",
   },
   aging: {
-    labelKey: "wishlist.price.aging",
     hintKey: "wishlist.price.aging.hint",
     tone: "border-warning text-warning",
     dot: "bg-warning",
   },
   stale: {
-    labelKey: "wishlist.price.stale",
     hintKey: "wishlist.price.stale.hint",
     tone: "border-line text-muted",
     dot: "bg-muted",
   },
   missing: {
-    labelKey: "wishlist.price.missing",
     hintKey: "wishlist.price.missing.hint",
     tone: "border-line text-muted",
     dot: "bg-muted",
   },
 };
 
-const FreshnessPill = ({ freshness }: { readonly freshness: WishlistFreshness }) => {
+/** Libellé d'âge relatif conforme à docs/04 §2.1 (`il y a 6 min`, `il y a 2 h`, `À l'instant`). */
+export const formatWishlistFreshnessLabel = (
+  freshness: WishlistFreshness,
+  fetchedAt: string | null,
+  nowMs: number,
+): string => {
+  if (freshness === "missing") return t("wishlist.price.missing");
+  const age = computeWishlistPriceAge(fetchedAt, nowMs);
+  const ageText =
+    age === null
+      ? null
+      : age.kind === "just_now"
+        ? t("wishlist.price.justNow")
+        : age.kind === "minutes"
+          ? t("wishlist.price.minutesAgo", { count: age.count })
+          : age.kind === "hours"
+            ? t("wishlist.price.hoursAgo", { count: age.count })
+            : tPlural("wishlist.price.daysAgo", age.count);
+  if (freshness === "stale") {
+    return ageText === null
+      ? t("wishlist.price.stale")
+      : t("wishlist.price.staleWithAge", { age: ageText });
+  }
+  return ageText ?? t("wishlist.price.fresh");
+};
+
+const FreshnessPill = ({
+  freshness,
+  fetchedAt,
+  nowMs,
+}: {
+  readonly freshness: WishlistFreshness;
+  readonly fetchedAt: string | null;
+  readonly nowMs: number;
+}) => {
   const entry = FRESHNESS[freshness];
   return (
     <span
@@ -354,7 +383,7 @@ const FreshnessPill = ({ freshness }: { readonly freshness: WishlistFreshness })
       className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-[11px] font-semibold ${entry.tone}`}
     >
       <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-pill ${entry.dot}`} />
-      {t(entry.labelKey)}
+      {formatWishlistFreshnessLabel(freshness, fetchedAt, nowMs)}
     </span>
   );
 };
@@ -537,7 +566,7 @@ const WishlistRow = ({
               {formatPriceCents(current)}
             </span>
           )}
-          <FreshnessPill freshness={freshness} />
+          <FreshnessPill freshness={freshness} fetchedAt={item.priceFetchedAt} nowMs={nowMs} />
           {item.targetPriceCents === null ? null : (
             <span
               data-testid="wishlist-target"
@@ -660,7 +689,11 @@ export interface WishlistViewProps {
 
 export const WishlistView = ({ state, actions }: WishlistViewProps) => {
   const items = state.data.status === "ready" ? state.data.data : null;
-  const visible = items === null ? [] : filterWishlistItems(items, state.filters);
+  const effectiveFilters: WishlistFilters =
+    items === null
+      ? state.filters
+      : { ...state.filters, setId: resolveEffectiveWishlistSetId(items, state.filters.setId) };
+  const visible = items === null ? [] : filterWishlistItems(items, effectiveFilters);
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-4 px-4 pt-10 pb-40">
       <WishlistHeader
@@ -670,7 +703,7 @@ export const WishlistView = ({ state, actions }: WishlistViewProps) => {
       {items !== null && items.length > 0 ? (
         <>
           <SummaryBar items={items} />
-          <Filters items={items} filters={state.filters} actions={actions} />
+          <Filters items={items} filters={effectiveFilters} actions={actions} />
         </>
       ) : null}
 
@@ -827,12 +860,12 @@ export const WishlistScreen = () => {
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(new Set());
   const [editing, setEditing] = useState<TargetEditState | null>(null);
   const [toast, setToast] = useState<WishlistToastState | null>(null);
-  const [announcement, setAnnouncement] = useState("");
+  const announcement = "";
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [reloadToken, setReloadToken] = useState(0);
   // Les rechargements après mutation gardent l'écran affiché (pas de retour au squelette).
   const [silentReload, setSilentReload] = useState(false);
-  const undoRef = useRef<UndoPayload | null>(null);
+  const undoRef = useRef<{ readonly toastId: number; readonly payload: UndoPayload } | null>(null);
   const toastSeq = useRef(0);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `reloadToken` relance volontairement le chargement
@@ -876,10 +909,16 @@ export const WishlistScreen = () => {
     setReloadToken((token) => token + 1);
   };
 
-  const showToast = (message: string, tone: "success" | "error", canUndo: boolean): void => {
+  const showToast = (
+    message: string,
+    tone: "success" | "error",
+    undoPayload: UndoPayload | null = null,
+  ): void => {
     toastSeq.current += 1;
-    setToast({ id: toastSeq.current, tone, message, canUndo, undoing: false });
-    setAnnouncement(message);
+    const id = toastSeq.current;
+    undoRef.current = undoPayload === null ? null : { toastId: id, payload: undoPayload };
+    // `ToastRegion` porte déjà `role="status" aria-live="polite"` : ne pas doubler dans `announcement`.
+    setToast({ id, tone, message, canUndo: undoPayload !== null, undoing: false });
   };
 
   const setPending = (id: string, pending: boolean): void =>
@@ -915,7 +954,7 @@ export const WishlistScreen = () => {
         if (result.kind === "unauthorized") return redirectToLogin();
         if (result.kind === "ok") return reload(true);
         if (result.kind === "not-found") return reload(true);
-        showToast(t("wishlist.error.action"), "error", false);
+        showToast(t("wishlist.error.action"), "error");
       });
     },
 
@@ -964,7 +1003,7 @@ export const WishlistScreen = () => {
         }
         if (result.kind === "not-found") return reload(true);
         setEditing((current) => (current === null ? current : { ...current, invalid: true }));
-        showToast(t("wishlist.error.action"), "error", false);
+        showToast(t("wishlist.error.action"), "error");
       });
     },
 
@@ -977,11 +1016,14 @@ export const WishlistScreen = () => {
         if (result.kind === "ok" || result.kind === "not-found") {
           removeLocally(item.id);
           setEditing((current) => (current?.itemId === item.id ? null : current));
-          undoRef.current = { name: itemName(item), readd: readdBodyOf(item), copyId: null };
-          showToast(t("wishlist.toast.removed", { name: itemName(item) }), "success", true);
+          showToast(t("wishlist.toast.removed", { name: itemName(item) }), "success", {
+            name: itemName(item),
+            readd: readdBodyOf(item),
+            copyId: null,
+          });
           return;
         }
-        showToast(t("wishlist.error.action"), "error", false);
+        showToast(t("wishlist.error.action"), "error");
       });
     },
 
@@ -994,34 +1036,38 @@ export const WishlistScreen = () => {
         if (result.kind === "ok") {
           removeLocally(result.body.removedWishlistItemId);
           setEditing((current) => (current?.itemId === item.id ? null : current));
-          undoRef.current = {
+          showToast(t("wishlist.toast.acquired", { name: itemName(item) }), "success", {
             name: itemName(item),
             readd: readdBodyOf(item),
             copyId: result.body.copy.id,
-          };
-          showToast(t("wishlist.toast.acquired", { name: itemName(item) }), "success", true);
+          });
           return;
         }
         if (result.kind === "not-found") return reload(true);
         showToast(
           t(result.kind === "conflict" ? "wishlist.error.overflow" : "wishlist.error.action"),
           "error",
-          false,
         );
       });
     },
 
     onUndo: () => {
-      const payload = undoRef.current;
-      if (payload === null || toast === null || toast.undoing) return;
+      const active = undoRef.current;
+      if (active === null || toast === null || toast.undoing || active.toastId !== toast.id) return;
+      const activeToastId = toast.id;
       setToast({ ...toast, undoing: true });
-      void runWishlistUndo(payload).then((outcome) => {
+      void runWishlistUndo(active.payload).then((outcome) => {
         if (outcome === "unauthorized") return redirectToLogin();
-        if (outcome === "failed") return showToast(t("wishlist.error.undo"), "error", false);
+        // Si un nouveau toast a remplacé celui-ci entre-temps, ne pas écraser le nouveau toast/undo.
+        const stillCurrent = undoRef.current?.toastId === activeToastId;
+        if (outcome === "failed") {
+          if (stillCurrent) showToast(t("wishlist.error.undo"), "error");
+          return;
+        }
         reload(true);
-        if (outcome === "partial") return showToast(t("wishlist.error.undo"), "error", false);
-        undoRef.current = null;
-        showToast(t("wishlist.toast.undone", { name: payload.name }), "success", false);
+        if (!stillCurrent) return;
+        if (outcome === "partial") return showToast(t("wishlist.error.undo"), "error");
+        showToast(t("wishlist.toast.undone", { name: active.payload.name }), "success");
       });
     },
     onDismissToast: () => setToast(null),

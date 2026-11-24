@@ -70,7 +70,7 @@ export const summarizeWarnings = (
 
 const CSV_MIME = "text/csv;charset=utf-8";
 
-/** Télécharge `content` en Blob UTF-8 sous `filename` (lien temporaire, URL révoquée ensuite). */
+/** Télécharge `content` en Blob UTF-8 sous `filename` (délai 10 s avant révocation pour iOS Safari). */
 export const downloadTextFile = (filename: string, content: string): void => {
   const blob = new Blob([content], { type: CSV_MIME });
   const url = URL.createObjectURL(blob);
@@ -81,7 +81,7 @@ export const downloadTextFile = (filename: string, content: string): void => {
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 };
 
 // ---------------------------------------------------------------------------
@@ -448,7 +448,15 @@ export const CardmarketExportSheet = ({ open, onClose, items }: CardmarketExport
     if (open) setCopyStatus("idle");
   }, [open]);
 
-  const model = useMemo(() => buildExportModel(items, options), [items, options]);
+  // Si le périmètre « Une extension » vise un set qui a disparu, on se replie sur le 1er set actif.
+  const effectiveOptions = useMemo<WishlistExportOptions>(() => {
+    if (options.scope !== "set") return options;
+    const sets = wishlistSetOptions(items);
+    if (options.setId !== null && sets.some((set) => set.id === options.setId)) return options;
+    return { ...options, setId: sets[0]?.id ?? null };
+  }, [items, options]);
+
+  const model = useMemo(() => buildExportModel(items, effectiveOptions), [items, effectiveOptions]);
 
   const actions: CardmarketExportActions = {
     onOptionsChange: (patch) => {
@@ -471,12 +479,16 @@ export const CardmarketExportSheet = ({ open, onClose, items }: CardmarketExport
       if (model.addList.lineCount === 0) return;
       const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
       if (clipboard === undefined) {
+        setFormat("addList");
         setCopyStatus("error");
         return;
       }
       void clipboard.writeText(model.addList.content).then(
         () => setCopyStatus("done"),
-        () => setCopyStatus("error"),
+        () => {
+          setFormat("addList");
+          setCopyStatus("error");
+        },
       );
     },
   };
@@ -490,7 +502,7 @@ export const CardmarketExportSheet = ({ open, onClose, items }: CardmarketExport
       ) : (
         <CardmarketExportContent
           items={items}
-          options={options}
+          options={effectiveOptions}
           format={format}
           copyStatus={copyStatus}
           model={model}

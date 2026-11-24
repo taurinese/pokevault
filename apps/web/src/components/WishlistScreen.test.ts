@@ -306,25 +306,43 @@ describe("WishlistView — ligne de souhait", () => {
     expect(tagOf(rowOf(html, "Pikachu"), "wishlist-priority")).toContain('aria-pressed="false"');
   });
 
-  it("shows the current price + freshness pill: green < 15 min, amber 15 min–6 h, neutral indicative, `Prix bientôt` when missing", async () => {
+  it("shows the current price + relative-age freshness pill: green < 15 min, amber 15 min–6 h, neutral indicative, `Prix indisponible` when missing", async () => {
     const html = await render();
-    const fresh = tagOf(rowOf(html, "Dracaufeu ex"), "wishlist-freshness");
+    const freshRow = rowOf(html, "Dracaufeu ex");
+    const fresh = tagOf(freshRow, "wishlist-freshness");
     expect(fresh).toContain('data-freshness="fresh"');
-    expect(rowOf(html, "Dracaufeu ex")).toContain("text-success-strong");
-    expect(rowOf(html, "Dracaufeu ex")).toMatch(/data-testid="wishlist-price"[^>]*>140,00(\s| )€</);
+    expect(freshRow).toContain("text-success-strong");
+    expect(freshRow).toContain("il y a 1 min");
+    expect(freshRow).toMatch(/data-testid="wishlist-price"[^>]*>140,00(\s| )€</);
 
     const aging = rowOf(html, "Pikachu");
     expect(tagOf(aging, "wishlist-freshness")).toContain('data-freshness="aging"');
     expect(tagOf(aging, "wishlist-freshness")).toContain("text-warning");
+    expect(aging).toContain("il y a 1 h");
 
     const stale = rowOf(html, "Évoli");
     expect(tagOf(stale, "wishlist-freshness")).toContain('data-freshness="stale"');
-    expect(stale).toContain("Indicatif");
+    expect(stale).toContain("il y a 5 min · indicatif");
 
     const missing = rowOf(html, "Mew");
     expect(tagOf(missing, "wishlist-freshness")).toContain('data-freshness="missing"');
-    expect(missing).toContain("Prix bientôt");
+    expect(missing).toContain("Prix indisponible");
     expect(missing).not.toContain('data-testid="wishlist-price"');
+
+    // 5 h 50 doit afficher « il y a 5 h », jamais « Il y a quelques minutes ».
+    const fiveHours = priced(500, {
+      nameFr: "Florizarre",
+      priceFetchedAt: minutesAgo(350),
+    });
+    const htmlFive = await render({ data: { status: "ready", data: [fiveHours] } });
+    expect(htmlFive).toContain("il y a 5 h");
+    expect(htmlFive).not.toContain("quelques minutes");
+  });
+
+  it("falls back to all sets when the active setId filter no longer exists in items", async () => {
+    const html = await render({ filters: { tab: "all", setId: "removed-set" } });
+    expect(html.match(/data-testid="wishlist-item"/g)).toHaveLength(4);
+    expect(html).not.toContain('data-testid="wishlist-filtered-empty"');
   });
 
   it("shows the target price, highlighted in green and badged when below threshold", async () => {
