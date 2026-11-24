@@ -9,7 +9,11 @@ import {
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { BinderGridCard, BinderGridPayload } from "../lib/binder-grid-client.ts";
+import type {
+  BinderGridCard,
+  BinderGridPayload,
+  BinderGridPrice,
+} from "../lib/binder-grid-client.ts";
 import {
   BinderGridView,
   type BinderGridViewActions,
@@ -374,5 +378,138 @@ describe("BinderGridScreen (03) — états & tokens Dark/Light", () => {
     ]) {
       expect(html).toContain(token);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prix Cardmarket : tuiles + valeur du classeur
+// ---------------------------------------------------------------------------
+
+const PRICE_NOW = Date.parse("2026-06-01T12:00:00.000Z");
+
+const gridPrice = (minutes: number, trendCents: number | null = 1234): BinderGridPrice => ({
+  trendCents,
+  lowFrCents: 900,
+  avg30Cents: 1100,
+  source: "cardmarket",
+  fetchedAt: new Date(PRICE_NOW - minutes * 60_000).toISOString(),
+  expiresAt: new Date(PRICE_NOW - minutes * 60_000 + 15 * 60_000).toISOString(),
+});
+
+const pricedPayload = (
+  priceByIndex: Readonly<Record<number, BinderGridCard["price"]>>,
+  totalValueCents: number | null = 9876,
+): BinderGridPayload => ({
+  ...setPayload,
+  binder:
+    setPayload.binder === null
+      ? null
+      : { ...setPayload.binder, stats: { ...setPayload.binder.stats, totalValueCents } },
+  cards: cards.map((card, index) => ({ ...card, price: priceByIndex[index] ?? null })),
+});
+
+describe("BinderGridScreen (03) — prix & fraîcheur", () => {
+  it("n'affiche aucune pill prix ni valeur quand aucun prix n'est connu (payload historique)", async () => {
+    const html = await renderView(makeState({ nowMs: PRICE_NOW }));
+    expect(html).not.toContain("card-tile-price");
+    expect(html).not.toContain('data-testid="binder-value"');
+  });
+
+  it("passe prix + pastille verte/ambre/neutre aux tuiles selon l'âge réel du snapshot", async () => {
+    const html = await renderView(
+      makeState({
+        nowMs: PRICE_NOW,
+        load: {
+          status: "ready",
+          payload: pricedPayload({ 0: gridPrice(5), 1: gridPrice(120), 2: gridPrice(60 * 24) }),
+        },
+      }),
+    );
+    expect(countOccurrences(html, 'data-testid="card-tile-price"')).toBe(3);
+    expect(html).toContain('data-freshness="fresh"');
+    expect(html).toContain('data-freshness="aging"');
+    expect(html).toContain('data-freshness="stale"');
+    expect(html).toContain("bg-success");
+    expect(html).toContain("bg-warning");
+    expect(html).toContain("12,34");
+    expect(html).toContain("font-mono tabular-nums");
+  });
+
+  it("repli TCGdex : toujours neutre, même récent", async () => {
+    const html = await renderView(
+      makeState({
+        nowMs: PRICE_NOW,
+        load: {
+          status: "ready",
+          payload: pricedPayload({ 0: { ...gridPrice(1), source: "tcgdex_fallback" } }),
+        },
+      }),
+    );
+    expect(countOccurrences(html, 'data-testid="card-tile-price"')).toBe(1);
+    expect(html).toContain('data-freshness="stale"');
+    expect(html).not.toContain("bg-success");
+  });
+
+  it("prix tendance absent : retombe sur la moyenne 30 j puis le plus bas FR", async () => {
+    const html = await renderView(
+      makeState({
+        nowMs: PRICE_NOW,
+        load: {
+          status: "ready",
+          payload: pricedPayload({
+            0: { ...gridPrice(1), trendCents: null, avg30Cents: 777, lowFrCents: 100 },
+          }),
+        },
+      }),
+    );
+    expect(html).toContain("7,77");
+  });
+
+  it("inclut le prix dans le nom accessible du bouton-tuile", async () => {
+    const html = await renderView(
+      makeState({
+        nowMs: PRICE_NOW,
+        load: { status: "ready", payload: pricedPayload({ 0: gridPrice(5) }) },
+      }),
+    );
+    const label = html.match(/data-card-id="sv03.5-1"[^>]*aria-label="([^"]*)"/)?.[1] ?? "";
+    expect(label).toContain("Prix Cardmarket : 12,34");
+    expect(label).toContain("À jour");
+  });
+
+  it("affiche la valeur réelle du classeur en font-mono tabular-nums", async () => {
+    const html = await renderView(
+      makeState({
+        nowMs: PRICE_NOW,
+        load: { status: "ready", payload: pricedPayload({}, 987654) },
+      }),
+    );
+    expect(html).toContain('data-testid="binder-value"');
+    expect(html).toContain("Valeur estimée du classeur");
+    const amount = html.match(/data-testid="binder-value-amount"[^>]*>([^<]*)</);
+    expect(amount?.[0]).toContain("font-mono");
+    expect(amount?.[0]).toContain("tabular-nums");
+    expect(amount?.[1]?.replace(/\s/g, " ")).toBe("9 876,54 €");
+  });
+
+  it("une valeur de 0 € reste affichée (exemplaires cotés à 0), null la masque", async () => {
+    const zero = await renderView(
+      makeState({ nowMs: PRICE_NOW, load: { status: "ready", payload: pricedPayload({}, 0) } }),
+    );
+    expect(zero).toContain('data-testid="binder-value"');
+    const none = await renderView(
+      makeState({ nowMs: PRICE_NOW, load: { status: "ready", payload: pricedPayload({}, null) } }),
+    );
+    expect(none).not.toContain('data-testid="binder-value"');
+  });
+
+  it("garde le ratio 63/88 sur les tuiles avec prix", async () => {
+    const html = await renderView(
+      makeState({
+        nowMs: PRICE_NOW,
+        load: { status: "ready", payload: pricedPayload({ 0: gridPrice(5) }) },
+      }),
+    );
+    expect(html).toContain(`aspect-ratio:${CardAspectRatio}`);
   });
 });

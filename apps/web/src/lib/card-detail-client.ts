@@ -13,6 +13,7 @@ import {
   type CardCondition,
   type CardLanguage,
   type CardVariant,
+  type PriceSource,
   type UserCardCopy,
 } from "@pokevault/domain";
 
@@ -59,6 +60,24 @@ export interface CardDetailBinder {
   readonly containsCard: boolean;
 }
 
+/**
+ * Dernier prix Cardmarket connu de la carte (vue `card_latest_prices`) : snapshot
+ * `(FR, normal)` de préférence, sinon le plus récent de la carte. Montants en
+ * centimes d'euro (`null` = non coté).
+ */
+export interface CardDetailPrice {
+  readonly trendCents: number | null;
+  readonly lowFrCents: number | null;
+  readonly avg30Cents: number | null;
+  readonly source: PriceSource;
+  /** ISO 8601 de la collecte. */
+  readonly fetchedAt: string;
+  /** ISO 8601 de la limite TTL (`fetchedAt + 15 min`). */
+  readonly expiresAt: string;
+  /** `expiresAt > now()` au moment de la lecture serveur. */
+  readonly isFresh: boolean;
+}
+
 /** Réponse de `GET /api/cards/$cardId`. */
 export interface CardDetailPayload {
   readonly card: CardDetailCard;
@@ -66,6 +85,8 @@ export interface CardDetailPayload {
   readonly copies: ReadonlyArray<UserCardCopy>;
   /** Dossiers perso (`kind = 'custom'`) de l'utilisateur, triés (épinglés d'abord). */
   readonly customBinders: ReadonlyArray<CardDetailBinder>;
+  /** Dernier prix Cardmarket connu, ou `null` quand aucun snapshot n'existe. */
+  readonly price: CardDetailPrice | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +110,10 @@ export const cardCopyApiPath = (copyId: string): string =>
 /** `POST` / `DELETE /api/cards/$cardId/binders` — ajout / retrait d'un dossier perso. */
 export const cardBindersApiPath = (cardId: string): string =>
   `/api/cards/${encodeURIComponent(cardId)}/binders`;
+
+/** `POST /api/cards/$cardId/price-refresh` — rafraîchissement manuel du prix Cardmarket. */
+export const cardPriceRefreshApiPath = (cardId: string): string =>
+  `/api/cards/${encodeURIComponent(cardId)}/price-refresh`;
 
 // ---------------------------------------------------------------------------
 // Helpers purs — prix
@@ -127,6 +152,46 @@ export const formatPriceCents = (cents: number | null, locale = "fr-FR"): string
   if (cents === null) return null;
   return new Intl.NumberFormat(locale, { style: "currency", currency: "EUR" }).format(cents / 100);
 };
+
+/**
+ * Prix de référence d'une tuile / de la valeur d'un classeur : tendance, sinon
+ * moyenne 30 j, sinon plus bas FR ; `null` quand aucun prix n'est coté.
+ */
+export const tilePriceCents = (
+  price: Pick<CardDetailPrice, "trendCents" | "lowFrCents" | "avg30Cents"> | null | undefined,
+): number | null => {
+  if (price === null || price === undefined) return null;
+  return price.trendCents ?? price.avg30Cents ?? price.lowFrCents ?? null;
+};
+
+/** Âge relatif structuré d'un snapshot (docs/04 §2.1 : `il y a 6 min`, `il y a 2 h`). */
+export type PriceAge =
+  | { readonly kind: "just_now" }
+  | { readonly kind: "minutes"; readonly count: number }
+  | { readonly kind: "hours"; readonly count: number }
+  | { readonly kind: "days"; readonly count: number };
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Âge réel d'un prix par rapport à `nowMs` : `< 1 min` → `just_now`, puis minutes,
+ * heures (`< 24 h`) et jours. `null` si la date est illisible. Jamais négatif.
+ */
+export const computePriceAge = (fetchedAt: string, nowMs: number): PriceAge | null => {
+  const fetchedMs = Date.parse(fetchedAt);
+  if (Number.isNaN(fetchedMs)) return null;
+  const ageMs = Math.max(0, nowMs - fetchedMs);
+  if (ageMs < MINUTE_MS) return { kind: "just_now" };
+  if (ageMs < HOUR_MS) return { kind: "minutes", count: Math.floor(ageMs / MINUTE_MS) };
+  if (ageMs < DAY_MS) return { kind: "hours", count: Math.floor(ageMs / HOUR_MS) };
+  return { kind: "days", count: Math.floor(ageMs / DAY_MS) };
+};
+
+/** Minutes d'attente affichées pour un cooldown : arrondi au supérieur, au moins 1. */
+export const cooldownMinutes = (remainingMs: number): number =>
+  Math.max(1, Math.ceil(Math.max(0, remainingMs) / MINUTE_MS));
 
 /** Formate une date ISO (`acquiredAt` / `createdAt`) en `fr-FR` (`31 déc. 2025`). */
 export const formatIsoDate = (iso: string | null, locale = "fr-FR"): string | null => {
@@ -285,6 +350,116 @@ const mutation = async <T>(
   if (!response.ok) return { kind: readErrorKind(response.status) };
   try {
     return { kind: "ok", body: read(await response.json()) };
+  } catch {
+    return { kind: "error" };
+  }
+};
+
+/** Issue d'un `POST /api/cards/$cardId/price-refresh` réussi. */
+export type PriceRefreshKind =
+  | "refreshed_cardmarket"
+  | "refreshed_fallback"
+  | "fresh_cache"
+  | "degraded";
+
+const PRICE_REFRESH_KINDS: ReadonlyArray<string> = [
+  "refreshed_cardmarket",
+  "refreshed_fallback",
+  "fresh_cache",
+  "degraded",
+];
+
+/** Corps optionnel du rafraîchissement manuel (défaut serveur : `FR` / `normal`). */
+export interface PriceRefreshBody {
+  readonly language?: CardLanguage | undefined;
+  readonly variant?: CardVariant | undefined;
+}
+
+export type PriceRefreshResult =
+  | { readonly kind: "ok"; readonly refresh: PriceRefreshKind; readonly price: CardDetailPrice }
+  /** 429 : cooldown de 5 min par carte ; `nextAllowedAt` ISO (ou `null` si absent). */
+  | {
+      readonly kind: "cooldown";
+      readonly retryAfterMs: number;
+      readonly nextAllowedAt: string | null;
+    }
+  /** 503 : Cardmarket indisponible (circuit ouvert, aucun repli) ou base absente. */
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "unauthorized" }
+  | { readonly kind: "forbidden" }
+  | { readonly kind: "not-found" }
+  | { readonly kind: "invalid" }
+  | { readonly kind: "error" };
+
+const isRecordValue = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isNullableCents = (value: unknown): value is number | null =>
+  value === null || (typeof value === "number" && Number.isFinite(value));
+
+/** Décode défensivement le `price` d'une réponse de rafraîchissement (`null` si invalide). */
+export const readCardDetailPrice = (value: unknown): CardDetailPrice | null => {
+  if (!isRecordValue(value)) return null;
+  const { trendCents, lowFrCents, avg30Cents, source, fetchedAt, expiresAt, isFresh } = value;
+  if (
+    !isNullableCents(trendCents) ||
+    !isNullableCents(lowFrCents) ||
+    !isNullableCents(avg30Cents)
+  ) {
+    return null;
+  }
+  if (source !== "cardmarket" && source !== "tcgdex_fallback") return null;
+  if (typeof fetchedAt !== "string" || typeof expiresAt !== "string") return null;
+  if (typeof isFresh !== "boolean") return null;
+  return { trendCents, lowFrCents, avg30Cents, source, fetchedAt, expiresAt, isFresh };
+};
+
+/**
+ * `POST /api/cards/$cardId/price-refresh` : 200 → `ok` (nouveau prix), 429 →
+ * `cooldown` (`retryAfterMs` / `nextAllowedAt`), 503 → `unavailable`, 401/403/404/400
+ * → statut dédié, autre → `error` (jamais levé).
+ */
+export const refreshCardPrice = async (
+  cardId: string,
+  body: PriceRefreshBody = {},
+  fetchImpl: FetchLike = defaultFetch,
+): Promise<PriceRefreshResult> => {
+  try {
+    const response = await postJson(cardPriceRefreshApiPath(cardId), "POST", body, fetchImpl);
+    if (response.status === 401) return { kind: "unauthorized" };
+    if (response.status === 403) return { kind: "forbidden" };
+    if (response.status === 404) return { kind: "not-found" };
+    if (response.status === 400 || response.status === 413) return { kind: "invalid" };
+    if (response.status === 429) {
+      let retryAfterMs = 0;
+      let nextAllowedAt: string | null = null;
+      try {
+        const json: unknown = await response.json();
+        if (isRecordValue(json)) {
+          if (typeof json["retryAfterMs"] === "number" && Number.isFinite(json["retryAfterMs"])) {
+            retryAfterMs = Math.max(0, json["retryAfterMs"]);
+          }
+          if (typeof json["nextAllowedAt"] === "string") nextAllowedAt = json["nextAllowedAt"];
+        }
+      } catch {
+        // Corps illisible : on retombe sur l'en-tête `Retry-After` (secondes).
+      }
+      if (retryAfterMs === 0) {
+        const header = Number(response.headers.get("Retry-After"));
+        if (Number.isFinite(header) && header > 0) retryAfterMs = header * 1000;
+      }
+      return { kind: "cooldown", retryAfterMs, nextAllowedAt };
+    }
+    if (response.status === 503) return { kind: "unavailable" };
+    if (!response.ok) return { kind: "error" };
+    const json: unknown = await response.json();
+    if (!isRecordValue(json)) return { kind: "error" };
+    const refresh = json["kind"];
+    const price = readCardDetailPrice(json["price"]);
+    if (typeof refresh !== "string" || !PRICE_REFRESH_KINDS.includes(refresh) || price === null) {
+      return { kind: "error" };
+    }
+    return { kind: "ok", refresh: refresh as PriceRefreshKind, price };
   } catch {
     return { kind: "error" };
   }

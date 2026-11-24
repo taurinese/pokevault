@@ -1,9 +1,10 @@
 import { type SearchQuery, SearchQuery as SearchQuerySchema } from "@pokevault/domain";
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { SEARCH_FIXTURE_CARDS, SEARCH_FIXTURE_SETS } from "./catalog-search.fixture.ts";
 import {
   CatalogSearchService,
+  CatalogSearchServiceLive,
   CatalogSearchServiceMemory,
   DISCOVER_CARD_LIMIT,
   DISCOVER_SET_LIMIT,
@@ -11,6 +12,7 @@ import {
   SUGGEST_SET_LIMIT,
   trigramSimilarity,
 } from "./catalog-search.ts";
+import { Database, type Sql } from "./db.ts";
 
 const layer = CatalogSearchServiceMemory({
   sets: SEARCH_FIXTURE_SETS,
@@ -236,5 +238,173 @@ describe("CatalogSearchService.search", () => {
       rarity: null,
       setCode: "SIT",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live : enrichissement prix (`LEFT JOIN LATERAL … LIMIT 1`) avec une fausse base
+// ---------------------------------------------------------------------------
+
+const cardRow = (id: string, localId: string): Record<string, unknown> => ({
+  id,
+  set_id: "sv03.5",
+  set_name: "151",
+  set_code: "151",
+  local_id: localId,
+  local_id_numeric: Number(localId),
+  name_fr: `Carte ${localId}`,
+  rarity: "Rare",
+  holo_effect: "none",
+  illustrator: null,
+  image_base_url: `https://assets.tcgdex.net/fr/sv/sv03.5/${localId}`,
+});
+
+interface FakeSearchSql {
+  readonly sql: Sql;
+  readonly priceQueries: Array<{ readonly text: string; readonly values: ReadonlyArray<unknown> }>;
+}
+
+/** Fausse `Sql` : cartes de la page, prix (ou erreur) et compteur, routés sur le texte SQL. */
+const makeFakeSearchSql = (options: {
+  readonly cards: ReadonlyArray<Record<string, unknown>>;
+  readonly prices: ReadonlyArray<Record<string, unknown>> | Error;
+}): FakeSearchSql => {
+  const priceQueries: FakeSearchSql["priceQueries"] = [];
+  const run = (text: string, values: ReadonlyArray<unknown>): Promise<unknown> => {
+    if (text.includes("card_latest_prices")) {
+      priceQueries.push({ text, values });
+      return options.prices instanceof Error
+        ? Promise.reject(options.prices)
+        : Promise.resolve(options.prices);
+    }
+    if (text.includes("FROM catalog_sets")) return Promise.resolve([]);
+    if (text.includes("count(*)")) return Promise.resolve([{ total: options.cards.length }]);
+    if (text.includes("LIMIT")) return Promise.resolve(options.cards);
+    return Promise.resolve([]);
+  };
+  const fake = (strings: unknown, ...values: ReadonlyArray<unknown>): unknown => {
+    if (Array.isArray(strings) && "raw" in (strings as { raw?: unknown })) {
+      return run((strings as unknown as TemplateStringsArray).join(" ? "), values);
+    }
+    return strings;
+  };
+  return { sql: fake as unknown as Sql, priceQueries };
+};
+
+const priceRow = (
+  cardId: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  card_id: cardId,
+  source: "cardmarket",
+  trend_cents: 1234,
+  low_fr_cents: 900,
+  avg30_cents: null,
+  fetched_at: new Date("2026-06-01T11:55:00.000Z"),
+  expires_at: "2026-06-01T12:10:00.000Z",
+  is_fresh: true,
+  ...overrides,
+});
+
+const runLive = <A>(
+  sql: Sql,
+  program: (service: typeof CatalogSearchService.Service) => Effect.Effect<A, unknown>,
+): Promise<A> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* program(yield* CatalogSearchService);
+    }).pipe(
+      Effect.provide(
+        CatalogSearchServiceLive.pipe(Layer.provide(Layer.succeed(Database, { sql }))),
+      ),
+    ),
+  );
+
+describe("CatalogSearchServiceLive — prix des cartes", () => {
+  const cards = [cardRow("sv03.5-3", "3"), cardRow("sv03.5-1", "1"), cardRow("sv03.5-2", "2")];
+
+  it("joint le dernier prix par LEFT JOIN LATERAL … LIMIT 1, après pagination, une seule requête", async () => {
+    const fake = makeFakeSearchSql({
+      cards,
+      prices: [priceRow("sv03.5-1"), priceRow("sv03.5-3", { trend_cents: 99 })],
+    });
+    const payload = await runLive(fake.sql, (service) =>
+      service.search(query({ q: "carte", scope: "cards" })),
+    );
+    expect(fake.priceQueries).toHaveLength(1);
+    const text = fake.priceQueries[0]?.text ?? "";
+    expect(text).toContain("LEFT JOIN LATERAL");
+    expect(text).toContain("FROM card_latest_prices lp");
+    expect(text).toContain("lp.card_id = c.id");
+    expect(text).toMatch(/LIMIT 1\s*\) p ON TRUE/);
+    expect(text).toContain("(lp.language = 'FR' AND lp.variant = 'normal') DESC");
+    // Seuls les ids de la page sont interrogés, dans l'ordre des résultats.
+    expect(fake.priceQueries[0]?.values[0]).toEqual(["sv03.5-3", "sv03.5-1", "sv03.5-2"]);
+    // L'ordre des résultats est conservé ; chaque carte reçoit SON prix.
+    expect(payload.cards.map((hit) => hit.id)).toEqual(["sv03.5-3", "sv03.5-1", "sv03.5-2"]);
+    expect(payload.cards[0]?.price?.trendCents).toBe(99);
+    expect(payload.cards[1]?.price).toEqual({
+      trendCents: 1234,
+      lowFrCents: 900,
+      avg30Cents: null,
+      source: "cardmarket",
+      fetchedAt: "2026-06-01T11:55:00.000Z",
+      expiresAt: "2026-06-01T12:10:00.000Z",
+      isFresh: true,
+    });
+  });
+
+  it("price: null pour une carte sans snapshot (colonnes null de la jointure latérale)", async () => {
+    const fake = makeFakeSearchSql({
+      cards: [cardRow("sv03.5-1", "1")],
+      prices: [
+        priceRow("sv03.5-1", {
+          source: null,
+          trend_cents: null,
+          low_fr_cents: null,
+          fetched_at: null,
+          expires_at: null,
+          is_fresh: null,
+        }),
+      ],
+    });
+    const payload = await runLive(fake.sql, (service) => service.search(query({ q: "carte" })));
+    expect(payload.cards[0]?.price).toBeNull();
+  });
+
+  it("n'interroge pas les prix quand la page est vide", async () => {
+    const fake = makeFakeSearchSql({ cards: [], prices: [] });
+    const payload = await runLive(fake.sql, (service) => service.search(query({ q: "zzz" })));
+    expect(payload.cards).toEqual([]);
+    expect(fake.priceQueries).toHaveLength(0);
+  });
+
+  it("best-effort : une erreur de la table de prix ne casse jamais la recherche", async () => {
+    const fake = makeFakeSearchSql({
+      cards: [cardRow("sv03.5-1", "1")],
+      prices: new Error('relation "card_latest_prices" does not exist'),
+    });
+    const payload = await runLive(fake.sql, (service) => service.search(query({ q: "carte" })));
+    expect(payload.cards).toHaveLength(1);
+    expect(payload.cards[0]?.id).toBe("sv03.5-1");
+    expect(payload.cards[0]?.price).toBeUndefined();
+  });
+
+  it("enrichit aussi les suggestions et les cartes phares", async () => {
+    const fake = makeFakeSearchSql({
+      cards: [cardRow("sv03.5-1", "1")],
+      prices: [priceRow("sv03.5-1")],
+    });
+    const suggestions = await runLive(fake.sql, (service) => service.suggest("carte"));
+    expect(suggestions.cards[0]?.price?.trendCents).toBe(1234);
+    const discovery = await runLive(fake.sql, (service) => service.discover());
+    expect(discovery.featuredCards[0]?.price?.trendCents).toBe(1234);
+  });
+});
+
+describe("CatalogSearchServiceMemory — prix", () => {
+  it("n'ajoute aucun prix (implémentation hors-ligne, champ optionnel absent)", async () => {
+    const payload = await search({ q: "dracaufeu" });
+    expect(payload.cards.every((hit) => hit.price === undefined)).toBe(true);
   });
 });

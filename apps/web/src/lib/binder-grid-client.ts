@@ -9,6 +9,7 @@
  */
 
 import type { CardLanguage, CardVariant } from "@pokevault/domain";
+import type { CardDetailPrice } from "./card-detail-client.ts";
 
 // ---------------------------------------------------------------------------
 // Payload (JSON entre `/api/binder-grid/$id` et l'écran 03)
@@ -24,6 +25,12 @@ export interface BinderGridCopy {
   readonly gradingCompany: string | null;
   readonly gradingScore: string | null;
 }
+
+/**
+ * Dernier prix Cardmarket connu d'une carte du classeur (centimes d'euro, `null` =
+ * non coté). La fraîcheur est calculée côté client (`computePriceFreshness`).
+ */
+export type BinderGridPrice = Omit<CardDetailPrice, "isFresh">;
 
 /** Carte du classeur + agrégation de possession de l'utilisateur courant. */
 export interface BinderGridCard {
@@ -47,6 +54,12 @@ export interface BinderGridCard {
   readonly variants: ReadonlyArray<CardVariant>;
   /** Exemplaires détaillés (sans prix d'achat ni notes, strictement privés). */
   readonly copies: ReadonlyArray<BinderGridCopy>;
+  /**
+   * Dernier prix connu de la carte : snapshot de la langue/variante possédée
+   * (FR / normal d'abord), sinon `(FR, normal)`, sinon le plus récent. `null`
+   * sans snapshot ; absent d'un ancien payload.
+   */
+  readonly price?: BinderGridPrice | null | undefined;
 }
 
 /** Statistiques de complétion affichées dans la barre 1 ligne. */
@@ -58,6 +71,12 @@ export interface BinderGridStats {
   readonly totalCopies: number;
   /** Cartes distinctes possédées en `>= 2` exemplaires. */
   readonly duplicateCardCount: number;
+  /**
+   * Valeur réelle du classeur en centimes : somme `quantité × prix` de chaque exemplaire
+   * possédé (prix de sa langue/variante, sinon prix de la carte). `null` quand aucun
+   * exemplaire possédé n'a de prix.
+   */
+  readonly totalValueCents?: number | null | undefined;
 }
 
 export interface BinderGridBinderInfo {
