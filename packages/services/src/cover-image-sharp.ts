@@ -32,24 +32,30 @@ const loadSharp = async () => {
   return sharp;
 };
 
-const recompress = async (bytes: Uint8Array): Promise<Uint8Array> => {
-  const sharp = await loadSharp();
-  // `.rotate()` applique l'orientation EXIF puis l'efface ; sans `.withMetadata()`, sharp
-  // supprime tout le reste (EXIF, GPS, XMP, ICC non essentiel).
-  const output = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_INPUT_PIXELS })
-    .rotate()
-    .resize(COVER_MAX_DIMENSION, COVER_MAX_DIMENSION, { fit: "inside", withoutEnlargement: true })
-    .webp({ quality: WEBP_QUALITY })
-    .toBuffer();
-  return new Uint8Array(output.buffer, output.byteOffset, output.byteLength);
-};
-
 const sharpShape: CoverImageProcessorShape = {
   process: (bytes) =>
     validateCoverImage(bytes).pipe(
-      Effect.flatMap(() =>
+      // Un échec de chargement du module natif `sharp` est un défaut serveur (503 logué),
+      // jamais une fausse erreur client `400 invalid_image` (`reason: "corrupt"`).
+      Effect.flatMap(() => Effect.promise(() => loadSharp())),
+      Effect.flatMap((sharp) =>
         Effect.tryPromise({
-          try: () => recompress(bytes),
+          try: async () => {
+            // `.rotate()` applique l'orientation EXIF puis l'efface ; sans `.withMetadata()`,
+            // sharp supprime tout le reste (EXIF, GPS, XMP, ICC non essentiel).
+            const output = await sharp(bytes, {
+              failOn: "error",
+              limitInputPixels: MAX_INPUT_PIXELS,
+            })
+              .rotate()
+              .resize(COVER_MAX_DIMENSION, COVER_MAX_DIMENSION, {
+                fit: "inside",
+                withoutEnlargement: true,
+              })
+              .webp({ quality: WEBP_QUALITY })
+              .toBuffer();
+            return new Uint8Array(output.buffer, output.byteOffset, output.byteLength);
+          },
           catch: (cause) =>
             new InvalidCoverImageError({
               reason: "corrupt",
