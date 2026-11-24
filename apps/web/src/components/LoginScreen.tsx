@@ -1,6 +1,6 @@
 import { LockKeyhole } from "lucide-react";
 import { t } from "../i18n/index.ts";
-import { type LoginError, oauthLoginHref } from "../lib/auth-shared.ts";
+import { LOGIN_PATH, type LoginError, oauthLoginHref } from "../lib/auth-shared.ts";
 import { DiscordIcon, GoogleIcon } from "./BrandIcons.tsx";
 import { CardTile } from "./CardTile.tsx";
 import { ThemeToggle } from "./ThemeToggle.tsx";
@@ -56,7 +56,7 @@ const CardFan = () => (
 );
 
 const oauthButtonClass =
-  "flex w-full items-center justify-center gap-3 rounded-pill border border-line bg-surface-1 px-5 text-sm font-semibold text-primary shadow-card transition-colors hover:bg-surface-2";
+  "flex w-full items-center justify-center gap-3 rounded-pill border border-line bg-surface-1 px-5 text-sm font-semibold text-primary shadow-card transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold";
 
 const OAuthButtons = () => (
   <div className="flex flex-col gap-3">
@@ -97,8 +97,8 @@ const InviteOnlyCard = () => (
     <p className="text-sm text-secondary">{t("login.inviteOnly.description")}</p>
     <p className="text-sm text-muted">{t("login.inviteOnly.hint")}</p>
     <a
-      href="/login"
-      className="flex w-full items-center justify-center rounded-pill bg-gold-soft px-5 text-sm font-semibold text-gold transition-colors hover:bg-surface-2"
+      href={LOGIN_PATH}
+      className="flex w-full items-center justify-center rounded-pill bg-gold-soft px-5 text-sm font-semibold text-gold transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
       style={{ minHeight: "var(--touch-target-min)" }}
     >
       {t("login.inviteOnly.retry")}

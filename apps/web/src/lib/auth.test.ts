@@ -135,7 +135,8 @@ describe("sanitizeRedirectPath (anti open-redirect)", () => {
     ["/", "/"],
     ["/collection", "/collection"],
     ["/s/abc?x=1#top", "/s/abc?x=1#top"],
-  ])("keeps the internal path %s", (input, expected) => {
+    ["/日本?q=é", "/%E6%97%A5%E6%9C%AC?q=%C3%A9"],
+  ])("keeps and ASCII-encodes the internal path %s", (input, expected) => {
     expect(sanitizeRedirectPath(input)).toBe(expected);
   });
 
@@ -236,10 +237,13 @@ describe("mapGoTrueError", () => {
     expect(map("access_denied", null, "email not in invite allowlist")).toBe("invite_only");
   });
 
-  it("maps a user cancellation to oauth_cancelled", () => {
+  it("maps a user cancellation (Google or Discord) to oauth_cancelled", () => {
     expect(map("access_denied", null, "The user denied access to the application")).toBe(
       "oauth_cancelled",
     );
+    expect(
+      map("access_denied", null, "The resource owner or authorization server denied the request"),
+    ).toBe("oauth_cancelled");
     expect(map("access_denied", null, "Authorization cancelled")).toBe("oauth_cancelled");
     expect(map("access_denied", null, null)).toBe("oauth_cancelled");
   });
@@ -383,6 +387,12 @@ describe("GET /api/auth/callback", () => {
     ["server_error", "unexpected_failure", "Database error saving new user", "invite_only"],
     ["access_denied", "signup_disabled", "Signups not allowed", "invite_only"],
     ["access_denied", "", "The user denied access", "oauth_cancelled"],
+    [
+      "access_denied",
+      "",
+      "The resource owner or authorization server denied the request",
+      "oauth_cancelled",
+    ],
     ["server_error", "", "Something else", "auth_failed"],
   ])(
     "maps GoTrue error %s / %s / %s to /login?error=%s",
@@ -524,7 +534,7 @@ describe("POST /api/auth/logout", () => {
     expect(response.headers.get("location")).toBe("/login");
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url).toBe("http://auth:9999/logout");
+    expect(url).toBe("http://auth:9999/logout?scope=local");
     expect(headerOf(init, "Authorization")).toBe("Bearer tok");
 
     const cookies = response.headers.getSetCookie();
@@ -549,13 +559,43 @@ describe("POST /api/auth/logout", () => {
     expect(response.headers.getSetCookie()).toHaveLength(2);
   });
 
-  it("does not call GoTrue without an access token", async () => {
+  it("does not call GoTrue without any token", async () => {
     const { deps, fetchMock } = noNetwork();
     const response = await handleLogout(
       new Request("http://localhost:3000/api/auth/logout", { method: "POST" }),
       deps,
     );
     expect(response.status).toBe(303);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refreshes then revokes when only the refresh token remains", async () => {
+    const { deps, fetchMock } = makeDeps((url) =>
+      url.includes("grant_type=refresh_token")
+        ? jsonResponse({ access_token: "fresh-acc", refresh_token: "fresh-ref" })
+        : new Response(null, { status: 204 }),
+    );
+    const response = await handleLogout(
+      new Request("http://localhost:3000/api/auth/logout", {
+        method: "POST",
+        headers: { cookie: `${REFRESH_TOKEN_COOKIE}=ref`, origin: "http://localhost:3000" },
+      }),
+      deps,
+    );
+    expect(response.status).toBe(303);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("http://auth:9999/logout?scope=local");
+    expect(headerOf(fetchMock.mock.calls[1]?.[1], "Authorization")).toBe("Bearer fresh-acc");
+  });
+
+  it("rejects cross-site Origin or Referer with 403 (logout CSRF)", async () => {
+    const { deps, fetchMock } = noNetwork();
+    const badOrigin = await handleLogout(logout({ origin: "https://evil.example" }), deps);
+    const badReferer = await handleLogout(logout({ referer: "https://evil.example/form" }), deps);
+    for (const response of [badOrigin, badReferer]) {
+      expect(response.status).toBe(403);
+      expect(response.headers.getSetCookie()).toHaveLength(0);
+    }
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

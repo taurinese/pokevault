@@ -15,6 +15,7 @@ import {
   fetchSessionUser,
   generatePkcePair,
   isOAuthProvider,
+  isRequestSameOrigin,
   isSecureContext,
   type LoginError,
   loginRedirectPath,
@@ -29,6 +30,7 @@ import {
   resolveAppOrigin,
   revokeSession,
   type SessionUser,
+  safeTokenEqual,
   sanitizeRedirectPath,
   sessionCookies,
 } from "./auth.ts";
@@ -101,7 +103,7 @@ export const handleCallback = async (
   if (code === null || code === "" || pkce === null) return fail("auth_failed");
 
   // CSRF : le `state` renvoyé via `redirect_to` doit correspondre à celui du cookie.
-  if (url.searchParams.get("state") !== pkce.state) return fail("auth_failed");
+  if (!safeTokenEqual(url.searchParams.get("state"), pkce.state)) return fail("auth_failed");
 
   const session = await exchangeCodeForSession(deps.config, deps.fetch, code, pkce.verifier);
   if (session === null) return fail("auth_failed");
@@ -120,9 +122,22 @@ export const handleLogout = async (
   request: Request,
   deps: AuthDeps = defaultAuthDeps(),
 ): Promise<Response> => {
-  const secure = isSecureRequest(deps, request);
-  const { accessToken } = readSessionTokens(request.headers.get("cookie"));
-  if (accessToken !== undefined) await revokeSession(deps.config, deps.fetch, accessToken);
+  const appOrigin = resolveAppOrigin(deps.config, request.url);
+  if (!isRequestSameOrigin(request, appOrigin)) {
+    return Response.json(
+      { error: "forbidden_origin" },
+      { status: 403, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  const secure = isSecureContext(deps.config, appOrigin);
+  const { accessToken, refreshToken } = readSessionTokens(request.headers.get("cookie"));
+  let tokenToRevoke = accessToken;
+  if (tokenToRevoke === undefined && refreshToken !== undefined) {
+    const refreshed = await refreshSession(deps.config, deps.fetch, refreshToken);
+    tokenToRevoke = refreshed?.accessToken;
+  }
+  if (tokenToRevoke !== undefined) await revokeSession(deps.config, deps.fetch, tokenToRevoke);
 
   const cookies = expireSessionCookies(secure);
   if ((request.headers.get("accept") ?? "").includes("application/json")) {

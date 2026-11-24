@@ -7,7 +7,7 @@
  * Réf. : docs/01 §2.1, docs/04 §3, docs/06 §1.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   isLoginError,
   isOAuthProvider,
@@ -124,9 +124,35 @@ export const generatePkcePair = (): PkcePair => {
   };
 };
 
+/** Comparaison temps constant pour les jetons CSRF (`state`). */
+export const safeTokenEqual = (candidate: string | null | undefined, expected: string): boolean => {
+  if (typeof candidate !== "string") return false;
+  const a = Buffer.from(candidate, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+
+/**
+ * Vérifie que les en-têtes `Origin` (ou à défaut `Referer`) d'une requête
+ * mutante (`POST /api/auth/logout`) correspondent à l'origine attendue.
+ * Si aucun des deux n'est présent (ex. client serveur / curl), la requête passe.
+ */
+export const isRequestSameOrigin = (request: Request, expectedOrigin: string): boolean => {
+  const origin = request.headers.get("origin");
+  if (origin !== null) return origin === expectedOrigin;
+  const referer = request.headers.get("referer");
+  if (referer === null) return true;
+  try {
+    return new URL(referer).origin === expectedOrigin;
+  } catch {
+    return false;
+  }
+};
+
 /**
  * N'autorise qu'un chemin relatif interne : commence par un unique `/`, sans
  * `//`, `/\`, schéma, caractères de contrôle ni retour ligne. Repli : `/`.
+ * Retourne la forme ASCII percent-encodée (évite un crash ByteString sur `Location`).
  */
 export const sanitizeRedirectPath = (input: string | null | undefined): string => {
   if (typeof input !== "string" || input === "") return "/";
@@ -139,10 +165,10 @@ export const sanitizeRedirectPath = (input: string | null | undefined): string =
     // Un chemin interne reste sur la même origine une fois résolu.
     const resolved = new URL(input, "http://pokevault.invalid");
     if (resolved.origin !== "http://pokevault.invalid") return "/";
+    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
   } catch {
     return "/";
   }
-  return input;
 };
 
 // ---------------------------------------------------------------------------
@@ -167,6 +193,8 @@ export const buildAuthorizeUrl = (config: AuthConfig, input: AuthorizeUrlInput):
     code_challenge_method: "s256",
     scopes: OAUTH_SCOPES[input.provider],
   });
+  // Permet de choisir un autre compte Google après un refus d'invitation.
+  if (input.provider === "google") params.set("prompt", "select_account");
   return `${config.publicUrl}/auth/v1/authorize?${params.toString()}`;
 };
 
@@ -330,17 +358,11 @@ export const mapGoTrueError = (details: GoTrueCallbackError): LoginError => {
     return "invite_only";
   }
 
+  // `access_denied` sans marqueur explicite d'allowlist/signup = annulation OAuth
+  // côté fournisseur (ex. Discord : "The resource owner or authorization server
+  // denied the request", Google : description vide).
   if (error === "access_denied") {
-    if (
-      description.includes("user denied") ||
-      description.includes("cancel") ||
-      description.includes("denied access") ||
-      description === ""
-    ) {
-      return "oauth_cancelled";
-    }
-    // `access_denied` avec un autre motif côté serveur = refus d'allowlist.
-    return "invite_only";
+    return "oauth_cancelled";
   }
 
   return "auth_failed";
@@ -475,14 +497,14 @@ export const fetchSessionUser = async (
   }
 };
 
-/** Révocation best-effort : n'échoue jamais. */
+/** Révocation locale best-effort (ne déconnecte pas les autres appareils) : n'échoue jamais. */
 export const revokeSession = async (
   config: AuthConfig,
   fetchImpl: FetchLike,
   accessToken: string,
 ): Promise<void> => {
   try {
-    await fetchImpl(`${config.internalAuthBase}/logout`, {
+    await fetchImpl(`${config.internalAuthBase}/logout?scope=local`, {
       method: "POST",
       headers: goTrueHeaders(config, accessToken),
     });
