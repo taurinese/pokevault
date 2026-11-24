@@ -1,16 +1,25 @@
 import {
   type Binder,
   BinderConflictError,
+  BinderNotFoundError,
   type BinderSummary,
   buildCollectionOverview,
   CatalogItemNotFoundError,
+  COVER_MAX_BYTES,
   type CollectionOverview,
+  InvalidCoverImageError,
+  type SetBinderCoverInput,
+  StorageServiceError,
+  UnauthorizedBinderAccess,
   ValidationError,
 } from "@pokevault/domain";
 import {
+  BinderCoverStorage,
+  BinderCoverStorageLive,
   type BinderServiceShape,
   type CollectionServiceShape,
   DatabaseError,
+  validateCoverImage,
 } from "@pokevault/services";
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
@@ -20,7 +29,11 @@ import {
   type BindersServerDeps,
   handleBinderCover,
   handleCreateBinder,
+  handleDeleteBinder,
   handleListBinders,
+  handleSetBinderCover,
+  handleUpdateBinder,
+  resolveStorageApiBase,
 } from "./binders-server.ts";
 
 const config: AuthConfig = {
@@ -89,7 +102,13 @@ const emptyOverview = (): CollectionOverview =>
 interface Harness {
   readonly deps: BindersServerDeps;
   readonly binders: Record<
-    "listBinders" | "getBinder" | "createSetBinder" | "createCustomBinder",
+    | "listBinders"
+    | "getBinder"
+    | "createSetBinder"
+    | "createCustomBinder"
+    | "updateBinder"
+    | "setBinderCover"
+    | "deleteBinder",
     ReturnType<typeof vi.fn>
   >;
   readonly catalog: { [K in keyof BindersCatalogShape]: ReturnType<typeof vi.fn> };
@@ -122,6 +141,28 @@ const makeHarness = (
     createCustomBinder: vi.fn((_userId: string, input: { title: string }) =>
       Effect.succeed(summaryOf(binderRow({ title: input.title }))),
     ),
+    updateBinder: vi.fn((_userId: string, _binderId: string, patch: Partial<Binder>) =>
+      Effect.succeed(summaryOf(binderRow(patch))),
+    ),
+    // Validation réelle (magic bytes, 2 Mio, SVG) du service ; seule la recompression sharp est factice.
+    setBinderCover: vi.fn((_userId: string, _binderId: string, input: SetBinderCoverInput) =>
+      input.type === "upload"
+        ? validateCoverImage(input.image).pipe(
+            Effect.map(() =>
+              summaryOf(binderRow({ coverType: "upload", coverStoragePath: COVER_PATH })),
+            ),
+          )
+        : Effect.succeed(
+            summaryOf(
+              binderRow(
+                input.type === "card"
+                  ? { coverType: "card", coverCardId: input.cardId }
+                  : { coverType: "set_logo" },
+              ),
+            ),
+          ),
+    ),
+    deleteBinder: vi.fn(() => Effect.void),
   };
   const catalog = {
     coverCardImages: vi.fn((ids: ReadonlyArray<string>) =>
@@ -568,5 +609,517 @@ describe("GET /api/binders/$id/cover", () => {
     h.binders.getBinder.mockReturnValue(Effect.fail(new DatabaseError({ message: "boom" })));
     const response = await handleBinderCover(coverRequest(signedIn), BINDER_ID, h.deps);
     expect(response.status).toBe(503);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutations d'un classeur : PATCH / DELETE / PUT cover
+// ---------------------------------------------------------------------------
+
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+const SVG = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+
+const mutation = (
+  method: "PATCH" | "DELETE" | "PUT" | "POST",
+  options: {
+    body?: BodyInit | null;
+    contentType?: string;
+    cookie?: string;
+    origin?: string | null;
+    contentLength?: string;
+  } = {},
+): Request => {
+  const headers = new Headers();
+  if (options.contentType !== undefined) headers.set("content-type", options.contentType);
+  if (options.cookie !== undefined) headers.set("cookie", options.cookie);
+  if (options.origin !== null) headers.set("origin", options.origin ?? "http://localhost:3000");
+  if (options.contentLength !== undefined) headers.set("content-length", options.contentLength);
+  return new Request(`http://localhost:3000/api/binders/${BINDER_ID}`, {
+    method,
+    headers,
+    ...(options.body === undefined ? {} : { body: options.body }),
+  });
+};
+
+const patchRequest = (body: unknown, options: Parameters<typeof mutation>[1] = {}): Request =>
+  mutation("PATCH", {
+    contentType: "application/json",
+    body: JSON.stringify(body),
+    cookie: signedIn,
+    ...options,
+  });
+
+describe("PATCH /api/binders/$id", () => {
+  it("returns 403 for a cross-origin request before touching anything", async () => {
+    const h = makeHarness();
+    const response = await handleUpdateBinder(
+      patchRequest({ title: "x" }, { origin: "https://evil.example" }),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "forbidden_origin" });
+    expect(h.binders.updateBinder).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 without session", async () => {
+    const h = makeHarness();
+    const response = await handleUpdateBinder(
+      patchRequest({ title: "x" }, { cookie: "" }),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(401);
+    expect(h.binders.updateBinder).not.toHaveBeenCalled();
+  });
+
+  it("updates title / isPinned / sortOrder for the session user and drops unknown fields (200)", async () => {
+    const h = makeHarness();
+    const response = await handleUpdateBinder(
+      patchRequest({
+        title: "Neuf",
+        isPinned: true,
+        sortOrder: 3,
+        userId: OTHER_USER_ID,
+        kind: "set",
+      }),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(h.binders.updateBinder).toHaveBeenCalledWith(USER_ID, BINDER_ID, {
+      title: "Neuf",
+      isPinned: true,
+      sortOrder: 3,
+    });
+    const body = (await response.json()) as BinderSummary;
+    expect(body.binder.id).toBe(BINDER_ID);
+  });
+
+  it("maps ValidationError to 400, BinderNotFoundError to 404", async () => {
+    const h = makeHarness();
+    h.binders.updateBinder.mockReturnValueOnce(
+      Effect.fail(new ValidationError({ message: "bad" })),
+    );
+    expect((await handleUpdateBinder(patchRequest({ title: "" }), BINDER_ID, h.deps)).status).toBe(
+      400,
+    );
+    h.binders.updateBinder.mockReturnValueOnce(
+      Effect.fail(new BinderNotFoundError({ binderId: BINDER_ID, message: "nope" })),
+    );
+    expect((await handleUpdateBinder(patchRequest({ title: "x" }), BINDER_ID, h.deps)).status).toBe(
+      404,
+    );
+    h.binders.updateBinder.mockReturnValueOnce(
+      Effect.fail(new UnauthorizedBinderAccess({ message: "rls" })),
+    );
+    expect((await handleUpdateBinder(patchRequest({ title: "x" }), BINDER_ID, h.deps)).status).toBe(
+      404,
+    );
+  });
+
+  it("returns 400 for malformed, non-object and oversized JSON bodies, and 404 for a non-UUID id", async () => {
+    const h = makeHarness();
+    for (const raw of ["{not json", "[]", `{"title":"${"x".repeat(5000)}"}`]) {
+      const response = await handleUpdateBinder(
+        mutation("PATCH", { contentType: "application/json", body: raw, cookie: signedIn }),
+        BINDER_ID,
+        h.deps,
+      );
+      expect(response.status).toBe(400);
+    }
+    const notFound = await handleUpdateBinder(
+      patchRequest({ title: "x" }),
+      "../etc/passwd",
+      h.deps,
+    );
+    expect(notFound.status).toBe(404);
+    expect(h.binders.updateBinder).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 without leaking details on database failure, and when no database is configured", async () => {
+    const h = makeHarness();
+    h.binders.updateBinder.mockReturnValueOnce(
+      Effect.fail(new DatabaseError({ message: "select secret", cause: { code: "08006" } })),
+    );
+    const failed = await handleUpdateBinder(patchRequest({ title: "x" }), BINDER_ID, h.deps);
+    expect(failed.status).toBe(503);
+    expect(JSON.stringify(await failed.json())).not.toContain("secret");
+    const none = makeHarness({ noDatabase: true });
+    expect(
+      (await handleUpdateBinder(patchRequest({ title: "x" }), BINDER_ID, none.deps)).status,
+    ).toBe(503);
+  });
+
+  it("propagates refreshed cookies", async () => {
+    const h = makeHarness();
+    const response = await handleUpdateBinder(
+      patchRequest({ title: "x" }, { cookie: `${REFRESH_TOKEN_COOKIE}=old-refresh` }),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toHaveLength(2);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+});
+
+describe("DELETE /api/binders/$id", () => {
+  const del = (options: Parameters<typeof mutation>[1] = {}): Request =>
+    mutation("DELETE", { cookie: signedIn, ...options });
+
+  it("returns 403 cross-origin and 401 without session", async () => {
+    const h = makeHarness();
+    expect(
+      (await handleDeleteBinder(del({ origin: "https://evil.example" }), BINDER_ID, h.deps)).status,
+    ).toBe(403);
+    expect((await handleDeleteBinder(del({ cookie: "" }), BINDER_ID, h.deps)).status).toBe(401);
+    expect(h.binders.deleteBinder).not.toHaveBeenCalled();
+  });
+
+  it("deletes with the user's JWT (Storage cover clean-up) and answers 204", async () => {
+    const h = makeHarness();
+    const response = await handleDeleteBinder(del(), BINDER_ID, h.deps);
+    expect(response.status).toBe(204);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.text()).toBe("");
+    expect(h.binders.deleteBinder).toHaveBeenCalledWith(USER_ID, BINDER_ID, "valid");
+  });
+
+  it("maps a missing / foreign binder to 404 and Storage trouble to 502", async () => {
+    const h = makeHarness();
+    h.binders.deleteBinder.mockReturnValueOnce(
+      Effect.fail(new BinderNotFoundError({ binderId: BINDER_ID, message: "nope" })),
+    );
+    expect((await handleDeleteBinder(del(), BINDER_ID, h.deps)).status).toBe(404);
+    h.binders.deleteBinder.mockReturnValueOnce(
+      Effect.fail(new StorageServiceError({ message: "boom", status: 500 })),
+    );
+    expect((await handleDeleteBinder(del(), BINDER_ID, h.deps)).status).toBe(502);
+    expect((await handleDeleteBinder(del(), "not-a-uuid", h.deps)).status).toBe(404);
+  });
+
+  it("propagates refreshed cookies on the 204", async () => {
+    const h = makeHarness();
+    const response = await handleDeleteBinder(
+      del({ cookie: `${REFRESH_TOKEN_COOKIE}=old-refresh` }),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(204);
+    expect(response.headers.getSetCookie()).toHaveLength(2);
+  });
+});
+
+describe("PUT /api/binders/$id/cover", () => {
+  const putJson = (body: unknown, options: Parameters<typeof mutation>[1] = {}): Request =>
+    mutation("PUT", {
+      contentType: "application/json",
+      body: JSON.stringify(body),
+      cookie: signedIn,
+      ...options,
+    });
+
+  const multipart = (file: Uint8Array, name = "cover.png", type = "image/png"): Request => {
+    const form = new FormData();
+    form.set("image", new File([new Uint8Array(file)], name, { type }));
+    return mutation("PUT", { body: form, cookie: signedIn });
+  };
+
+  it("returns 403 cross-origin and 401 without session, before reading the body", async () => {
+    const h = makeHarness();
+    expect(
+      (
+        await handleSetBinderCover(
+          putJson({ type: "set_logo" }, { origin: "https://evil.example" }),
+          BINDER_ID,
+          h.deps,
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (await handleSetBinderCover(putJson({ type: "set_logo" }, { cookie: "" }), BINDER_ID, h.deps))
+        .status,
+    ).toBe(401);
+    expect(h.binders.setBinderCover).not.toHaveBeenCalled();
+  });
+
+  it("sets the official logo from JSON", async () => {
+    const h = makeHarness();
+    const response = await handleSetBinderCover(putJson({ type: "set_logo" }), BINDER_ID, h.deps);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(h.binders.setBinderCover).toHaveBeenCalledWith(
+      USER_ID,
+      BINDER_ID,
+      { type: "set_logo" },
+      "valid",
+    );
+  });
+
+  it("sets a catalogue card from JSON and maps an unknown card to 404", async () => {
+    const h = makeHarness();
+    const ok = await handleSetBinderCover(
+      putJson({ type: "card", cardId: "sv08-001", extra: 1 }),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(ok.status).toBe(200);
+    expect(h.binders.setBinderCover).toHaveBeenCalledWith(
+      USER_ID,
+      BINDER_ID,
+      { type: "card", cardId: "sv08-001" },
+      "valid",
+    );
+    h.binders.setBinderCover.mockReturnValueOnce(
+      Effect.fail(new CatalogItemNotFoundError({ entity: "card", id: "x", message: "nope" })),
+    );
+    expect(
+      (await handleSetBinderCover(putJson({ type: "card", cardId: "x" }), BINDER_ID, h.deps))
+        .status,
+    ).toBe(404);
+  });
+
+  it("rejects an unknown JSON type, a missing cardId and any smuggled `upload` with 400", async () => {
+    const h = makeHarness();
+    for (const body of [
+      { type: "nope" },
+      { type: "card" },
+      { type: "card", cardId: 3 },
+      { type: "upload", image: "AAAA" },
+      [],
+    ]) {
+      const response = await handleSetBinderCover(putJson(body), BINDER_ID, h.deps);
+      expect(response.status).toBe(400);
+    }
+    expect(h.binders.setBinderCover).not.toHaveBeenCalled();
+  });
+
+  it("uploads a multipart `image` as raw bytes with the user's JWT (200)", async () => {
+    const h = makeHarness();
+    const response = await handleSetBinderCover(multipart(PNG), BINDER_ID, h.deps);
+    expect(response.status).toBe(200);
+    const [userId, binderId, input, token] = h.binders.setBinderCover.mock.calls[0] as [
+      string,
+      string,
+      SetBinderCoverInput,
+      string,
+    ];
+    expect(userId).toBe(USER_ID);
+    expect(binderId).toBe(BINDER_ID);
+    expect(token).toBe("valid");
+    expect(input.type).toBe("upload");
+    expect(input.type === "upload" ? Array.from(input.image) : []).toEqual(Array.from(PNG));
+  });
+
+  it("accepts a raw image/png body too", async () => {
+    const h = makeHarness();
+    const response = await handleSetBinderCover(
+      mutation("PUT", { contentType: "image/png", body: PNG, cookie: signedIn }),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(200);
+    expect((h.binders.setBinderCover.mock.calls[0] as unknown[])[2]).toMatchObject({
+      type: "upload",
+    });
+  });
+
+  it("answers 413 above 2 MiB (multipart file, raw body, declared length) and never calls the service", async () => {
+    const h = makeHarness();
+    const big = new Uint8Array(COVER_MAX_BYTES + 1);
+    big.set(PNG);
+    expect((await handleSetBinderCover(multipart(big), BINDER_ID, h.deps)).status).toBe(413);
+    expect(
+      (
+        await handleSetBinderCover(
+          mutation("PUT", { contentType: "image/webp", body: big, cookie: signedIn }),
+          BINDER_ID,
+          h.deps,
+        )
+      ).status,
+    ).toBe(413);
+    expect(
+      (
+        await handleSetBinderCover(
+          mutation("PUT", {
+            contentType: "image/png",
+            body: PNG,
+            cookie: signedIn,
+            contentLength: String(COVER_MAX_BYTES * 3),
+          }),
+          BINDER_ID,
+          h.deps,
+        )
+      ).status,
+    ).toBe(413);
+    expect(h.binders.setBinderCover).not.toHaveBeenCalled();
+  });
+
+  it("accepts an image of exactly 2 MiB", async () => {
+    const h = makeHarness();
+    const exact = new Uint8Array(COVER_MAX_BYTES);
+    exact.set(PNG);
+    expect((await handleSetBinderCover(multipart(exact), BINDER_ID, h.deps)).status).toBe(200);
+  });
+
+  it("answers 415 for an SVG (declared type, or magic bytes behind a lying image/png name)", async () => {
+    const h = makeHarness();
+    const declared = await handleSetBinderCover(
+      mutation("PUT", { contentType: "image/svg+xml", body: SVG, cookie: signedIn }),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(declared.status).toBe(415);
+    expect(await declared.json()).toEqual({ error: "svg_not_allowed" });
+    const spoofed = await handleSetBinderCover(
+      multipart(SVG, "cover.png", "image/png"),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(spoofed.status).toBe(415);
+    expect(await spoofed.json()).toEqual({ error: "svg_not_allowed" });
+  });
+
+  it("answers 415 for an unknown content type or unknown magic bytes, 400 for an empty or corrupt file", async () => {
+    const h = makeHarness();
+    expect(
+      (
+        await handleSetBinderCover(
+          mutation("PUT", { contentType: "text/plain", body: "hi", cookie: signedIn }),
+          BINDER_ID,
+          h.deps,
+        )
+      ).status,
+    ).toBe(415);
+    expect(
+      (
+        await handleSetBinderCover(
+          multipart(new TextEncoder().encode("GIF89a....")),
+          BINDER_ID,
+          h.deps,
+        )
+      ).status,
+    ).toBe(415);
+    expect(
+      (await handleSetBinderCover(multipart(new Uint8Array(0)), BINDER_ID, h.deps)).status,
+    ).toBe(400);
+    h.binders.setBinderCover.mockReturnValueOnce(
+      Effect.fail(new InvalidCoverImageError({ reason: "corrupt", message: "bad" })),
+    );
+    expect((await handleSetBinderCover(multipart(PNG), BINDER_ID, h.deps)).status).toBe(400);
+  });
+
+  it("maps service errors: too_large 413, ValidationError 400, not found 404, Storage 502, database 503", async () => {
+    const h = makeHarness();
+    const cases: ReadonlyArray<readonly [unknown, number]> = [
+      [new InvalidCoverImageError({ reason: "too_large", message: "x" }), 413],
+      [new InvalidCoverImageError({ reason: "unsupported_format", message: "x" }), 415],
+      [new ValidationError({ message: "x" }), 400],
+      [new BinderNotFoundError({ binderId: BINDER_ID, message: "x" }), 404],
+      [new StorageServiceError({ message: "x", status: 500 }), 502],
+      [new DatabaseError({ message: "select secret", cause: { code: "08006" } }), 503],
+    ];
+    for (const [failure, status] of cases) {
+      h.binders.setBinderCover.mockReturnValueOnce(Effect.fail(failure));
+      const response = await handleSetBinderCover(putJson({ type: "set_logo" }), BINDER_ID, h.deps);
+      expect(response.status).toBe(status);
+      expect(JSON.stringify(await response.json())).not.toContain("secret");
+    }
+  });
+
+  it("returns 404 for a non-UUID id and 400 for a multipart body without `image`", async () => {
+    const h = makeHarness();
+    expect((await handleSetBinderCover(putJson({ type: "set_logo" }), "../x", h.deps)).status).toBe(
+      404,
+    );
+    const form = new FormData();
+    form.set("other", "x");
+    expect(
+      (
+        await handleSetBinderCover(
+          mutation("PUT", { body: form, cookie: signedIn }),
+          BINDER_ID,
+          h.deps,
+        )
+      ).status,
+    ).toBe(400);
+  });
+
+  it("propagates refreshed cookies and no-store", async () => {
+    const h = makeHarness();
+    const response = await handleSetBinderCover(
+      putJson({ type: "set_logo" }, { cookie: `${REFRESH_TOKEN_COOKIE}=old-refresh` }),
+      BINDER_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toHaveLength(2);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Storage : URL interne (Docker) vs publique (dev)
+// ---------------------------------------------------------------------------
+
+describe("Storage API base (GET proxy + upload partagent la même base)", () => {
+  it("uses the internal Storage URL as-is (no /storage/v1: Caddy strips it) when configured", () => {
+    expect(resolveStorageApiBase("http://localhost", "http://storage:5000")).toBe(
+      "http://storage:5000",
+    );
+    expect(resolveStorageApiBase("http://localhost", " http://storage:5000/ ")).toBe(
+      "http://storage:5000",
+    );
+  });
+
+  it("falls back to <public url>/storage/v1 in dev", () => {
+    expect(resolveStorageApiBase("http://localhost:54321", undefined)).toBe(
+      "http://localhost:54321/storage/v1",
+    );
+    expect(resolveStorageApiBase("http://localhost:54321/", "")).toBe(
+      "http://localhost:54321/storage/v1",
+    );
+  });
+
+  it.each([
+    ["http://storage:5000", `http://storage:5000/object/binder-covers/${COVER_PATH}`],
+    [
+      "http://localhost:54321/storage/v1",
+      `http://localhost:54321/storage/v1/object/binder-covers/${COVER_PATH}`,
+    ],
+  ])("BinderCoverStorageLive uploads to the right URL for base %s", async (base, expected) => {
+    const calls: string[] = [];
+    const layer = BinderCoverStorageLive({
+      storageUrl: base,
+      anonKey: "anon-key",
+      fetch: (async (input: string | URL | Request) => {
+        calls.push(String(input));
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch,
+    });
+    await Effect.runPromise(
+      Effect.flatMap(BinderCoverStorage, (storage) =>
+        storage.upload({
+          userId: USER_ID,
+          binderId: BINDER_ID,
+          accessToken: "jwt",
+          bytes: new Uint8Array([1]),
+        }),
+      ).pipe(Effect.provide(layer)),
+    );
+    expect(calls).toEqual([expected]);
+  });
+});
+
+describe("GET /api/binders — option extras", () => {
+  it("passes completion options (no secrets, no promos) to both services when ?extras=0", async () => {
+    const h = makeHarness();
+    const response = await handleListBinders(get("/api/binders?extras=0", signedIn), h.deps);
+    expect(response.status).toBe(200);
+    const options = { includeSecrets: false, includePromos: false };
+    expect(h.binders.listBinders).toHaveBeenCalledWith(USER_ID, options);
+    expect(h.collection.getCollectionOverview).toHaveBeenCalledWith(USER_ID, options);
   });
 });

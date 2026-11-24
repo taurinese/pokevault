@@ -31,6 +31,7 @@ import { Route as ApiBurstSetsRouteImport } from './routes/api/burst/sets'
 import { Route as ApiCatalogDiscoverRouteImport } from './routes/api/catalog/discover'
 import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/search'
 import { Route as ApiCatalogSuggestRouteImport } from './routes/api/catalog/suggest'
+import { Route as ApiBindersIdIndexRouteImport } from './routes/api/binders/$id/index'
 import { Route as ApiBindersIdCoverRouteImport } from './routes/api/binders/$id/cover'
 
 const IndexRoute = IndexRouteImport.update({
@@ -143,6 +144,11 @@ const ApiCatalogSuggestRoute = ApiCatalogSuggestRouteImport.update({
   path: '/api/catalog/suggest',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiBindersIdIndexRoute = ApiBindersIdIndexRouteImport.update({
+  id: '/api/binders/$id/',
+  path: '/api/binders/$id/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiBindersIdCoverRoute = ApiBindersIdCoverRouteImport.update({
   id: '/api/binders/$id/cover',
   path: '/api/binders/$id/cover',
@@ -173,6 +179,7 @@ export interface FileRoutesByFullPath {
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
   '/api/binders/': typeof ApiBindersIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
+  '/api/binders/$id/': typeof ApiBindersIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -198,6 +205,7 @@ export interface FileRoutesByTo {
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
   '/api/binders': typeof ApiBindersIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
+  '/api/binders/$id': typeof ApiBindersIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -224,6 +232,7 @@ export interface FileRoutesById {
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
   '/api/binders/': typeof ApiBindersIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
+  '/api/binders/$id/': typeof ApiBindersIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -251,6 +260,7 @@ export interface FileRouteTypes {
     | '/api/catalog/suggest'
     | '/api/binders/'
     | '/api/binders/$id/cover'
+    | '/api/binders/$id/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -276,6 +286,7 @@ export interface FileRouteTypes {
     | '/api/catalog/suggest'
     | '/api/binders'
     | '/api/binders/$id/cover'
+    | '/api/binders/$id'
   id:
     | '__root__'
     | '/'
@@ -301,6 +312,7 @@ export interface FileRouteTypes {
     | '/api/catalog/suggest'
     | '/api/binders/'
     | '/api/binders/$id/cover'
+    | '/api/binders/$id/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -327,6 +339,7 @@ export interface RootRouteChildren {
   ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
   ApiBindersIndexRoute: typeof ApiBindersIndexRoute
   ApiBindersIdCoverRoute: typeof ApiBindersIdCoverRoute
+  ApiBindersIdIndexRoute: typeof ApiBindersIdIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -485,6 +498,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCatalogSuggestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/binders/$id/': {
+      id: '/api/binders/$id/'
+      path: '/api/binders/$id'
+      fullPath: '/api/binders/$id/'
+      preLoaderRoute: typeof ApiBindersIdIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/binders/$id/cover': {
       id: '/api/binders/$id/cover'
       path: '/api/binders/$id/cover'
@@ -519,6 +539,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
   ApiBindersIndexRoute: ApiBindersIndexRoute,
   ApiBindersIdCoverRoute: ApiBindersIdCoverRoute,
+  ApiBindersIdIndexRoute: ApiBindersIdIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

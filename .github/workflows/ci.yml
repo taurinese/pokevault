@@ -85,6 +85,12 @@ jobs:
         shell: bash
         run: pnpm build
 
+      - name: Verify sharp resolves from web server build
+        if: steps.pkg.outputs.exists == 'true'
+        shell: bash
+        run: |
+          (cd apps/web/dist/server && node --input-type=module -e 'const m = await import("sharp"); if (typeof m.default !== "function") process.exit(1);')
+
       - name: Note when package.json is absent
         if: steps.pkg.outputs.exists != 'true'
         shell: bash
