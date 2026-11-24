@@ -343,15 +343,17 @@ export const buildBurstImportReport = (
   }));
   const distinctCardIds = new Set(items.map((item) => item.cardId));
   const newCardIds = new Set(items.filter((item) => item.wasNewCard).map((item) => item.cardId));
-  const wishlistCardIds = new Set(
-    items.filter((item) => item.removedFromWishlist).map((item) => item.cardId),
+  const wishlistSlotKeys = new Set(
+    items
+      .filter((item) => item.removedFromWishlist)
+      .map((item) => `${item.cardId} ${item.language} ${item.resolvedVariant}`),
   );
   return {
     totalAddedQuantity: items.reduce((total, item) => total + item.addedQuantity, 0),
     distinctCardsCount: distinctCardIds.size,
     newCardsCount: newCardIds.size,
     duplicateCardsCount: distinctCardIds.size - newCardIds.size,
-    wishlistRemovedCount: wishlistCardIds.size,
+    wishlistRemovedCount: wishlistSlotKeys.size,
     adjustedVariantsCount: items.filter((item) => item.variantAdjusted).length,
     items,
   };

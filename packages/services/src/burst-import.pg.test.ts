@@ -7,13 +7,14 @@ import {
   ValidationError,
 } from "@pokevault/domain";
 import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   BurstImportService,
   BurstImportServiceLive,
   type BurstImportServiceShape,
 } from "./burst-import.ts";
 import { CatalogRepository, CatalogRepositoryLive } from "./catalog-repo.ts";
+import { acquirePgLock, PG_HOOK_TIMEOUT_MS, releasePgLock } from "./collection-pg-harness.ts";
 import { Database, DatabaseLive, type Sql } from "./db.ts";
 
 /**
@@ -148,12 +149,27 @@ const batch = (defaults: Record<string, unknown>, items: Array<Record<string, un
 });
 
 describe.skipIf(PGTEST_URL === undefined)("BurstImportServiceLive (Postgres réel)", () => {
+  let createdWishlistTable = false;
+
+  beforeAll(async () => {
+    if (PGTEST_URL === undefined) return;
+    await acquirePgLock();
+  }, PG_HOOK_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (createdWishlistTable && PGTEST_URL !== undefined) {
+      await adminQuery((sql) => sql`DROP TABLE IF EXISTS public.wishlist_items`);
+      createdWishlistTable = false;
+    }
+    await releasePgLock();
+  }, PG_HOOK_TIMEOUT_MS);
+
   // Admin connection (seed + inspect): superuser / service role.
   const adminDbLayer = DatabaseLive({ connectionString: PGTEST_URL ?? "", maxConnections: 2 });
   // Service under test: `authenticator` login + `role: "authenticated"` → RLS active.
   const authDbLayer = DatabaseLive({
     connectionString: PGTEST_AUTH_URL ?? "",
-    maxConnections: 2,
+    maxConnections: 4,
     role: "authenticated",
   });
   const serviceLayer = BurstImportServiceLive.pipe(Layer.provide(authDbLayer));
@@ -223,8 +239,18 @@ describe.skipIf(PGTEST_URL === undefined)("BurstImportServiceLive (Postgres rée
 
   const reset = () =>
     adminQuery(async (sql) => {
-      await sql`DELETE FROM public.user_card_copies`;
-      await sql`DROP TABLE IF EXISTS public.wishlist_items`;
+      await sql`DELETE FROM public.user_card_copies WHERE user_id IN (${ALICE}, ${BOB})`;
+      if (createdWishlistTable) {
+        await sql`DROP TABLE IF EXISTS public.wishlist_items`;
+        createdWishlistTable = false;
+      } else {
+        const [existsRow] = await sql<{ exists: boolean }[]>`
+          SELECT to_regclass('public.wishlist_items') IS NOT NULL AS exists
+        `;
+        if (existsRow?.exists) {
+          await sql`DELETE FROM public.wishlist_items WHERE user_id IN (${ALICE}, ${BOB})`;
+        }
+      }
     });
 
   const copiesOf = (userId: string) =>
@@ -263,10 +289,13 @@ describe.skipIf(PGTEST_URL === undefined)("BurstImportServiceLive (Postgres rée
     );
 
   const createWishlistTable = () =>
-    adminQuery(
+    adminQuery(async (sql) => {
+      const [existsRow] = await sql<{ exists: boolean }[]>`
+        SELECT to_regclass('public.wishlist_items') IS NOT NULL AS exists
+      `;
+      if (!existsRow?.exists) createdWishlistTable = true;
       // Multi-statement DDL: raw `unsafe` (postgres.js prepares single statements).
-      (sql) =>
-        sql.unsafe(`
+      await sql.unsafe(`
         CREATE TABLE IF NOT EXISTS public.wishlist_items (
           id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
           user_id uuid NOT NULL REFERENCES public.profiles (id) ON DELETE CASCADE,
@@ -292,13 +321,16 @@ describe.skipIf(PGTEST_URL === undefined)("BurstImportServiceLive (Postgres rée
           FOR INSERT TO authenticated WITH CHECK ((SELECT auth.uid()) = user_id);
         CREATE POLICY wishlist_items_delete_own ON public.wishlist_items
           FOR DELETE TO authenticated USING ((SELECT auth.uid()) = user_id);
-      `),
-    );
+      `);
+    });
 
   const wishlistOf = (userId: string) =>
     adminQuery(
-      (sql) => sql<{ card_id: string }[]>`
-        SELECT card_id FROM public.wishlist_items WHERE user_id = ${userId} ORDER BY card_id
+      (sql) => sql<{ card_id: string; language: string; variant: string }[]>`
+        SELECT card_id, language, variant
+        FROM public.wishlist_items
+        WHERE user_id = ${userId}
+        ORDER BY card_id, language, variant
       `,
     );
 
@@ -429,7 +461,42 @@ describe.skipIf(PGTEST_URL === undefined)("BurstImportServiceLive (Postgres rée
     }
     // Rollback complet : aucune copie écrite, wishlist intacte.
     expect(await copiesOf(ALICE)).toEqual([]);
-    expect(await wishlistOf(ALICE)).toEqual([{ card_id: "sv03.5-006" }, { card_id: "sv08-238" }]);
+    expect(await wishlistOf(ALICE)).toEqual([
+      { card_id: "sv03.5-006", language: "FR", variant: "normal" },
+      { card_id: "sv08-238", language: "FR", variant: "holo" },
+    ]);
+  });
+
+  it("concurrence réelle : deux commitBatch simultanés (+600 chacun) ne dépassent jamais 999", async () => {
+    await seed();
+    await reset();
+
+    const payload = batch({ language: "FR", variant: "normal", condition: "NM" }, [
+      { cardId: "sv03.5-025", quantity: 600 },
+      { cardId: "sv03.5-006", quantity: 1 },
+    ]);
+    const results = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* BurstImportService;
+          return yield* Effect.promise(() =>
+            Promise.all([
+              Effect.runPromise(Effect.result(service.commitBatch(ALICE, payload))),
+              Effect.runPromise(Effect.result(service.commitBatch(ALICE, payload))),
+            ]),
+          );
+        }).pipe(Effect.provide(serviceLayer)),
+      ),
+    );
+    const successes = results.filter((r) => r._tag === "Success");
+    const failures = results.filter((r) => r._tag === "Failure");
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.failure).toBeInstanceOf(BurstImportQuantityOverflowError);
+    // Rollback complet du lot concurrent en échec : sv03.5-025 reste à 600, sv03.5-006 reste à 1.
+    const rows = await copiesOf(ALICE);
+    expect(rows.find((row) => row.card_id === "sv03.5-025")?.quantity).toBe(600);
+    expect(rows.find((row) => row.card_id === "sv03.5-006")?.quantity).toBe(1);
   });
 
   it("atomicité réelle : dépassement 999 → BurstImportQuantityOverflowError + rollback complet", async () => {
@@ -514,7 +581,7 @@ describe.skipIf(PGTEST_URL === undefined)("BurstImportServiceLive (Postgres rée
     expect((await copiesOf(BOB)).find((row) => row.card_id === "sv08-238")?.quantity).toBe(2);
   });
 
-  it("wishlist réelle : DELETE ... RETURNING quand public.wishlist_items existe (removeFromWishlist true/false)", async () => {
+  it("wishlist réelle : DELETE ciblé (card_id, language, variant) préserve EN et variantes distinctes", async () => {
     await seed();
     await reset();
     await createWishlistTable();
@@ -522,33 +589,47 @@ describe.skipIf(PGTEST_URL === undefined)("BurstImportServiceLive (Postgres rée
       (sql) => sql`
         INSERT INTO public.wishlist_items (user_id, card_id, language, variant) VALUES
           (${ALICE}, 'sv08-238', 'FR', 'holo'),
+          (${ALICE}, 'sv08-238', 'EN', 'holo'),
           (${ALICE}, 'sv03.5-006', 'FR', 'normal'),
+          (${ALICE}, 'sv03.5-006', 'EN', 'normal'),
+          (${ALICE}, 'sv03.5-006', 'FR', 'masterball'),
           (${BOB}, 'sv08-238', 'FR', 'holo')
       `,
     );
 
+    // Import FR normal : sv08-238 auto-ajusté en holo supprime le souhait FR holo ;
+    // sv03.5-006 FR normal supprime uniquement FR normal, préservant EN normal et FR masterball.
     const removed = await withService((service) =>
       service.commitBatch(
         ALICE,
-        batch({ variant: "holo", removeFromWishlist: true }, [{ cardId: "sv08-238", quantity: 1 }]),
+        batch({ language: "FR", variant: "normal", removeFromWishlist: true }, [
+          { cardId: "sv08-238", quantity: 1 },
+          { cardId: "sv03.5-006", quantity: 1 },
+        ]),
       ),
     );
-    expect(removed.wishlistRemovedCount).toBe(1);
-    expect(removed.items[0]?.removedFromWishlist).toBe(true);
-    expect(await wishlistOf(ALICE)).toEqual([{ card_id: "sv03.5-006" }]);
-    expect(await wishlistOf(BOB)).toEqual([{ card_id: "sv08-238" }]); // RLS : Bob intact
+    expect(removed.wishlistRemovedCount).toBe(2);
+    expect(removed.items.every((item) => item.removedFromWishlist)).toBe(true);
+    expect(await wishlistOf(ALICE)).toEqual([
+      { card_id: "sv03.5-006", language: "EN", variant: "normal" },
+      { card_id: "sv03.5-006", language: "FR", variant: "masterball" },
+      { card_id: "sv08-238", language: "EN", variant: "holo" },
+    ]);
+    expect(await wishlistOf(BOB)).toEqual([
+      { card_id: "sv08-238", language: "FR", variant: "holo" },
+    ]); // RLS : Bob intact
 
     const kept = await withService((service) =>
       service.commitBatch(
         ALICE,
-        batch({ variant: "normal", removeFromWishlist: false }, [
+        batch({ language: "EN", variant: "normal", removeFromWishlist: false }, [
           { cardId: "sv03.5-006", quantity: 1 },
         ]),
       ),
     );
     expect(kept.wishlistRemovedCount).toBe(0);
     expect(kept.items[0]?.removedFromWishlist).toBe(false);
-    expect(await wishlistOf(ALICE)).toEqual([{ card_id: "sv03.5-006" }]);
+    expect(await wishlistOf(ALICE)).toHaveLength(3);
   });
 
   it("sans table wishlist_items (pré-M3) : removeFromWishlist est un no-op sans erreur", async () => {

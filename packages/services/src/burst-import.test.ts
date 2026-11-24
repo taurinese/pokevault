@@ -282,42 +282,63 @@ describe("BurstImportServiceMemory — commitBatch", () => {
     });
   });
 
-  it("removes wishlist entries when removeFromWishlist is true, keeps them otherwise", async () => {
+  it("removes only matching (card, language, resolvedVariant) wishlist entries and preserves other languages/variants", async () => {
     const state = makeState({
       wishlist: [
-        { userId: ALICE, cardId: "sv08-238" },
-        { userId: ALICE, cardId: "sv03.5-006" },
-        { userId: BOB, cardId: "sv08-238" },
+        { userId: ALICE, cardId: "sv08-238", language: "FR", variant: "holo" },
+        { userId: ALICE, cardId: "sv08-238", language: "EN", variant: "holo" },
+        { userId: ALICE, cardId: "sv03.5-006", language: "FR", variant: "normal" },
+        { userId: ALICE, cardId: "sv03.5-006", language: "EN", variant: "normal" },
+        { userId: ALICE, cardId: "sv03.5-006", language: "FR", variant: "masterball" },
+        { userId: BOB, cardId: "sv08-238", language: "FR", variant: "holo" },
       ],
     });
+    // Preview reports matching wishlist removal without mutating state.
+    const prev = await preview(
+      state,
+      ALICE,
+      batch({ language: "FR", variant: "normal", removeFromWishlist: true }, [
+        { cardId: "sv08-238", quantity: 1 }, // auto-adjusted normal → holo, matches FR holo wish
+        { cardId: "sv03.5-006", quantity: 1 }, // FR normal matches FR normal wish only
+      ]),
+    );
+    expect(prev.wishlistRemovedCount).toBe(2);
+    expect(state.wishlist).toHaveLength(6);
+
     const removed = await commit(
       state,
       ALICE,
-      batch({ variant: "holo", removeFromWishlist: true }, [{ cardId: "sv08-238", quantity: 1 }]),
+      batch({ language: "FR", variant: "normal", removeFromWishlist: true }, [
+        { cardId: "sv08-238", quantity: 1 },
+        { cardId: "sv03.5-006", quantity: 1 },
+      ]),
     );
-    expect(removed.wishlistRemovedCount).toBe(1);
-    expect(removed.items[0]?.removedFromWishlist).toBe(true);
+    expect(removed.wishlistRemovedCount).toBe(2);
+    expect(removed.items.every((item) => item.removedFromWishlist)).toBe(true);
+    // EN wishes, masterball wish and Bob's wish remain untouched.
     expect(state.wishlist).toEqual([
-      { userId: ALICE, cardId: "sv03.5-006" },
-      { userId: BOB, cardId: "sv08-238" },
+      { userId: ALICE, cardId: "sv08-238", language: "EN", variant: "holo" },
+      { userId: ALICE, cardId: "sv03.5-006", language: "EN", variant: "normal" },
+      { userId: ALICE, cardId: "sv03.5-006", language: "FR", variant: "masterball" },
+      { userId: BOB, cardId: "sv08-238", language: "FR", variant: "holo" },
     ]);
 
     const kept = await commit(
       state,
       ALICE,
-      batch({ variant: "normal", removeFromWishlist: false }, [
+      batch({ language: "EN", variant: "normal", removeFromWishlist: false }, [
         { cardId: "sv03.5-006", quantity: 1 },
       ]),
     );
     expect(kept.wishlistRemovedCount).toBe(0);
     expect(kept.items[0]?.removedFromWishlist).toBe(false);
-    expect(state.wishlist).toHaveLength(2);
+    expect(state.wishlist).toHaveLength(4);
   });
 
   it("does not fail when the wishlist table does not exist yet (pre-M3)", async () => {
     const state = makeState({
       wishlistTableExists: false,
-      wishlist: [{ userId: ALICE, cardId: "sv08-238" }],
+      wishlist: [{ userId: ALICE, cardId: "sv08-238", language: "FR", variant: "holo" }],
     });
     const report = await commit(
       state,

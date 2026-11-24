@@ -14,6 +14,7 @@ import {
   consolidateBurstItems,
   decodeBurstImportBatchInput,
   type HoloEffect,
+  MAX_CARD_COPY_QUANTITY,
   type ResolvedBurstItem,
   resolveBurstItem,
   ValidationError,
@@ -63,7 +64,7 @@ export class BurstImportService extends Context.Service<
   BurstImportServiceShape
 >()("@pokevault/services/BurstImportService") {}
 
-/** `auth.users.id` / `profiles.id` (UUID v4 shape, case-insensitive). */
+/** `auth.users.id` / `profiles.id` (standard UUID shape, case-insensitive). */
 export const UserId = Schema.NonEmptyString.check(
   Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
 );
@@ -71,10 +72,41 @@ export type UserId = typeof UserId.Type;
 
 const decodeUserId = (userId: string): Effect.Effect<UserId, ValidationError> =>
   Schema.decodeUnknownEffect(UserId)(userId).pipe(
+    Effect.map((id) => id.toLowerCase() as UserId),
     Effect.mapError(
       (error) => new ValidationError({ message: `invalid userId: ${error.message}`, cause: error }),
     ),
   );
+
+/**
+ * Exact wishlist slot key aligned with `wishlist_items` (`UNIQUE (user_id, card_id, language, variant)`).
+ * Matching on `(cardId, language, resolvedVariant)` guarantees importing FR `normal` never deletes
+ * an EN, JP or `masterball` wish for the same card.
+ */
+const wishlistSlotKey = (cardId: string, language: CardLanguage, variant: CardVariant): string =>
+  `${cardId} ${language} ${variant}`;
+
+const uniqueWishlistTargets = (
+  lines: ReadonlyArray<Pick<ResolvedBurstItem, "cardId" | "language" | "variant">>,
+): {
+  readonly cardIds: Array<string>;
+  readonly languages: Array<CardLanguage>;
+  readonly variants: Array<CardVariant>;
+} => {
+  const seen = new Set<string>();
+  const cardIds: Array<string> = [];
+  const languages: Array<CardLanguage> = [];
+  const variants: Array<CardVariant> = [];
+  for (const line of lines) {
+    const key = wishlistSlotKey(line.cardId, line.language, line.variant);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cardIds.push(line.cardId);
+    languages.push(line.language);
+    variants.push(line.variant);
+  }
+  return { cardIds, languages, variants };
+};
 
 // ---------------------------------------------------------------------------
 // Shared pure planning (used by both the Postgres and the in-memory layers)
@@ -262,17 +294,24 @@ export const BurstImportServiceLive: Layer.Layer<BurstImportService, never, Data
         return rows[0]?.exists ?? false;
       };
 
-      const wishlistCardIds = async (
+      const wishlistMatchingKeys = async (
         sql: QuerySql,
         userId: string,
-        cardIds: ReadonlyArray<string>,
+        lines: ReadonlyArray<PlannedLine>,
       ): Promise<Set<string>> => {
-        if (!(await wishlistTableExists(sql))) return new Set();
-        const rows = await sql<{ card_id: string }[]>`
-        SELECT DISTINCT card_id FROM public.wishlist_items
-        WHERE user_id = ${userId} AND card_id = ANY(${cardIds})
+        if (lines.length === 0 || !(await wishlistTableExists(sql))) return new Set();
+        const { cardIds, languages, variants } = uniqueWishlistTargets(lines);
+        const rows = await sql<{ card_id: string; language: CardLanguage; variant: CardVariant }[]>`
+        SELECT w.card_id, w.language, w.variant
+        FROM public.wishlist_items w
+        JOIN unnest(${cardIds}::text[], ${languages}::text[], ${variants}::text[])
+          AS targets(card_id, language, variant)
+          ON w.card_id = targets.card_id
+         AND w.language = targets.language
+         AND w.variant = targets.variant
+        WHERE w.user_id = ${userId}
       `;
-        return new Set(rows.map((row) => row.card_id));
+        return new Set(rows.map((row) => wishlistSlotKey(row.card_id, row.language, row.variant)));
       };
 
       const previewBatch = (
@@ -285,7 +324,7 @@ export const BurstImportServiceLive: Layer.Layer<BurstImportService, never, Data
           return yield* Effect.tryPromise({
             try: async () => {
               // Read-only transaction: the RLS claims are transaction-local too.
-              return await db.sql.begin(async (tx) => {
+              return await db.sql.begin("read only", async (tx) => {
                 await setRlsClaims(tx, uid);
                 const cardIds = distinctCardIds(batch);
                 const metaRows = await loadCards(tx, cardIds);
@@ -298,14 +337,16 @@ export const BurstImportServiceLive: Layer.Layer<BurstImportService, never, Data
                   }),
                 );
                 const wishlist = batch.defaults.removeFromWishlist
-                  ? await wishlistCardIds(tx, uid, cardIds)
+                  ? await wishlistMatchingKeys(tx, uid, plan.lines)
                   : new Set<string>();
                 return buildBurstImportReport(
                   plan.lines.map((line) => ({
                     line,
                     previousQuantity: line.previousQuantity,
                     wasNewCard: line.wasNewCard,
-                    removedFromWishlist: wishlist.has(line.cardId),
+                    removedFromWishlist: wishlist.has(
+                      wishlistSlotKey(line.cardId, line.language, line.variant),
+                    ),
                   })),
                 );
               });
@@ -337,37 +378,86 @@ export const BurstImportServiceLive: Layer.Layer<BurstImportService, never, Data
                   }),
                 );
 
-                // Upsert every slot: increments on the unique slot index, never
-                // touches graded copies (coalesce(grading_company, '') = '').
+                // Upsert every slot with an atomic SQL ceiling guard so two concurrent
+                // commits can never push `quantity` above MAX_CARD_COPY_QUANTITY.
+                // Never touches graded copies (coalesce(grading_company, '') = '').
+                const writtenTotals = new Map<string, number>();
                 for (const line of plan.lines) {
-                  await tx`
+                  const rows = await tx<{ id: string; quantity: number }[]>`
                   INSERT INTO public.user_card_copies (user_id, card_id, language, variant, condition, quantity)
                   VALUES (${uid}, ${line.cardId}, ${line.language}, ${line.variant}, ${line.condition}, ${line.quantity})
                   ON CONFLICT (user_id, card_id, language, variant, condition, coalesce(grading_company, ''), coalesce(grading_score, ''))
                   DO UPDATE SET quantity = public.user_card_copies.quantity + EXCLUDED.quantity
+                  WHERE public.user_card_copies.quantity + EXCLUDED.quantity <= ${MAX_CARD_COPY_QUANTITY}
                   RETURNING id, quantity
                 `;
+                  const written = rows[0];
+                  if (written === undefined) {
+                    const [currentRow] = await tx<{ quantity: number }[]>`
+                      SELECT quantity
+                      FROM public.user_card_copies
+                      WHERE user_id = ${uid}
+                        AND card_id = ${line.cardId}
+                        AND language = ${line.language}
+                        AND variant = ${line.variant}
+                        AND condition = ${line.condition}
+                        AND coalesce(grading_company, '') = ''
+                        AND coalesce(grading_score, '') = ''
+                    `;
+                    throw new BurstImportQuantityOverflowError({
+                      cardId: line.cardId,
+                      currentQuantity: currentRow?.quantity ?? line.previousQuantity,
+                      requestedDelta: line.quantity,
+                      maxQuantity: MAX_CARD_COPY_QUANTITY,
+                    });
+                  }
+                  writtenTotals.set(burstSlotKey(line), written.quantity);
                 }
 
-                // Automatic wishlist removal (table only exists from M3 / T7.1:
-                // when absent, this is a no-op and NOT an error).
-                let removedCardIds = new Set<string>();
-                if (batch.defaults.removeFromWishlist && (await wishlistTableExists(tx))) {
-                  const deleted = await tx<{ card_id: string }[]>`
-                  DELETE FROM public.wishlist_items
-                  WHERE user_id = ${uid} AND card_id = ANY(${cardIds})
-                  RETURNING card_id
+                // Automatic wishlist removal matching exact (card_id, language, variant)
+                // slots (table only exists from M3 / T7.1: when absent, no-op).
+                let removedWishlistKeys = new Set<string>();
+                if (
+                  batch.defaults.removeFromWishlist &&
+                  plan.lines.length > 0 &&
+                  (await wishlistTableExists(tx))
+                ) {
+                  const {
+                    cardIds: targetCards,
+                    languages,
+                    variants,
+                  } = uniqueWishlistTargets(plan.lines);
+                  const deleted = await tx<
+                    { card_id: string; language: CardLanguage; variant: CardVariant }[]
+                  >`
+                  DELETE FROM public.wishlist_items w
+                  USING unnest(${targetCards}::text[], ${languages}::text[], ${variants}::text[])
+                    AS targets(card_id, language, variant)
+                  WHERE w.user_id = ${uid}
+                    AND w.card_id = targets.card_id
+                    AND w.language = targets.language
+                    AND w.variant = targets.variant
+                  RETURNING w.card_id, w.language, w.variant
                 `;
-                  removedCardIds = new Set(deleted.map((row) => row.card_id));
+                  removedWishlistKeys = new Set(
+                    deleted.map((row) => wishlistSlotKey(row.card_id, row.language, row.variant)),
+                  );
                 }
 
                 return buildBurstImportReport(
-                  plan.lines.map((line) => ({
-                    line,
-                    previousQuantity: line.previousQuantity,
-                    wasNewCard: line.wasNewCard,
-                    removedFromWishlist: removedCardIds.has(line.cardId),
-                  })),
+                  plan.lines.map((line) => {
+                    const writtenTotal =
+                      writtenTotals.get(burstSlotKey(line)) ??
+                      line.previousQuantity + line.quantity;
+                    return {
+                      line,
+                      previousQuantity: writtenTotal - line.quantity,
+                      wasNewCard: line.wasNewCard,
+                      removedFromWishlist: removedWishlistKeys.has(
+                        wishlistSlotKey(line.cardId, line.language, line.variant),
+                      ),
+                    };
+                  }),
                 );
               });
             },
@@ -398,11 +488,16 @@ export interface BurstImportMemoryCopy {
   quantity: number;
 }
 
-/** One simulated `wishlist_items` row. */
+/** One simulated `wishlist_items` row (aligned with `UNIQUE (user_id, card_id, language, variant)`). */
 export interface BurstImportMemoryWishlistItem {
   userId: string;
   cardId: string;
+  language?: CardLanguage | undefined;
+  variant?: CardVariant | undefined;
 }
+
+const memoryWishlistKey = (item: BurstImportMemoryWishlistItem): string =>
+  wishlistSlotKey(item.cardId, item.language ?? "FR", item.variant ?? "normal");
 
 /**
  * Mutable state of {@link BurstImportServiceMemory}. `copies` and `wishlist`
@@ -433,7 +528,7 @@ export const BurstImportServiceMemory = (
     cardIds: ReadonlyArray<string>,
   ): ReadonlyArray<ExistingCardCopy> =>
     state.copies
-      .filter((copy) => copy.userId === userId && cardIds.includes(copy.cardId))
+      .filter((copy) => copy.userId.toLowerCase() === userId && cardIds.includes(copy.cardId))
       .map((copy) => ({
         cardId: copy.cardId,
         language: copy.language,
@@ -454,12 +549,18 @@ export const BurstImportServiceMemory = (
           cardsById,
           existingCopies: existingCopiesOf(uid, cardIds),
         });
+        const targetKeys = new Set(
+          plan.lines.map((line) => wishlistSlotKey(line.cardId, line.language, line.variant)),
+        );
         const wishlist =
           batch.defaults.removeFromWishlist && wishlistExists
             ? new Set(
                 state.wishlist
-                  .filter((item) => item.userId === uid && cardIds.includes(item.cardId))
-                  .map((item) => item.cardId),
+                  .filter(
+                    (item) =>
+                      item.userId.toLowerCase() === uid && targetKeys.has(memoryWishlistKey(item)),
+                  )
+                  .map(memoryWishlistKey),
               )
             : new Set<string>();
         return buildBurstImportReport(
@@ -467,7 +568,9 @@ export const BurstImportServiceMemory = (
             line,
             previousQuantity: line.previousQuantity,
             wasNewCard: line.wasNewCard,
-            removedFromWishlist: wishlist.has(line.cardId),
+            removedFromWishlist: wishlist.has(
+              wishlistSlotKey(line.cardId, line.language, line.variant),
+            ),
           })),
         );
       }),
@@ -487,7 +590,7 @@ export const BurstImportServiceMemory = (
         for (const line of plan.lines) {
           const slot = state.copies.find(
             (copy) =>
-              copy.userId === uid &&
+              copy.userId.toLowerCase() === uid &&
               copy.cardId === line.cardId &&
               copy.language === line.language &&
               copy.variant === line.variant &&
@@ -511,14 +614,20 @@ export const BurstImportServiceMemory = (
           }
         }
 
-        const removedCardIds = new Set<string>();
+        const removedWishlistKeys = new Set<string>();
         if (batch.defaults.removeFromWishlist && wishlistExists) {
+          const targetKeys = new Set(
+            plan.lines.map((line) => wishlistSlotKey(line.cardId, line.language, line.variant)),
+          );
           for (const item of state.wishlist) {
-            if (item.userId === uid && cardIds.includes(item.cardId))
-              removedCardIds.add(item.cardId);
+            const key = memoryWishlistKey(item);
+            if (item.userId.toLowerCase() === uid && targetKeys.has(key)) {
+              removedWishlistKeys.add(key);
+            }
           }
           state.wishlist = state.wishlist.filter(
-            (item) => !(item.userId === uid && cardIds.includes(item.cardId)),
+            (item) =>
+              !(item.userId.toLowerCase() === uid && targetKeys.has(memoryWishlistKey(item))),
           );
         }
 
@@ -527,7 +636,9 @@ export const BurstImportServiceMemory = (
             line,
             previousQuantity: line.previousQuantity,
             wasNewCard: line.wasNewCard,
-            removedFromWishlist: removedCardIds.has(line.cardId),
+            removedFromWishlist: removedWishlistKeys.has(
+              wishlistSlotKey(line.cardId, line.language, line.variant),
+            ),
           })),
         );
       }),

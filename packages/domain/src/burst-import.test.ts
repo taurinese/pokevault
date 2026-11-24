@@ -409,7 +409,8 @@ describe("buildBurstImportReport", () => {
     expect(report.distinctCardsCount).toBe(2);
     expect(report.newCardsCount).toBe(1);
     expect(report.duplicateCardsCount).toBe(1);
-    expect(report.wishlistRemovedCount).toBe(1);
+    // Two distinct wishlist slots removed: (sv08-238, FR, holo) and (sv08-238, FR, normal).
+    expect(report.wishlistRemovedCount).toBe(2);
     expect(report.adjustedVariantsCount).toBe(1);
     expect(report.items[0]).toMatchObject({
       cardId: "sv08-238",
