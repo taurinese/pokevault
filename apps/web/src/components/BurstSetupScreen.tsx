@@ -223,12 +223,12 @@ const PillGroup = ({
   readonly legend: string;
   readonly children: ReactNode;
 }) => (
-  <div role="group" aria-labelledby={id} className="flex flex-col gap-2">
-    <p id={id} className="text-xs font-semibold tracking-wide text-muted uppercase">
+  <fieldset className="flex flex-col gap-2">
+    <legend id={id} className="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">
       {legend}
-    </p>
+    </legend>
     <div className="flex flex-wrap gap-2">{children}</div>
-  </div>
+  </fieldset>
 );
 
 /** Ligne d'extension sélectionnable (bordure dorée quand sélectionnée). */
