@@ -16,6 +16,7 @@ import {
   generateCardmarketAddCardList,
   generateCardmarketCsv,
   isFoilVariant,
+  normalizeCardmarketQuantity,
   sanitizeCsvCell,
 } from "./cardmarket.ts";
 import * as domain from "./index.ts";
@@ -628,6 +629,98 @@ describe("generateCardmarketAddCardList", () => {
     const filtered = generateCardmarketAddCardList([makeEntry()], { scope: "high_priority" });
     expect(filtered.content).toBe("");
     expect(filtered.lineCount).toBe(0);
+  });
+
+  it("sanitizes control chars in setCode, localId, and name (including \\t, \\v, \\f, \\u2028, \\u2029)", () => {
+    const result = generateCardmarketAddCardList([
+      makeEntry({
+        cardId: "ctrl-1",
+        nameEn: "Foo\tBaz\u2028Qux\u2029",
+        cardmarketSetCode: "ME\nW",
+        localId: "19\r\n9",
+      }),
+    ]);
+    expect(result.content).toBe("1 Foo Baz Qux (ME W 19 9)\n");
+    expect(result.lineCount).toBe(1);
+    expect(result.content.split("\n")).toEqual(["1 Foo Baz Qux (ME W 19 9)", ""]);
+  });
+
+  it("normalizes invalid quantities (0, negative, float, NaN, Infinity) to 1 in both formats", () => {
+    expect(normalizeCardmarketQuantity(undefined)).toBe(1);
+    expect(normalizeCardmarketQuantity(0)).toBe(1);
+    expect(normalizeCardmarketQuantity(-3)).toBe(1);
+    expect(normalizeCardmarketQuantity(1.5)).toBe(1);
+    expect(normalizeCardmarketQuantity(Number.NaN)).toBe(1);
+    expect(normalizeCardmarketQuantity(Number.POSITIVE_INFINITY)).toBe(1);
+    expect(normalizeCardmarketQuantity(5000)).toBe(999);
+    expect(normalizeCardmarketQuantity(4)).toBe(4);
+
+    const invalidEntries = [
+      makeEntry({ cardId: "q-0", localId: "1", quantity: 0 }),
+      makeEntry({ cardId: "q-neg", localId: "2", quantity: -3 }),
+      makeEntry({ cardId: "q-float", localId: "3", quantity: 1.5 }),
+      makeEntry({ cardId: "q-nan", localId: "4", quantity: Number.NaN }),
+    ];
+    const csv = generateCardmarketCsv(invalidEntries, undefined, new Date(Date.UTC(2026, 2, 15)));
+    expect(csv.filename).toBe("wants-cardmarket-2026-03-15.csv");
+    const csvLines = csv.content.split("\r\n");
+    expect(csvLines[1]?.startsWith("1,")).toBe(true);
+    expect(csvLines[2]?.startsWith("1,")).toBe(true);
+    expect(csvLines[3]?.startsWith("1,")).toBe(true);
+    expect(csvLines[4]?.startsWith("1,")).toBe(true);
+
+    // Add Card List: -1 and +1 must never cancel out to 0
+    const addList = generateCardmarketAddCardList([
+      makeEntry({ cardId: "q-a", quantity: -1 }),
+      makeEntry({ cardId: "q-b", quantity: 1 }),
+    ]);
+    expect(addList.content).toBe("2 Charizard ex (MEW 199)\n");
+  });
+
+  it("produces an exact deterministic CSV filename for a given UTC Date", () => {
+    const fixed = new Date(Date.UTC(2026, 10, 24, 23, 45, 0));
+    const result = generateCardmarketCsv([makeEntry()], undefined, fixed);
+    expect(result.filename).toBe("wants-cardmarket-2026-11-24.csv");
+  });
+
+  it("sorts transitively for every permutation of numeric and alphanumeric localIds", () => {
+    const a = makeEntry({ cardId: "p-2", localId: "2" });
+    const b = makeEntry({ cardId: "p-10", localId: "10" });
+    const c = makeEntry({ cardId: "p-1x", localId: "1x" });
+    const permutations = [
+      [a, b, c],
+      [a, c, b],
+      [b, a, c],
+      [b, c, a],
+      [c, a, b],
+      [c, b, a],
+    ];
+    for (const perm of permutations) {
+      expect(filterCardmarketEntries(perm).map((entry) => entry.localId)).toEqual([
+        "2",
+        "10",
+        "1x",
+      ]);
+    }
+  });
+
+  it("treats empty or blank nameEn as missing (falls back to nameFr and emits warning)", () => {
+    const result = generateCardmarketCsv(
+      [makeEntry({ cardId: "blank-en", nameEn: "   ", nameFr: "Dracaufeu-ex" })],
+      undefined,
+      new Date(Date.UTC(2026, 0, 1)),
+    );
+    expect(result.content).toContain("1,Dracaufeu-ex,MEW,199,EN,NM,false\r\n");
+    expect(result.warnings).toContainEqual({
+      kind: "missing_english_name",
+      cardId: "blank-en",
+      nameFr: "Dracaufeu-ex",
+    });
+  });
+
+  it("neutralizes formulas preceded by whitespace or NBSP in CSV cells", () => {
+    expect(sanitizeCsvCell(" =CMD()")).toBe("' =CMD()");
+    expect(sanitizeCsvCell("\u00A0+1")).toBe("'\u00A0+1");
   });
 });
 

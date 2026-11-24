@@ -1,5 +1,11 @@
 import { Schema } from "effect";
-import { CardCondition, CardId, CardLanguage, CardVariant } from "./card.ts";
+import {
+  CardCondition,
+  CardId,
+  CardLanguage,
+  CardVariant,
+  MAX_CARD_COPY_QUANTITY,
+} from "./card.ts";
 import { CARD_VARIANT_ORDER, parseLocalIdNumeric } from "./catalog.ts";
 
 // ---------------------------------------------------------------------------
@@ -182,23 +188,41 @@ export const isFoilVariant = (variant: CardVariant): boolean => variant !== "nor
 export const cardConditionRank = (condition: CardCondition): number =>
   CARD_CONDITION_ORDER.indexOf(condition);
 
-/** Exported card name: English name when available, French name otherwise. */
-export const cardmarketEntryName = (entry: CardmarketExportEntry): string =>
-  entry.nameEn ?? entry.nameFr;
+const nonBlank = (value: string | null | undefined): string | null => {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+};
 
 /**
- * Exported `set_code`: `cardmarketSetCode` (`catalog_sets.cardmarket_code`)
+ * Normalizes a card quantity before export: only strictly positive safe
+ * integers are kept (clamped to `MAX_CARD_COPY_QUANTITY`); any invalid value
+ * (`undefined`, `0`, negative, non-integer, `NaN`, `Infinity`) falls back to `1`.
+ */
+export const normalizeCardmarketQuantity = (quantity: number | undefined): number =>
+  quantity !== undefined && Number.isSafeInteger(quantity) && quantity > 0
+    ? Math.min(quantity, MAX_CARD_COPY_QUANTITY)
+    : 1;
+
+/** Exported card name: non-blank English name when available, French name otherwise. */
+export const cardmarketEntryName = (entry: CardmarketExportEntry): string =>
+  nonBlank(entry.nameEn) ?? entry.nameFr;
+
+/**
+ * Exported `set_code`: non-blank `cardmarketSetCode` (`catalog_sets.cardmarket_code`)
  * first, then the displayed `setCode` (e.g. `EV3.5`), then `setId` as last
  * resort.
  */
 export const cardmarketEntrySetCode = (entry: CardmarketExportEntry): string =>
-  entry.cardmarketSetCode ?? entry.setCode ?? entry.setId;
+  nonBlank(entry.cardmarketSetCode) ?? nonBlank(entry.setCode) ?? entry.setId;
 
 const compareStrings = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
- * Deterministic total order used by {@link filterCardmarketEntries}:
- * exported `set_code`, then `localId` (numeric/natural when possible), then
+ * Deterministic, strictly transitive total order used by
+ * {@link filterCardmarketEntries}:
+ * exported `set_code`, then numeric `localId` before non-numeric `localId`
+ * (lexicographic key `(num === null ? 1 : 0, num ?? 0, localId)`), then
  * `language`, then `variant` (canonical {@link CARD_VARIANT_ORDER}), then name,
  * then `cardId`.
  */
@@ -207,6 +231,9 @@ const compareEntries = (a: CardmarketExportEntry, b: CardmarketExportEntry): num
   if (bySetCode !== 0) return bySetCode;
   const numA = parseLocalIdNumeric(a.localId);
   const numB = parseLocalIdNumeric(b.localId);
+  const rankA = numA === null ? 1 : 0;
+  const rankB = numB === null ? 1 : 0;
+  if (rankA !== rankB) return rankA - rankB;
   if (numA !== null && numB !== null && numA !== numB) return numA - numB;
   const byLocalId = compareStrings(a.localId, b.localId);
   if (byLocalId !== 0) return byLocalId;
@@ -289,7 +316,7 @@ export const collectCardmarketWarnings = (
   const nameWarnings: MissingEnglishNameWarning[] = [];
   const seenCardIds = new Set<string>();
   for (const entry of entries) {
-    if (entry.cardmarketSetCode === null) {
+    if (nonBlank(entry.cardmarketSetCode) === null) {
       const index = codeWarningIndexBySetId.get(entry.setId);
       if (index === undefined) {
         codeWarningIndexBySetId.set(entry.setId, codeWarnings.length);
@@ -297,7 +324,7 @@ export const collectCardmarketWarnings = (
           kind: "missing_cardmarket_code",
           setId: entry.setId,
           setNameFr: entry.setNameFr,
-          fallbackCode: entry.setCode ?? entry.setId,
+          fallbackCode: nonBlank(entry.setCode) ?? entry.setId,
           count: 1,
         });
       } else {
@@ -305,7 +332,7 @@ export const collectCardmarketWarnings = (
         if (warning !== undefined) warning.count += 1;
       }
     }
-    if (entry.nameEn === null && !seenCardIds.has(entry.cardId)) {
+    if (nonBlank(entry.nameEn) === null && !seenCardIds.has(entry.cardId)) {
       seenCardIds.add(entry.cardId);
       nameWarnings.push({
         kind: "missing_english_name",
@@ -324,14 +351,21 @@ export const collectCardmarketWarnings = (
 /** Characters that force RFC 4180 quoting of a CSV field. */
 const CSV_SPECIAL_CHARS = /[",\r\n]/;
 
-/** Leading characters interpreted as formulas by Excel / LibreOffice. */
-const CSV_FORMULA_PREFIX = /^[=+@\t\r-]/;
+/**
+ * Leading characters interpreted as formulas by Excel / LibreOffice, including
+ * when preceded by leading whitespace / NBSP (stripped by some spreadsheet
+ * importers).
+ */
+const CSV_FORMULA_PREFIX = /^[\s\u00A0]*[=+@-]|^[\t\r]/;
 
 /**
  * Neutralizes CSV formula injection (Excel / LibreOffice): a field starting
- * with `=`, `+`, `-`, `@`, `\t` or `\r` is prefixed with an apostrophe `'`
- * so it is treated as text. Positive numbers (`qty`, `number`) never start
- * with those characters and are left untouched.
+ * with `=`, `+`, `-`, `@` (optionally preceded by whitespace) or `\t`/`\r` is
+ * prefixed with an apostrophe `'` so spreadsheet apps treat it as text.
+ *
+ * Trade-off: the leading `'` remains in raw CSV data if a card name ever
+ * started with `-` or `+` (negligible for Pokémon TCG names). Positive numbers
+ * (`qty`, `number`) are left untouched.
  */
 export const sanitizeCsvCell = (value: string): string =>
   CSV_FORMULA_PREFIX.test(value) ? `'${value}` : value;
@@ -363,24 +397,28 @@ export const buildCardmarketCsvFilename = (date: Date = new Date()): string => {
  * Generates the Cardmarket CSV export (docs/04 §2.2):
  *
  * - header `qty,name,set_code,number,language,min_condition,foil_only` always present;
- * - `name` = `nameEn ?? nameFr`, `set_code` = `cardmarketSetCode ?? setCode ?? setId`,
+ * - `name` = `nameEn ?? nameFr` (blank `nameEn` falls back to `nameFr`),
+ *   `set_code` = `cardmarketSetCode ?? setCode ?? setId`,
  *   `number` = `localId`, `language` = ISO code, `foil_only` = `true`/`false`
  *   from the entry's own variant;
  * - `min_condition` = `filters.minConditionOverride ?? entry.minCondition`;
- * - `qty` = `entry.quantity ?? 1`;
+ * - `qty` = normalized positive integer (`normalizeCardmarketQuantity`);
+ * - `now` (optional, default `new Date()`): UTC date used for `filename` so
+ *   callers and tests get a 100 % deterministic output when passing a `Date`;
  * - every field goes through {@link escapeCsvField}; lines are `\r\n`-terminated
  *   (RFC 4180, including the last row — no trailing empty line beyond the final CRLF).
  */
 export const generateCardmarketCsv = (
   entries: ReadonlyArray<CardmarketExportEntry>,
   filters?: CardmarketExportFilters | undefined,
+  now: Date = new Date(),
 ): CardmarketExportResult => {
   const filtered = filterCardmarketEntries(entries, filters);
   const warnings = collectCardmarketWarnings(filtered);
   const header = CARDMARKET_CSV_HEADERS.map(escapeCsvField).join(",");
   const rows = filtered.map((entry) => {
     const fields = [
-      String(entry.quantity ?? 1),
+      String(normalizeCardmarketQuantity(entry.quantity)),
       cardmarketEntryName(entry),
       cardmarketEntrySetCode(entry),
       entry.localId,
@@ -394,7 +432,7 @@ export const generateCardmarketCsv = (
   return {
     content,
     rowCount: filtered.length,
-    filename: buildCardmarketCsvFilename(),
+    filename: buildCardmarketCsvFilename(now),
     warnings,
   };
 };
@@ -403,20 +441,27 @@ export const generateCardmarketCsv = (
 // « Add Card List » text export (Cardmarket Wants List / Shopping Wizard)
 // ---------------------------------------------------------------------------
 
-/** Collapses `\r` / `\n` so one exported card always stays on one line. */
-const sanitizeAddCardListToken = (value: string): string => value.replace(/[\r\n]+/g, " ");
+/**
+ * Collapses all Unicode control characters (`\p{Cc}`, incl. `\r`, `\n`, `\t`,
+ * `\v`, `\f`, `\u0085`) plus line/paragraph separators (`\u2028`, `\u2029`)
+ * into single spaces and trims so every exported card stays strictly on 1 line.
+ */
+const sanitizeAddCardListToken = (value: string): string =>
+  value.replace(/[\p{Cc}\u2028\u2029]+/gu, " ").trim();
 
 /**
  * Generates the plain-text « Add Card List » export (docs/04 §2.2), directly
  * paste-able into Cardmarket's Wants List / Shopping Wizard:
  *
- * - one card per line: `${qty} ${name} (${setCode} ${localId})` when a set
- *   code is available (`cardmarketSetCode ?? setCode`), otherwise
+ * - one card per line: `${qty} ${name} (${setCode} ${localId})` when a non-empty
+ *   sanitized set code is available (`cardmarketSetCode ?? setCode`), otherwise
  *   `${qty} ${name} (${localId})` (a `missing_cardmarket_code` warning is emitted);
- * - `name` = `nameEn ?? nameFr`, with `\r` / `\n` neutralized (strictly one
- *   card per line);
- * - entries that would produce the exact same line are aggregated: their
- *   quantities are summed into a single line; distinct lines are kept as-is;
+ * - `name`, `setCode`, and `localId` are sanitized via {@link sanitizeAddCardListToken}
+ *   so no control character or line separator can ever break the 1-card-per-line rule;
+ * - entries that produce the exact same line are aggregated by summing their
+ *   normalized quantities (note: because Cardmarket's plain-text Add Card List
+ *   format does not encode language or variant, two entries differing only by
+ *   language/variant merge into a single line);
  * - lines are `\n`-separated with a single trailing `\n` (empty export → `""`).
  */
 export const generateCardmarketAddCardList = (
@@ -430,9 +475,10 @@ export const generateCardmarketAddCardList = (
   for (const entry of filtered) {
     const name = sanitizeAddCardListToken(cardmarketEntryName(entry));
     const localId = sanitizeAddCardListToken(entry.localId);
-    const setCode = entry.cardmarketSetCode ?? entry.setCode;
+    const rawSetCode = nonBlank(entry.cardmarketSetCode) ?? nonBlank(entry.setCode);
+    const setCode = rawSetCode === null ? null : nonBlank(sanitizeAddCardListToken(rawSetCode));
     const key = setCode === null ? `${name} (${localId})` : `${name} (${setCode} ${localId})`;
-    const quantity = entry.quantity ?? 1;
+    const quantity = normalizeCardmarketQuantity(entry.quantity);
     const previous = quantitiesByLine.get(key);
     if (previous === undefined) {
       lineOrder.push(key);
