@@ -330,6 +330,7 @@ export const fr = {
   "collection.filters.active_other": "{count} filtres actifs",
   "collection.filtered.empty.title": "Aucun classeur ne correspond",
   "collection.filtered.empty.description":
+    "Aucun classeur ne correspond à vos filtres actuels. Réinitialisez-les pour tout afficher.",
   "collection.filtered.empty.reset": "Réinitialiser les filtres",
   "collection.filtered.announce_one": "Filtres appliqués : {count} classeur",
   "collection.filtered.announce_other": "Filtres appliqués : {count} classeurs",
