@@ -12,7 +12,7 @@
 
 import type { CardLanguage } from "@pokevault/domain";
 import { ArrowLeft, Hash, LayoutGrid, RotateCcw, TriangleAlert } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useReducer, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { t, tPlural } from "../i18n/index.ts";
 import {
   BURST_SETUP_CONDITIONS,
@@ -64,6 +64,7 @@ export const initialBurstSetupState = (
 });
 
 export type BurstSetupAction =
+  | { readonly type: "sets_loading" }
   | { readonly type: "sets_loaded"; readonly sets: ReadonlyArray<BurstSetOption> }
   | { readonly type: "sets_failed" }
   | { readonly type: "filter_changed"; readonly value: string }
@@ -81,8 +82,18 @@ export const burstSetupReducer = (
   action: BurstSetupAction,
 ): BurstSetupState => {
   switch (action.type) {
-    case "sets_loaded":
-      return { ...state, status: "ready", sets: action.sets };
+    case "sets_loading":
+      return { ...state, status: "loading" };
+    case "sets_loaded": {
+      const selectedExists =
+        state.selectedSetId !== null && action.sets.some((set) => set.id === state.selectedSetId);
+      return {
+        ...state,
+        status: "ready",
+        sets: action.sets,
+        selectedSetId: selectedExists ? state.selectedSetId : null,
+      };
+    }
     case "sets_failed":
       return { ...state, status: "error" };
     case "filter_changed":
@@ -212,7 +223,7 @@ const PillGroup = ({
   readonly legend: string;
   readonly children: ReactNode;
 }) => (
-  <div className="flex flex-col gap-2">
+  <div role="group" aria-labelledby={id} className="flex flex-col gap-2">
     <p id={id} className="text-xs font-semibold tracking-wide text-muted uppercase">
       {legend}
     </p>
@@ -229,40 +240,61 @@ const SetRow = ({
   readonly set: BurstSetOption;
   readonly selected: boolean;
   readonly onSelect: () => void;
-}) => (
-  <li>
-    <button
-      type="button"
-      aria-pressed={selected}
-      data-testid={`burst-set-${set.id}`}
-      onClick={onSelect}
-      className={`flex w-full items-center gap-3 rounded-sheet border p-3 text-left transition-colors ${
-        selected ? "border-gold bg-gold-soft" : "border-line bg-surface-1 hover:bg-surface-2"
-      } ${focusRing}`}
-    >
-      {set.logoUrl === null ? (
-        <span
-          aria-hidden="true"
-          className="flex size-10 shrink-0 items-center justify-center rounded-md bg-surface-2 font-mono text-xs font-bold tabular-nums text-muted"
-        >
-          {set.code ?? set.id}
+}) => {
+  const [failedLogo, setFailedLogo] = useState<string | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const showLogo = set.logoUrl !== null && failedLogo !== set.logoUrl;
+
+  useEffect(() => {
+    const img = imgRef.current;
+    if (img?.complete && img.naturalWidth === 0 && set.logoUrl !== null) {
+      setFailedLogo(set.logoUrl);
+    }
+  }, [set.logoUrl]);
+
+  return (
+    <li>
+      <button
+        type="button"
+        aria-pressed={selected}
+        data-testid={`burst-set-${set.id}`}
+        onClick={onSelect}
+        className={`flex w-full items-center gap-3 rounded-sheet border p-3 text-left transition-colors ${
+          selected ? "border-gold bg-gold-soft" : "border-line bg-surface-1 hover:bg-surface-2"
+        } ${focusRing}`}
+      >
+        {showLogo ? (
+          <img
+            ref={imgRef}
+            src={set.logoUrl}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailedLogo(set.logoUrl)}
+            className="size-10 shrink-0 object-contain"
+          />
+        ) : (
+          <span
+            aria-hidden="true"
+            className="flex size-10 shrink-0 items-center justify-center rounded-md bg-surface-2 font-mono text-xs font-bold tabular-nums text-muted"
+          >
+            {set.code ?? set.id}
+          </span>
+        )}
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate text-sm font-bold text-primary">{set.nameFr}</span>
+          <span className="truncate text-xs text-secondary">
+            {set.seriesNameFr}
+            {set.code === null ? "" : ` · ${set.code}`}
+          </span>
         </span>
-      ) : (
-        <img src={set.logoUrl} alt="" loading="lazy" className="size-10 shrink-0 object-contain" />
-      )}
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-sm font-bold text-primary">{set.nameFr}</span>
-        <span className="truncate text-xs text-secondary">
-          {set.seriesNameFr}
-          {set.code === null ? "" : ` · ${set.code}`}
+        <span className="shrink-0 font-mono text-xs tabular-nums text-muted">
+          {tPlural("burst.sets.cards", set.totalCount)}
         </span>
-      </span>
-      <span className="shrink-0 font-mono text-xs tabular-nums text-muted">
-        {tPlural("burst.sets.cards", set.totalCount)}
-      </span>
-    </button>
-  </li>
-);
+      </button>
+    </li>
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Vue (rendu pur : props état + actions)
@@ -485,30 +517,39 @@ export const BurstSetupView = ({
 
       {/* Bloc 3 — Option Wishlist */}
       <section
-        aria-labelledby="burst-wishlist-heading"
+        aria-labelledby="burst-wishlist-label"
         className="flex items-center justify-between gap-4 rounded-sheet border border-line bg-surface-1 p-5 shadow-card"
       >
-        <h2 id="burst-wishlist-heading" className="sr-only">
-          {t("burst.wishlist.label")}
-        </h2>
         <div className="flex min-w-0 flex-col gap-1">
-          <p className="text-sm font-semibold text-primary">{t("burst.wishlist.label")}</p>
-          <p className="text-xs text-muted">{t("burst.wishlist.hint")}</p>
+          <h2 id="burst-wishlist-label" className="text-sm font-semibold text-primary">
+            {t("burst.wishlist.label")}
+          </h2>
+          <p id="burst-wishlist-hint" className="text-xs text-muted">
+            {t("burst.wishlist.hint")}
+          </p>
         </div>
         <button
           type="button"
           role="switch"
           aria-checked={state.removeFromWishlist}
+          aria-labelledby="burst-wishlist-label"
+          aria-describedby="burst-wishlist-hint"
           data-testid="burst-wishlist-switch"
           onClick={actions.onToggleWishlist}
-          className={`relative h-6 w-10 shrink-0 rounded-pill transition-colors ${state.removeFromWishlist ? "bg-gold" : "bg-surface-2"} ${focusRing}`}
+          className={`flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-pill ${focusRing}`}
         >
           <span
             aria-hidden="true"
-            className={`absolute top-0.5 size-5 rounded-pill bg-canvas transition-all ${
-              state.removeFromWishlist ? "left-[1.125rem]" : "left-0.5"
+            className={`relative block h-6 w-10 rounded-pill transition-colors ${
+              state.removeFromWishlist ? "bg-gold" : "bg-surface-2"
             }`}
-          />
+          >
+            <span
+              className={`absolute top-0.5 size-5 rounded-pill bg-canvas transition-all ${
+                state.removeFromWishlist ? "left-[1.125rem]" : "left-0.5"
+              }`}
+            />
+          </span>
         </button>
       </section>
 
@@ -637,7 +678,10 @@ export const BurstSetupScreen = ({
           if (config !== null) onStart(config);
         },
         onEditLot: () => dispatch({ type: "back_to_config" }),
-        onRetry: () => setRetryNonce((nonce) => nonce + 1),
+        onRetry: () => {
+          dispatch({ type: "sets_loading" });
+          setRetryNonce((nonce) => nonce + 1);
+        },
         onBack,
       }}
     />

@@ -129,11 +129,29 @@ describe("BurstSetupScreen (08A) · pills langue / variante / état", () => {
 });
 
 describe("BurstSetupScreen (08A) · switch Wishlist", () => {
-  it("est activé par défaut (role=switch, aria-checked=true)", () => {
+  it("est activé par défaut (role=switch, aria-checked=true, nom et description accessibles)", () => {
     const html = render(readyState());
     expect(html).toContain('role="switch"');
     expect(html).toContain('data-testid="burst-wishlist-switch"');
     expect(html).toContain('aria-checked="true"');
+    expect(html).toContain('aria-labelledby="burst-wishlist-label"');
+    expect(html).toContain('aria-describedby="burst-wishlist-hint"');
+    expect(html).toContain('id="burst-wishlist-label"');
+    expect(html).toContain('id="burst-wishlist-hint"');
+    expect(html).toContain("min-h-[44px]");
+  });
+
+  it("efface un ?setId= inconnu lorsque la liste d'extensions charge", () => {
+    const initial = initialBurstSetupState("unknown-set");
+    expect(initial.selectedSetId).toBe("unknown-set");
+    const loaded = burstSetupReducer(initial, { type: "sets_loaded", sets: sets() });
+    expect(loaded.selectedSetId).toBeNull();
+    expect(burstSetupConfig(loaded)).toBeNull();
+    const known = burstSetupReducer(initialBurstSetupState("sv03.5"), {
+      type: "sets_loaded",
+      sets: sets(),
+    });
+    expect(known.selectedSetId).toBe("sv03.5");
   });
 
   it("bascule OFF au clic et met à jour la config", () => {

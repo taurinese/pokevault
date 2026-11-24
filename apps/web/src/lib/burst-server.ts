@@ -13,6 +13,7 @@
  * 403 sinon — CSRF). Réf. : docs/01 §6, docs/06, ADR-006.
  */
 
+import { tcgdexSetLogoUrl } from "@pokevault/domain";
 import {
   BurstImportService,
   BurstImportServiceLive,
@@ -84,6 +85,23 @@ interface BurstSetRawRow {
   readonly release_date: string | Date | null;
 }
 
+/** Convertit une ligne SQL `catalog_sets × catalog_series` en option client (logo normalisé `.webp`). */
+export const mapBurstSetRow = (row: BurstSetRawRow): BurstSetOption => ({
+  id: row.id,
+  code: row.code,
+  nameFr: row.name_fr,
+  seriesNameFr: row.series_name_fr,
+  logoUrl: tcgdexSetLogoUrl(row.logo_url) ?? null,
+  officialCount: row.official_count,
+  totalCount: row.total_count,
+  releaseDate:
+    row.release_date === null
+      ? null
+      : row.release_date instanceof Date
+        ? row.release_date.toISOString().slice(0, 10)
+        : row.release_date,
+});
+
 /** Requête SQL des extensions disponibles (jointure série, tri demandé). */
 const listSetsQuery = (): Effect.Effect<ReadonlyArray<BurstSetOption>, DatabaseError, Database> =>
   Effect.gen(function* () {
@@ -99,23 +117,7 @@ const listSetsQuery = (): Effect.Effect<ReadonlyArray<BurstSetOption>, DatabaseE
         `,
       catch: (error) => new DatabaseError({ message: "burst sets query failed", cause: error }),
     })) as unknown as ReadonlyArray<BurstSetRawRow>;
-    return rows.map(
-      (row): BurstSetOption => ({
-        id: row.id,
-        code: row.code,
-        nameFr: row.name_fr,
-        seriesNameFr: row.series_name_fr,
-        logoUrl: row.logo_url,
-        officialCount: row.official_count,
-        totalCount: row.total_count,
-        releaseDate:
-          row.release_date === null
-            ? null
-            : row.release_date instanceof Date
-              ? row.release_date.toISOString().slice(0, 10)
-              : row.release_date,
-      }),
-    );
+    return rows.map(mapBurstSetRow);
   });
 
 /**
@@ -147,16 +149,9 @@ const getLiveBundle = (databaseUrl: string): Promise<BurstServiceBundle> => {
     .runPromise(
       Effect.gen(function* () {
         const importService = yield* BurstImportService;
-        // La requête `listSetsQuery` exige le service `Database` : le runtime
-        // live le fournit, l'effet exposé aux handlers n'a plus aucune exigence.
-        const listSets = (): Effect.Effect<ReadonlyArray<BurstSetOption>, DatabaseError> =>
-          Effect.mapError(
-            Effect.tryPromise(() => runtime.runPromise(listSetsQuery())),
-            (error) =>
-              error instanceof DatabaseError
-                ? error
-                : new DatabaseError({ message: "burst sets query failed", cause: error }),
-          );
+        const db = yield* Database;
+        const listSets: ListBurstSets = () =>
+          listSetsQuery().pipe(Effect.provideService(Database, db));
         return { importService, listSets };
       }),
     )
@@ -296,6 +291,38 @@ export const handleListBurstSets = async (
 // POST /api/burst/preview · POST /api/burst/commit
 // ---------------------------------------------------------------------------
 
+/** Plafond du corps JSON d'un lot rafale (500 lignes max ≈ 60 Ko, marge 128 Kio). */
+export const MAX_BURST_BODY_BYTES = 128 * 1024;
+
+type ReadBodyResult =
+  | { readonly kind: "ok"; readonly body: unknown }
+  | { readonly kind: "too_large" }
+  | { readonly kind: "invalid_json" };
+
+const readBurstJsonBody = async (request: Request): Promise<ReadBodyResult> => {
+  const declared = request.headers.get("content-length");
+  if (declared !== null) {
+    const length = Number(declared);
+    if (Number.isFinite(length) && length > MAX_BURST_BODY_BYTES) {
+      return { kind: "too_large" };
+    }
+  }
+  let text: string;
+  try {
+    text = await request.text();
+  } catch {
+    return { kind: "invalid_json" };
+  }
+  if (Buffer.byteLength(text, "utf8") > MAX_BURST_BODY_BYTES) {
+    return { kind: "too_large" };
+  }
+  try {
+    return { kind: "ok", body: JSON.parse(text) as unknown };
+  } catch {
+    return { kind: "invalid_json" };
+  }
+};
+
 type BurstBatchMode = "preview" | "commit";
 
 const handleBurstBatch = async (
@@ -315,12 +342,14 @@ const handleBurstBatch = async (
     return unavailable(cookies);
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
+  const parsed = await readBurstJsonBody(request);
+  if (parsed.kind === "too_large") {
+    return json({ error: "payload_too_large" }, 413, cookies);
+  }
+  if (parsed.kind === "invalid_json") {
     return json({ error: "invalid_json" }, 400, cookies);
   }
+  const body = parsed.body;
 
   const effect =
     mode === "preview"

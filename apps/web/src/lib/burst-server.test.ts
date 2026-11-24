@@ -13,6 +13,8 @@ import {
   handleCommitBurstImport,
   handleListBurstSets,
   handlePreviewBurstImport,
+  MAX_BURST_BODY_BYTES,
+  mapBurstSetRow,
 } from "./burst-server.ts";
 
 const config: AuthConfig = {
@@ -232,6 +234,66 @@ describe("POST /api/burst/preview · /api/burst/commit (CSRF)", () => {
     );
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "invalid_json" });
+  });
+
+  it("returns 413 when body exceeds MAX_BURST_BODY_BYTES (declared or actual)", async () => {
+    const service = importService();
+    const { deps } = makeDeps(bundle(service, () => Effect.succeed([set()])));
+    const oversized = JSON.stringify({ pad: "a".repeat(MAX_BURST_BODY_BYTES + 10) });
+    const response = await handleCommitBurstImport(
+      new Request("http://localhost:3000/api/burst/commit", {
+        method: "POST",
+        headers: { cookie: signedIn, origin, "Content-Type": "application/json" },
+        body: oversized,
+      }),
+      deps,
+    );
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ error: "payload_too_large" });
+    expect(service.commitBatch).not.toHaveBeenCalled();
+
+    const byHeader = await handlePreviewBurstImport(
+      new Request("http://localhost:3000/api/burst/preview", {
+        method: "POST",
+        headers: {
+          cookie: signedIn,
+          origin,
+          "Content-Type": "application/json",
+          "Content-Length": String(MAX_BURST_BODY_BYTES + 1),
+        },
+        body: "{}",
+      }),
+      deps,
+    );
+    expect(byHeader.status).toBe(413);
+    expect(service.previewBatch).not.toHaveBeenCalled();
+  });
+
+  it("normalizes raw TCGdex set logo_url to .webp in mapBurstSetRow", () => {
+    const mapped = mapBurstSetRow({
+      id: "sv03.5",
+      code: "MEW",
+      name_fr: "151",
+      series_name_fr: "Écarlate et Violet",
+      logo_url: "https://assets.tcgdex.net/fr/sv/sv03.5/logo",
+      official_count: 165,
+      total_count: 207,
+      release_date: new Date("2023-09-22T00:00:00.000Z"),
+    });
+    expect(mapped.logoUrl).toBe("https://assets.tcgdex.net/fr/sv/sv03.5/logo.webp");
+    expect(mapped.releaseDate).toBe("2023-09-22");
+    expect(
+      mapBurstSetRow({
+        id: "base1",
+        code: null,
+        name_fr: "Set de Base",
+        series_name_fr: "Base",
+        logo_url: null,
+        official_count: 102,
+        total_count: 102,
+        release_date: null,
+      }).logoUrl,
+    ).toBeNull();
   });
 });
 

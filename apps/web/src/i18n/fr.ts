@@ -203,7 +203,7 @@ export const fr = {
   // Saisie rafale (08A)
   "burst.title": "Saisie rafale",
   "burst.step": "Étape {current}/{total}",
-  "burst.back": "Retour à la recherche",
+  "burst.back": "Retour",
   "burst.sets.heading": "Extension cible",
   "burst.sets.loading": "Chargement du catalogue…",
   "burst.sets.error": "Le catalogue ne répond pas pour le moment.",
