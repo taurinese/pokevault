@@ -9,7 +9,15 @@
  * dans `dashboard-server.ts`, module serveur uniquement).
  */
 
-import type { CardLanguage, CardVariant } from "@pokevault/domain";
+import {
+  type CardLanguage,
+  type CardVariant,
+  computePriceFreshness as computeDomainPriceFreshness,
+  PRICE_STALE_AMBER_MS,
+  PRICE_TTL_MS,
+  type PriceFreshness,
+  type PriceSource,
+} from "@pokevault/domain";
 import { DEFAULT_LOCALE } from "../i18n/index.ts";
 import { type FetchLike, formatPriceCents } from "./card-detail-client.ts";
 
@@ -29,10 +37,10 @@ export { formatPriceCents };
 // ---------------------------------------------------------------------------
 
 /** Source du dernier prix connu (`price_snapshots.source`). */
-export type DashboardPriceSource = "cardmarket" | "tcgdex_fallback";
+export type DashboardPriceSource = PriceSource;
 
 /** Fraîcheur agrégée des prix Cardmarket (docs/04 §2.1 : 15 min / 6 h). */
-export type DashboardFreshness = "fresh" | "aging" | "stale" | "missing";
+export type DashboardFreshness = PriceFreshness;
 
 /** Barre synthèse 1 ligne de l'écran d'accueil. */
 export interface DashboardSummary {
@@ -118,8 +126,8 @@ export const isDashboardEmpty = (payload: DashboardPayload): boolean =>
 // ---------------------------------------------------------------------------
 
 /** Seuils de fraîcheur de docs/04 §2.1 : `< 15 min` / `15 min – 6 h` / `> 6 h`. */
-export const FRESH_MAX_AGE_MS = 15 * 60 * 1000;
-export const AGING_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+export const FRESH_MAX_AGE_MS = PRICE_TTL_MS;
+export const AGING_MAX_AGE_MS = PRICE_STALE_AMBER_MS;
 
 export interface PriceFreshnessInput {
   /** `false` quand aucune carte valorisée n'a de prix connu. */
@@ -127,13 +135,15 @@ export interface PriceFreshnessInput {
   readonly source: DashboardPriceSource | null;
   /** ISO 8601 du snapshot (le plus ancien si agrégé). */
   readonly fetchedAt: string | null;
+  /** ISO 8601 d'expiration TTL ; dérivé de `fetchedAt + 15 min` si omis. */
+  readonly expiresAt?: string | null | undefined;
 }
 
 /**
- * Fraîcheur d'un prix affiché :
+ * Fraîcheur d'un prix affiché (délègue à `@pokevault/domain/computePriceFreshness`) :
  * - `missing` : aucun prix connu ;
  * - `stale` : repli TCGdex (indicatif), date illisible, ou prix de plus de 6 h ;
- * - `fresh` : source Cardmarket de moins de 15 min ;
+ * - `fresh` : source Cardmarket de moins de 15 min (et non expiré) ;
  * - `aging` : source Cardmarket entre 15 min et 6 h.
  */
 export const computePriceFreshness = (
@@ -141,13 +151,17 @@ export const computePriceFreshness = (
   nowMs: number,
 ): DashboardFreshness => {
   if (!input.hasPrice) return "missing";
-  if (input.source !== "cardmarket" || input.fetchedAt === null) return "stale";
+  if (input.source === null || input.fetchedAt === null) return "stale";
   const fetchedMs = Date.parse(input.fetchedAt);
   if (Number.isNaN(fetchedMs)) return "stale";
-  const age = Math.max(0, nowMs - fetchedMs);
-  if (age < FRESH_MAX_AGE_MS) return "fresh";
-  if (age <= AGING_MAX_AGE_MS) return "aging";
-  return "stale";
+  const expiresAt =
+    input.expiresAt !== undefined && input.expiresAt !== null
+      ? input.expiresAt
+      : new Date(fetchedMs + PRICE_TTL_MS).toISOString();
+  return computeDomainPriceFreshness(
+    { fetchedAt: input.fetchedAt, expiresAt, source: input.source },
+    nowMs,
+  );
 };
 
 /**

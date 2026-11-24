@@ -166,7 +166,7 @@ describe("DashboardView (renderToStaticMarkup)", () => {
     expect(tagOf(html, "dashboard-delta")).not.toBe("");
     expect(html).toMatch(new RegExp(`\\+10,1${NBSP}%`));
     expect(html).toMatch(new RegExp(`data-testid="dashboard-completion"[^>]*>58${NBSP}%`));
-    expect(html).toMatch(/data-testid="dashboard-owned-count"[^>]*>3</);
+    expect(html).toMatch(/data-testid="dashboard-owned-count"[^>]*>.*?3.*?3 cartes possédées/);
     expect(html).toContain('role="progressbar"');
   });
 
@@ -186,7 +186,8 @@ describe("DashboardView (renderToStaticMarkup)", () => {
     });
     expect(tagOf(html, "dashboard-freshness-dot")).toContain('data-freshness="stale"');
     expect(html).toContain("il y a 2 h");
-    expect(html).toContain("+ · indicatif");
+    expect(html).toContain("· indicatif");
+    expect(html).not.toContain("+ · indicatif");
   });
 
   it("renders featured cards at strict 63/88 ratio with quantity badge, set/number, price and delta", () => {

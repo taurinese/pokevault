@@ -204,6 +204,7 @@ interface SummaryRow {
   readonly sum_avg30_cents: number | string | bigint;
   readonly priced_cards_count: number | string | bigint;
   readonly oldest_price_fetched_at: Date | string | null;
+  readonly oldest_price_expires_at?: Date | string | null | undefined;
   readonly has_fallback_price: boolean | null;
 }
 
@@ -218,6 +219,7 @@ interface FeaturedRow {
   readonly variant: CardVariant;
   readonly quantity: number | string | bigint;
   readonly effective_price_cents: number | null;
+  readonly spot_price_cents?: number | null | undefined;
   readonly avg30_cents: number | null;
   readonly price_source: DashboardPriceSource | null;
   readonly price_fetched_at: Date | string | null;
@@ -288,12 +290,13 @@ const querySummary = (tx: Sql, userId: string): Promise<SummaryRow[]> =>
   tx<SummaryRow[]>`
     select coalesce(sum(c.quantity), 0)::bigint as owned_cards_count,
            coalesce(sum(c.quantity * coalesce(lp.trend_cents, lp.low_fr_cents, lp.avg30_cents)), 0)::bigint as total_value_cents,
-           coalesce(sum(c.quantity * coalesce(lp.trend_cents, lp.low_fr_cents, lp.avg30_cents))
-             filter (where lp.avg30_cents is not null and lp.avg30_cents > 0), 0)::bigint as sum_current_cents,
+           coalesce(sum(c.quantity * coalesce(lp.trend_cents, lp.low_fr_cents))
+             filter (where coalesce(lp.trend_cents, lp.low_fr_cents) is not null and lp.avg30_cents is not null and lp.avg30_cents > 0), 0)::bigint as sum_current_cents,
            coalesce(sum(c.quantity * lp.avg30_cents)
-             filter (where lp.avg30_cents is not null and lp.avg30_cents > 0), 0)::bigint as sum_avg30_cents,
+             filter (where coalesce(lp.trend_cents, lp.low_fr_cents) is not null and lp.avg30_cents is not null and lp.avg30_cents > 0), 0)::bigint as sum_avg30_cents,
            count(*) filter (where lp.trend_cents is not null or lp.low_fr_cents is not null or lp.avg30_cents is not null)::bigint as priced_cards_count,
            min(lp.fetched_at) filter (where lp.trend_cents is not null or lp.low_fr_cents is not null or lp.avg30_cents is not null) as oldest_price_fetched_at,
+           min(lp.expires_at) filter (where lp.trend_cents is not null or lp.low_fr_cents is not null or lp.avg30_cents is not null) as oldest_price_expires_at,
            bool_or(lp.source <> 'cardmarket') filter (where lp.trend_cents is not null or lp.low_fr_cents is not null or lp.avg30_cents is not null) as has_fallback_price
       from public.user_card_copies c
       left join lateral (
@@ -321,6 +324,7 @@ const queryFeatured = (tx: Sql, userId: string): Promise<FeaturedRow[]> =>
            c.variant,
            sum(c.quantity)::bigint as quantity,
            coalesce(lp.trend_cents, lp.low_fr_cents, lp.avg30_cents) as effective_price_cents,
+           coalesce(lp.trend_cents, lp.low_fr_cents) as spot_price_cents,
            lp.avg30_cents,
            lp.source as price_source,
            lp.fetched_at as price_fetched_at,
@@ -426,6 +430,7 @@ const toSummary = (row: SummaryRow | undefined, nowMs: number): DashboardSummary
   const sumAvg30 = toInt(row?.sum_avg30_cents);
   const pricedCount = toInt(row?.priced_cards_count);
   const priceFetchedAt = isoOrNull(row?.oldest_price_fetched_at ?? null);
+  const priceExpiresAt = isoOrNull(row?.oldest_price_expires_at ?? null);
   return {
     totalValueCents: toInt(row?.total_value_cents),
     delta30dPercent: computeDelta30dPercent(sumCurrent, sumAvg30),
@@ -434,6 +439,7 @@ const toSummary = (row: SummaryRow | undefined, nowMs: number): DashboardSummary
         hasPrice: pricedCount > 0,
         source: row?.has_fallback_price === true ? "tcgdex_fallback" : "cardmarket",
         fetchedAt: priceFetchedAt,
+        expiresAt: priceExpiresAt,
       },
       nowMs,
     ),
@@ -446,6 +452,14 @@ const toSummary = (row: SummaryRow | undefined, nowMs: number): DashboardSummary
 const toFeaturedCard = (row: FeaturedRow): DashboardFeaturedCard => {
   const unitPriceCents =
     row.effective_price_cents === null ? null : Number(row.effective_price_cents);
+  // Exige trend ou low_fr pour calculer une variation réelle (un prix issu
+  // uniquement d'avg30 produirait autrement un faux « 0,0 % »).
+  const spotPriceCents =
+    row.spot_price_cents === undefined
+      ? unitPriceCents
+      : row.spot_price_cents === null
+        ? null
+        : Number(row.spot_price_cents);
   return {
     cardId: row.card_id,
     name: row.name,
@@ -457,7 +471,7 @@ const toFeaturedCard = (row: FeaturedRow): DashboardFeaturedCard => {
     language: row.language,
     variant: row.variant,
     unitPriceCents,
-    delta30dPercent: computeDelta30dPercent(unitPriceCents, row.avg30_cents),
+    delta30dPercent: computeDelta30dPercent(spotPriceCents, row.avg30_cents),
     priceSource: row.price_source,
     priceFetchedAt: isoOrNull(row.price_fetched_at),
     priceExpiresAt: isoOrNull(row.price_expires_at),

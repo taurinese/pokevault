@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { type TranslationKey, t, tPlural } from "../i18n/index.ts";
 import { ACCOUNT_PATH, loginRedirectTo, SEARCH_PATH } from "../lib/auth-shared.ts";
 import { COLLECTION_PATH } from "../lib/binders-client.ts";
+import { isSafeHttpsUrl } from "../lib/card-detail-client.ts";
 import {
   ALERTS_PATH,
   computePriceFreshness,
@@ -224,9 +225,13 @@ const SummaryBar = ({
         </span>
         <span
           data-testid="dashboard-owned-count"
+          title={tPlural("dashboard.summary.owned", summary.ownedCardsCount)}
           className="font-mono text-xs tabular-nums text-secondary"
         >
-          {formatCount(summary.ownedCardsCount)}
+          <span aria-hidden="true">{formatCount(summary.ownedCardsCount)}</span>
+          <span className="sr-only">
+            {tPlural("dashboard.summary.owned", summary.ownedCardsCount)}
+          </span>
         </span>
       </span>
     </section>
@@ -278,6 +283,7 @@ const FeaturedCardTile = ({
       hasPrice: card.unitPriceCents !== null,
       source: card.priceSource,
       fetchedAt: card.priceFetchedAt,
+      expiresAt: card.priceExpiresAt,
     },
     nowMs,
   );
@@ -404,13 +410,21 @@ const binderHref = (binderId: string): string => `/binder/${binderId}`;
 const pill =
   "inline-flex items-center gap-1 rounded-pill border border-line bg-surface-1/90 px-2 py-0.5 text-xs font-semibold text-primary";
 
+/** Garde-fou URL de couverture : chemin proxy interne `/api/binders/…` ou HTTPS strict. */
+const safeCoverUrl = (url: string | undefined, isUpload: boolean): string | undefined => {
+  if (url === undefined) return undefined;
+  if (isUpload) return url.startsWith("/api/binders/") ? url : undefined;
+  return isSafeHttpsUrl(url) ? url : undefined;
+};
+
 /** Cover 1 image : logo extension / carte 63/88 / image uploadée, avec repli propre. */
 const BinderCover = ({ binder }: { readonly binder: DashboardBinder }) => {
   const [failed, setFailed] = useState(false);
   let src: string | undefined;
-  if (binder.coverType === "upload") src = binder.coverCustomUrl ?? undefined;
-  else if (binder.coverType === "card") src = tcgdexCardImageUrl(binder.coverCardImageUrl, "low");
-  else src = tcgdexSetLogoUrl(binder.coverLogoUrl);
+  if (binder.coverType === "upload") src = safeCoverUrl(binder.coverCustomUrl ?? undefined, true);
+  else if (binder.coverType === "card")
+    src = safeCoverUrl(tcgdexCardImageUrl(binder.coverCardImageUrl, "low"), false);
+  else src = safeCoverUrl(tcgdexSetLogoUrl(binder.coverLogoUrl), false);
 
   if (src === undefined || failed) {
     return (
@@ -623,6 +637,7 @@ const AlertBanner = ({
       <button
         type="button"
         onClick={() => onOpenCard(alert.cardId, alert.cardName)}
+        aria-label={`${t("dashboard.alert.openCard")} — ${alert.cardName}`}
         data-testid="dashboard-alert-open-card"
         className={`flex min-w-0 flex-1 flex-col items-start text-left ${focusRing}`}
       >

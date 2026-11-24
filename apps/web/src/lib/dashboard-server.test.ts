@@ -416,4 +416,19 @@ describe("GET /api/dashboard", () => {
     expect(body.summary.globalFreshness).toBe("missing");
     expect(body.summary.priceFetchedAt).toBeNull();
   });
+
+  it("returns null delta30dPercent for an avg30-only featured card (never a false 0.0 %)", async () => {
+    const h = makeHarness({
+      responder: (query) => {
+        if (query.includes("effective_price_cents")) {
+          return [{ ...featuredRow, effective_price_cents: 70000, spot_price_cents: null }];
+        }
+        return fullResponder(query, []);
+      },
+    });
+    const response = await handleGetDashboard(req(API, { cookie: signedIn }), h.deps);
+    const body = (await response.json()) as DashboardPayload;
+    expect(body.featuredCards[0]?.unitPriceCents).toBe(70000);
+    expect(body.featuredCards[0]?.delta30dPercent).toBeNull();
+  });
 });

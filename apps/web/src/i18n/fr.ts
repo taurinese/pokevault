@@ -801,7 +801,7 @@ export const fr = {
   "dashboard.freshness.hoursAgo": "il y a {count} h",
   "dashboard.freshness.daysAgo_one": "il y a {count} j",
   "dashboard.freshness.daysAgo_other": "il y a {count} j",
-  "dashboard.freshness.indicative": "+ · indicatif",
+  "dashboard.freshness.indicative": "· indicatif",
   "dashboard.featured.heading": "Cartes phares",
   "dashboard.featured.open": "Ouvrir la fiche de {name}",
   "dashboard.featured.quantity": "×{count}",
