@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountRouteImport } from './routes/account'
 import { Route as AlertsRouteImport } from './routes/alerts'
+import { Route as BurstRouteImport } from './routes/burst'
 import { Route as CollectionRouteImport } from './routes/collection'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SearchRouteImport } from './routes/search'
@@ -21,6 +22,9 @@ import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthLinkRouteImport } from './routes/api/auth/link'
 import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
+import { Route as ApiBurstCommitRouteImport } from './routes/api/burst/commit'
+import { Route as ApiBurstPreviewRouteImport } from './routes/api/burst/preview'
+import { Route as ApiBurstSetsRouteImport } from './routes/api/burst/sets'
 import { Route as ApiCatalogDiscoverRouteImport } from './routes/api/catalog/discover'
 import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/search'
 import { Route as ApiCatalogSuggestRouteImport } from './routes/api/catalog/suggest'
@@ -38,6 +42,11 @@ const AccountRoute = AccountRouteImport.update({
 const AlertsRoute = AlertsRouteImport.update({
   id: '/alerts',
   path: '/alerts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BurstRoute = BurstRouteImport.update({
+  id: '/burst',
+  path: '/burst',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CollectionRoute = CollectionRouteImport.update({
@@ -85,6 +94,21 @@ const ApiAuthLogoutRoute = ApiAuthLogoutRouteImport.update({
   path: '/api/auth/logout',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiBurstCommitRoute = ApiBurstCommitRouteImport.update({
+  id: '/api/burst/commit',
+  path: '/api/burst/commit',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiBurstPreviewRoute = ApiBurstPreviewRouteImport.update({
+  id: '/api/burst/preview',
+  path: '/api/burst/preview',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiBurstSetsRoute = ApiBurstSetsRouteImport.update({
+  id: '/api/burst/sets',
+  path: '/api/burst/sets',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiCatalogDiscoverRoute = ApiCatalogDiscoverRouteImport.update({
   id: '/api/catalog/discover',
   path: '/api/catalog/discover',
@@ -105,6 +129,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/account': typeof AccountRoute
   '/alerts': typeof AlertsRoute
+  '/burst': typeof BurstRoute
   '/collection': typeof CollectionRoute
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
@@ -114,6 +139,9 @@ export interface FileRoutesByFullPath {
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
+  '/api/burst/commit': typeof ApiBurstCommitRoute
+  '/api/burst/preview': typeof ApiBurstPreviewRoute
+  '/api/burst/sets': typeof ApiBurstSetsRoute
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
@@ -122,6 +150,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/account': typeof AccountRoute
   '/alerts': typeof AlertsRoute
+  '/burst': typeof BurstRoute
   '/collection': typeof CollectionRoute
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
@@ -131,6 +160,9 @@ export interface FileRoutesByTo {
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
+  '/api/burst/commit': typeof ApiBurstCommitRoute
+  '/api/burst/preview': typeof ApiBurstPreviewRoute
+  '/api/burst/sets': typeof ApiBurstSetsRoute
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
@@ -140,6 +172,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/account': typeof AccountRoute
   '/alerts': typeof AlertsRoute
+  '/burst': typeof BurstRoute
   '/collection': typeof CollectionRoute
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
@@ -149,6 +182,9 @@ export interface FileRoutesById {
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
+  '/api/burst/commit': typeof ApiBurstCommitRoute
+  '/api/burst/preview': typeof ApiBurstPreviewRoute
+  '/api/burst/sets': typeof ApiBurstSetsRoute
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
@@ -159,6 +195,7 @@ export interface FileRouteTypes {
     | '/'
     | '/account'
     | '/alerts'
+    | '/burst'
     | '/collection'
     | '/login'
     | '/search'
@@ -168,6 +205,9 @@ export interface FileRouteTypes {
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
+    | '/api/burst/commit'
+    | '/api/burst/preview'
+    | '/api/burst/sets'
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
@@ -176,6 +216,7 @@ export interface FileRouteTypes {
     | '/'
     | '/account'
     | '/alerts'
+    | '/burst'
     | '/collection'
     | '/login'
     | '/search'
@@ -185,6 +226,9 @@ export interface FileRouteTypes {
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
+    | '/api/burst/commit'
+    | '/api/burst/preview'
+    | '/api/burst/sets'
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
@@ -193,6 +237,7 @@ export interface FileRouteTypes {
     | '/'
     | '/account'
     | '/alerts'
+    | '/burst'
     | '/collection'
     | '/login'
     | '/search'
@@ -202,6 +247,9 @@ export interface FileRouteTypes {
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
+    | '/api/burst/commit'
+    | '/api/burst/preview'
+    | '/api/burst/sets'
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
@@ -211,6 +259,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AccountRoute: typeof AccountRoute
   AlertsRoute: typeof AlertsRoute
+  BurstRoute: typeof BurstRoute
   CollectionRoute: typeof CollectionRoute
   LoginRoute: typeof LoginRoute
   SearchRoute: typeof SearchRoute
@@ -220,6 +269,9 @@ export interface RootRouteChildren {
   ApiAuthLinkRoute: typeof ApiAuthLinkRoute
   ApiAuthLoginRoute: typeof ApiAuthLoginRoute
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
+  ApiBurstCommitRoute: typeof ApiBurstCommitRoute
+  ApiBurstPreviewRoute: typeof ApiBurstPreviewRoute
+  ApiBurstSetsRoute: typeof ApiBurstSetsRoute
   ApiCatalogDiscoverRoute: typeof ApiCatalogDiscoverRoute
   ApiCatalogSearchRoute: typeof ApiCatalogSearchRoute
   ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
@@ -246,6 +298,13 @@ declare module '@tanstack/react-router' {
       path: '/alerts'
       fullPath: '/alerts'
       preLoaderRoute: typeof AlertsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/burst': {
+      id: '/burst'
+      path: '/burst'
+      fullPath: '/burst'
+      preLoaderRoute: typeof BurstRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/collection': {
@@ -311,6 +370,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthLogoutRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/burst/commit': {
+      id: '/api/burst/commit'
+      path: '/api/burst/commit'
+      fullPath: '/api/burst/commit'
+      preLoaderRoute: typeof ApiBurstCommitRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/burst/preview': {
+      id: '/api/burst/preview'
+      path: '/api/burst/preview'
+      fullPath: '/api/burst/preview'
+      preLoaderRoute: typeof ApiBurstPreviewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/burst/sets': {
+      id: '/api/burst/sets'
+      path: '/api/burst/sets'
+      fullPath: '/api/burst/sets'
+      preLoaderRoute: typeof ApiBurstSetsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/catalog/discover': {
       id: '/api/catalog/discover'
       path: '/api/catalog/discover'
@@ -339,6 +419,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AccountRoute: AccountRoute,
   AlertsRoute: AlertsRoute,
+  BurstRoute: BurstRoute,
   CollectionRoute: CollectionRoute,
   LoginRoute: LoginRoute,
   SearchRoute: SearchRoute,
@@ -348,6 +429,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthLinkRoute: ApiAuthLinkRoute,
   ApiAuthLoginRoute: ApiAuthLoginRoute,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
+  ApiBurstCommitRoute: ApiBurstCommitRoute,
+  ApiBurstPreviewRoute: ApiBurstPreviewRoute,
+  ApiBurstSetsRoute: ApiBurstSetsRoute,
   ApiCatalogDiscoverRoute: ApiCatalogDiscoverRoute,
   ApiCatalogSearchRoute: ApiCatalogSearchRoute,
   ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
