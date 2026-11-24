@@ -112,7 +112,7 @@ Workflow en 2 étapes pensé pour saisir rapidement un classeur physique ou une 
 1. **Étape 1 — Configuration du lot (`08A`)** :
    - Sélection de l’extension cible.
    - Réglages par défaut du lot : **Langue** (`FR/EN/JP/ZH`), **Variante** (`Normal/Reverse/Holo/Promo`, avec ajustement automatique pour les cartes n’existant qu’en Holo/SIR), **État** (`NM/Mint/EX/Good`).
-   - Option **`Retirer automatiquement de la Wishlist`** (activée par défaut).
+   - Option **`Retirer automatiquement de la Wishlist`** (activée par défaut ; cible uniquement les entrées correspondant au triplet `(carte, langue, variante résolue)` saisi, afin de préserver les souhaits dans une autre langue ou variante).
    - Choix du mode de saisie : **Grille tactile** ou **Pavé numéros `#`**.
 2. **Étape 2A — Grille tactile (`08B`, `08D`)** :
    - Bandeau en haut avec pills de paramètres **modifiables à la volée** (`FR ▾`, `Normal ▾`, `NM ▾`) et bascule instantanée vers le mode `# Pavé`.

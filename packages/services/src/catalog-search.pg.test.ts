@@ -1,6 +1,6 @@
 import { type SearchQuery, SearchQuery as SearchQuerySchema } from "@pokevault/domain";
 import { Effect, Layer, Schema } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CatalogRepository, CatalogRepositoryLive } from "./catalog-repo.ts";
 import { SEARCH_FIXTURE_CARDS, SEARCH_FIXTURE_SETS } from "./catalog-search.fixture.ts";
 import {
@@ -9,6 +9,7 @@ import {
   CatalogSearchServiceMemory,
   type CatalogSearchServiceShape,
 } from "./catalog-search.ts";
+import { acquirePgLock, PG_HOOK_TIMEOUT_MS, releasePgLock } from "./collection-pg-harness.ts";
 import { DatabaseLive } from "./db.ts";
 
 /**
@@ -28,6 +29,10 @@ const ids = (hits: ReadonlyArray<{ readonly id: string }>): Array<string> =>
   hits.map((hit) => hit.id);
 
 describe.skipIf(PGTEST_URL === undefined)("CatalogSearchServiceLive (Postgres réel)", () => {
+  // Les autres fichiers `*.pg.test.ts` insèrent leur propre catalogue : exécution sérialisée.
+  beforeAll(acquirePgLock, PG_HOOK_TIMEOUT_MS);
+  afterAll(releasePgLock);
+
   const dbLayer = DatabaseLive({ connectionString: PGTEST_URL ?? "", maxConnections: 2 });
   const liveLayer = Layer.mergeAll(
     CatalogRepositoryLive,

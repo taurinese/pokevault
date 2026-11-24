@@ -16,10 +16,12 @@
     "@pokevault/services": "workspace:*",
     "@tanstack/react-router": "^1.170.46",
     "@tanstack/react-start": "^1.169.7",
+    "@tanstack/react-virtual": "^3.14.28",
     "effect": "catalog:",
     "lucide-react": "^1.78.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "sharp": "^0.35.5",
     "srvx": "^1.0.8"
   },
   "devDependencies": {
