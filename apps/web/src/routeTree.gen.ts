@@ -17,10 +17,12 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as SearchRouteImport } from './routes/search'
 import { Route as WishlistRouteImport } from './routes/wishlist'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as BinderIdRouteImport } from './routes/binder/$id'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthLinkRouteImport } from './routes/api/auth/link'
 import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
+import { Route as ApiBinderGridIdRouteImport } from './routes/api/binder-grid/$id'
 import { Route as ApiBindersIndexRouteImport } from './routes/api/binders/index'
 import { Route as ApiCatalogDiscoverRouteImport } from './routes/api/catalog/discover'
 import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/search'
@@ -67,6 +69,11 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
   path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BinderIdRoute = BinderIdRouteImport.update({
+  id: '/binder/$id',
+  path: '/binder/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
   id: '/api/auth/callback',
   path: '/api/auth/callback',
@@ -85,6 +92,11 @@ const ApiAuthLoginRoute = ApiAuthLoginRouteImport.update({
 const ApiAuthLogoutRoute = ApiAuthLogoutRouteImport.update({
   id: '/api/auth/logout',
   path: '/api/auth/logout',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiBinderGridIdRoute = ApiBinderGridIdRouteImport.update({
+  id: '/api/binder-grid/$id',
+  path: '/api/binder-grid/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiBindersIndexRoute = ApiBindersIndexRouteImport.update({
@@ -122,10 +134,12 @@ export interface FileRoutesByFullPath {
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
   '/api/health': typeof ApiHealthRoute
+  '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
+  '/api/binder-grid/$id': typeof ApiBinderGridIdRoute
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
@@ -141,10 +155,12 @@ export interface FileRoutesByTo {
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
   '/api/health': typeof ApiHealthRoute
+  '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
+  '/api/binder-grid/$id': typeof ApiBinderGridIdRoute
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
@@ -161,10 +177,12 @@ export interface FileRoutesById {
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
   '/api/health': typeof ApiHealthRoute
+  '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
+  '/api/binder-grid/$id': typeof ApiBinderGridIdRoute
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
@@ -182,10 +200,12 @@ export interface FileRouteTypes {
     | '/search'
     | '/wishlist'
     | '/api/health'
+    | '/binder/$id'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
+    | '/api/binder-grid/$id'
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
@@ -201,10 +221,12 @@ export interface FileRouteTypes {
     | '/search'
     | '/wishlist'
     | '/api/health'
+    | '/binder/$id'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
+    | '/api/binder-grid/$id'
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
@@ -220,10 +242,12 @@ export interface FileRouteTypes {
     | '/search'
     | '/wishlist'
     | '/api/health'
+    | '/binder/$id'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
     | '/api/auth/logout'
+    | '/api/binder-grid/$id'
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
@@ -240,10 +264,12 @@ export interface RootRouteChildren {
   SearchRoute: typeof SearchRoute
   WishlistRoute: typeof WishlistRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  BinderIdRoute: typeof BinderIdRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
   ApiAuthLinkRoute: typeof ApiAuthLinkRoute
   ApiAuthLoginRoute: typeof ApiAuthLoginRoute
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
+  ApiBinderGridIdRoute: typeof ApiBinderGridIdRoute
   ApiCatalogDiscoverRoute: typeof ApiCatalogDiscoverRoute
   ApiCatalogSearchRoute: typeof ApiCatalogSearchRoute
   ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
@@ -309,6 +335,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/binder/$id': {
+      id: '/binder/$id'
+      path: '/binder/$id'
+      fullPath: '/binder/$id'
+      preLoaderRoute: typeof BinderIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/callback': {
       id: '/api/auth/callback'
       path: '/api/auth/callback'
@@ -335,6 +368,13 @@ declare module '@tanstack/react-router' {
       path: '/api/auth/logout'
       fullPath: '/api/auth/logout'
       preLoaderRoute: typeof ApiAuthLogoutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/binder-grid/$id': {
+      id: '/api/binder-grid/$id'
+      path: '/api/binder-grid/$id'
+      fullPath: '/api/binder-grid/$id'
+      preLoaderRoute: typeof ApiBinderGridIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/binders/': {
@@ -384,10 +424,12 @@ const rootRouteChildren: RootRouteChildren = {
   SearchRoute: SearchRoute,
   WishlistRoute: WishlistRoute,
   ApiHealthRoute: ApiHealthRoute,
+  BinderIdRoute: BinderIdRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
   ApiAuthLinkRoute: ApiAuthLinkRoute,
   ApiAuthLoginRoute: ApiAuthLoginRoute,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
+  ApiBinderGridIdRoute: ApiBinderGridIdRoute,
   ApiCatalogDiscoverRoute: ApiCatalogDiscoverRoute,
   ApiCatalogSearchRoute: ApiCatalogSearchRoute,
   ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
