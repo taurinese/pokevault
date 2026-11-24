@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@pokevault/domain": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "postgres": "^3.4.9"
   }
 }

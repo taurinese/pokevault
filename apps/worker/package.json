@@ -7,6 +7,7 @@
     "dev": "node --watch src/index.ts",
     "build": "rolldown src/index.ts --format esm --platform node --file dist/index.mjs",
     "start": "node dist/index.mjs",
+    "sync:catalog": "node src/sync-catalog.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

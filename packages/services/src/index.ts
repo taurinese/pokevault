@@ -11,3 +11,8 @@ export class ServiceConfigError extends Data.TaggedError("ServiceConfigError")<{
 export interface CatalogSyncConfig {
   readonly defaultLanguage: CardLanguage;
 }
+
+export * from "./catalog-repo.ts";
+export * from "./catalog-sync.ts";
+export * from "./db.ts";
+export * from "./tcgdex.ts";
