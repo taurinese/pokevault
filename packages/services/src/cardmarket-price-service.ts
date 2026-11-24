@@ -6,6 +6,7 @@ import {
   type CardmarketScrapeError,
   type CardVariant,
   computePriceFreshness,
+  MAX_PRICE_CENTS,
   PRICE_MANUAL_COOLDOWN_MS,
   PRICE_REFRESH_PRIORITY_RANK,
   PRICE_TTL_MS,
@@ -58,13 +59,19 @@ export const DEFAULT_PRICE_BATCH_LIMIT = 30;
 /** Default per-request HTTP timeout for Cardmarket pages. */
 export const DEFAULT_CARDMARKET_TIMEOUT_MS = 15_000;
 
+/** Maximum number of manual redirect hops allowed on Cardmarket. */
+export const MAX_CARDMARKET_REDIRECTS = 3;
+
+/** Maximum HTML response size accepted from Cardmarket (2 MiB). */
+export const MAX_CARDMARKET_HTML_BYTES = 2 * 1024 * 1024;
+
 /** Polite user agent: the worker scrapes at most 1–2 requests per minute. */
 export const DEFAULT_CARDMARKET_USER_AGENT =
   "PokéVault price-cache worker (personal use, rate-limited scraping)";
 
 /**
- * SSRF guard: only `https://www.cardmarket.com/...` (or a `*.cardmarket.com`
- * subdomain) may be scraped. Anything else is rejected before any network call.
+ * SSRF guard: only `https://www.cardmarket.com/...` or `https://cardmarket.com/...`
+ * on the default HTTPS port with no embedded credentials may be fetched.
  */
 export const isAllowedCardmarketUrl = (url: string | null): url is string => {
   if (url === null) return false;
@@ -75,8 +82,9 @@ export const isAllowedCardmarketUrl = (url: string | null): url is string => {
     return false;
   }
   if (parsed.protocol !== "https:") return false;
+  if (parsed.port !== "" || parsed.username !== "" || parsed.password !== "") return false;
   const host = parsed.hostname.toLowerCase();
-  return host === "www.cardmarket.com" || host.endsWith(".cardmarket.com");
+  return host === "www.cardmarket.com" || host === "cardmarket.com";
 };
 
 /** Parses a `Retry-After` header (delta-seconds or HTTP-date) into milliseconds. */
@@ -266,14 +274,14 @@ export const PriceSnapshotStoreLive: Layer.Layer<PriceSnapshotStore, never, Data
 
           const emptyFragment = db.sql`
           SELECT NULL::text AS card_id, NULL::text AS language, NULL::text AS variant,
-                 0 AS rank, NULL::bigint AS value_hint
+                 0 AS rank
           WHERE FALSE
         `;
           // Priority 1: cards with at least one active price alert.
           const alertsFragment = guards.has_alerts
             ? db.sql`
               SELECT c.id AS card_id, pa.language AS language, 'normal'::text AS variant,
-                     1 AS rank, 0::bigint AS value_hint
+                     1 AS rank
               FROM catalog_cards AS c
               JOIN price_alerts AS pa ON pa.card_id = c.id
               WHERE pa.is_active = TRUE
@@ -283,22 +291,17 @@ export const PriceSnapshotStoreLive: Layer.Layer<PriceSnapshotStore, never, Data
           const wishlistFragment = guards.has_wishlist
             ? db.sql`
               SELECT c.id AS card_id, wi.language AS language, wi.variant AS variant,
-                     2 AS rank, 0::bigint AS value_hint
+                     2 AS rank
               FROM catalog_cards AS c
               JOIN wishlist_items AS wi ON wi.card_id = c.id
             `
             : emptyFragment;
-          // Priority 3: featured owned cards whose latest snapshot is missing or expired,
-          // ordered by known value (latest price) then rarity-ish fallback.
+          // Priority 3: owned cards.
           const featuredFragment = db.sql`
           SELECT ucc.card_id AS card_id, ucc.language AS language, ucc.variant AS variant,
-                 3 AS rank,
-                 coalesce(lp.trend_cents, lp.avg30_cents, lp.low_fr_cents, 0)::bigint AS value_hint
+                 3 AS rank
           FROM user_card_copies AS ucc
           JOIN catalog_cards AS c ON c.id = ucc.card_id
-          LEFT JOIN card_latest_prices AS lp
-            ON lp.card_id = ucc.card_id AND lp.language = ucc.language AND lp.variant = ucc.variant
-          WHERE lp.id IS NULL OR lp.expires_at <= now()
         `;
 
           const rows = yield* query(async (sql) => {
@@ -320,14 +323,28 @@ export const PriceSnapshotStoreLive: Layer.Layer<PriceSnapshotStore, never, Data
             ),
             dedup AS (
               SELECT DISTINCT ON (card_id, language, variant)
-                     card_id, language, variant, rank, value_hint
+                     card_id, language, variant, rank
               FROM candidates
               ORDER BY card_id, language, variant, rank
             )
             SELECT d.card_id, d.language, d.variant, c.cardmarket_url, d.rank
             FROM dedup AS d
             JOIN catalog_cards AS c ON c.id = d.card_id
-            ORDER BY d.rank, d.value_hint DESC, d.card_id, d.language, d.variant
+            LEFT JOIN LATERAL (
+              SELECT lp.id, lp.fetched_at, lp.expires_at, lp.trend_cents, lp.avg30_cents, lp.low_fr_cents
+              FROM card_latest_prices AS lp
+              WHERE lp.card_id = d.card_id
+                AND lp.language = d.language
+                AND lp.variant = d.variant
+              LIMIT 1
+            ) AS lp ON TRUE
+            WHERE lp.id IS NULL OR lp.expires_at <= now()
+            ORDER BY d.rank ASC,
+                     lp.fetched_at ASC NULLS FIRST,
+                     coalesce(lp.trend_cents, lp.avg30_cents, lp.low_fr_cents, 0)::bigint DESC,
+                     d.card_id ASC,
+                     d.language ASC,
+                     d.variant ASC
             LIMIT ${limit}
           `;
             return results;
@@ -504,57 +521,176 @@ export class CardmarketFetcher extends Context.Service<CardmarketFetcher, Cardma
 export interface CardmarketFetcherLiveOptions {
   readonly timeoutMs?: number | undefined;
   readonly userAgent?: string | undefined;
+  readonly maxHtmlBytes?: number | undefined;
 }
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** Reads a response body as UTF-8 while enforcing a strict byte ceiling. */
+const readBoundedText = async (
+  response: Response,
+  maxBytes: number,
+  url: string,
+): Promise<string> => {
+  const contentLengthHeader = response.headers.get("content-length");
+  if (contentLengthHeader !== null) {
+    const declaredLength = Number(contentLengthHeader);
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+      await response.body?.cancel();
+      throw new CardmarketNetworkError({
+        url,
+        message: `Cardmarket response exceeded ${maxBytes} bytes (Content-Length: ${declaredLength})`,
+      });
+    }
+  }
+  if (response.body === null) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > maxBytes) {
+      throw new CardmarketNetworkError({
+        url,
+        message: `Cardmarket response exceeded ${maxBytes} bytes`,
+      });
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let totalBytes = 0;
+  let result = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new CardmarketNetworkError({
+          url,
+          message: `Cardmarket response exceeded ${maxBytes} bytes`,
+        });
+      }
+      result += decoder.decode(value, { stream: true });
+    }
+    result += decoder.decode();
+    return result;
+  } finally {
+    reader.releaseLock();
+  }
+};
 
 /**
  * Live fetcher over the global `fetch`. Every request is abortable (Effect
- * interruption signal + `AbortSignal.timeout`), HTTP 403/429 map to
- * `CardmarketBlockedError` (with `Retry-After` when present, driving the circuit
- * breaker), and the response body is cancelled on HTTP errors to release the socket.
+ * interruption signal + `AbortSignal.timeout`), redirects are handled manually
+ * with SSRF validation on every `Location` hop (max 3 hops), Cloudflare
+ * `cf-mitigated: challenge` headers and HTTP 403/429 map to
+ * `CardmarketBlockedError`, and HTML body size is strictly capped at 2 MiB.
  */
 export const CardmarketFetcherLive = (
   options?: CardmarketFetcherLiveOptions,
 ): Layer.Layer<CardmarketFetcher> => {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_CARDMARKET_TIMEOUT_MS;
   const userAgent = options?.userAgent ?? DEFAULT_CARDMARKET_USER_AGENT;
+  const maxHtmlBytes = options?.maxHtmlBytes ?? MAX_CARDMARKET_HTML_BYTES;
   return Layer.succeed(CardmarketFetcher, {
-    fetchProductPage: (url) =>
+    fetchProductPage: (initialUrl) =>
       Effect.tryPromise({
         try: async (signal) => {
-          const response = await fetch(url, {
-            signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
-            headers: {
-              "user-agent": userAgent,
-              accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-              "accept-language": "fr-FR,fr;q=0.9,en;q=0.8",
-            },
-            redirect: "follow",
-          });
-          if (!response.ok) {
-            const nowMs = Date.now();
-            const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"), nowMs);
-            // Release the socket instead of downloading an error page.
-            await response.body?.cancel();
-            if (response.status === 403 || response.status === 429) {
-              throw new CardmarketBlockedError({
-                status: response.status,
-                ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
-                message: `Cardmarket returned HTTP ${response.status} for ${url}`,
-              });
-            }
+          if (!isAllowedCardmarketUrl(initialUrl)) {
             throw new CardmarketNetworkError({
-              url,
-              message: `Cardmarket returned HTTP ${response.status} for ${url}`,
+              url: initialUrl,
+              message: `Cardmarket URL rejected by SSRF guard: ${initialUrl}`,
             });
           }
-          return await response.text();
+          const combinedSignal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+          let currentUrl = initialUrl;
+
+          for (let hops = 0; hops <= MAX_CARDMARKET_REDIRECTS; hops++) {
+            const response = await fetch(currentUrl, {
+              signal: combinedSignal,
+              headers: {
+                "user-agent": userAgent,
+                accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "accept-language": "fr-FR,fr;q=0.9,en;q=0.8",
+              },
+              redirect: "manual",
+            });
+
+            if (REDIRECT_STATUSES.has(response.status)) {
+              const location = response.headers.get("location");
+              await response.body?.cancel();
+              if (location === null || location.trim().length === 0) {
+                throw new CardmarketNetworkError({
+                  url: currentUrl,
+                  message: `Cardmarket redirect HTTP ${response.status} without Location header`,
+                });
+              }
+              if (hops === MAX_CARDMARKET_REDIRECTS) {
+                throw new CardmarketNetworkError({
+                  url: currentUrl,
+                  message: `Cardmarket exceeded maximum redirects (${MAX_CARDMARKET_REDIRECTS})`,
+                });
+              }
+              let nextUrl: string;
+              try {
+                nextUrl = new URL(location, currentUrl).toString();
+              } catch {
+                throw new CardmarketNetworkError({
+                  url: currentUrl,
+                  message: `Cardmarket redirect Location is invalid: ${location}`,
+                });
+              }
+              if (!isAllowedCardmarketUrl(nextUrl)) {
+                throw new CardmarketNetworkError({
+                  url: currentUrl,
+                  message: `Cardmarket redirect target rejected by SSRF guard: ${nextUrl}`,
+                });
+              }
+              currentUrl = nextUrl;
+              continue;
+            }
+
+            const nowMs = Date.now();
+            const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"), nowMs);
+            const cfMitigated = response.headers.get("cf-mitigated")?.toLowerCase() ?? "";
+            if (cfMitigated === "challenge") {
+              await response.body?.cancel();
+              throw new CardmarketBlockedError({
+                status: "challenge",
+                ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+                message: `Cardmarket Cloudflare challenge (HTTP ${response.status}) for ${currentUrl}`,
+              });
+            }
+
+            if (!response.ok) {
+              // Release the socket instead of downloading an error page.
+              await response.body?.cancel();
+              if (response.status === 403 || response.status === 429) {
+                throw new CardmarketBlockedError({
+                  status: response.status,
+                  ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+                  message: `Cardmarket returned HTTP ${response.status} for ${currentUrl}`,
+                });
+              }
+              throw new CardmarketNetworkError({
+                url: currentUrl,
+                message: `Cardmarket returned HTTP ${response.status} for ${currentUrl}`,
+              });
+            }
+
+            return await readBoundedText(response, maxHtmlBytes, currentUrl);
+          }
+
+          throw new CardmarketNetworkError({
+            url: currentUrl,
+            message: `Cardmarket exceeded maximum redirects (${MAX_CARDMARKET_REDIRECTS})`,
+          });
         },
         catch: (cause): CardmarketBlockedError | CardmarketNetworkError =>
           cause instanceof CardmarketBlockedError || cause instanceof CardmarketNetworkError
             ? cause
             : new CardmarketNetworkError({
-                url,
-                message: `Cardmarket request failed for ${url}`,
+                url: initialUrl,
+                message: `Cardmarket request failed for ${initialUrl}`,
                 cause,
               }),
       }),
@@ -585,66 +721,83 @@ export class TcgdexPriceFallback extends Context.Service<
   TcgdexPriceFallbackShape
 >()("@pokevault/services/TcgdexPriceFallback") {}
 
-/** `pricing.cardmarket.prices.<variant>.<lang>` entry of a TCGdex card (euros, float). */
-const TcgdexPricePoint = Schema.Struct({
-  trend: Schema.optional(Schema.Number),
-  avg30: Schema.optional(Schema.Number),
-  low: Schema.optional(Schema.Number),
+const NullablePriceNumber = Schema.NullOr(Schema.Number);
+
+/**
+ * Real TCGdex v2 `pricing.cardmarket` flat object (euros, float or null).
+ * TCGdex does not distinguish card languages in its Cardmarket aggregate; all
+ * snapshots persisted from this fallback are tagged `tcgdex_fallback` (stale).
+ */
+const TcgdexCardmarketPricing = Schema.Struct({
+  unit: Schema.optional(Schema.NullOr(Schema.String)),
+  avg: Schema.optional(NullablePriceNumber),
+  low: Schema.optional(NullablePriceNumber),
+  trend: Schema.optional(NullablePriceNumber),
+  avg1: Schema.optional(NullablePriceNumber),
+  avg7: Schema.optional(NullablePriceNumber),
+  avg30: Schema.optional(NullablePriceNumber),
+  "avg-holo": Schema.optional(NullablePriceNumber),
+  "low-holo": Schema.optional(NullablePriceNumber),
+  "trend-holo": Schema.optional(NullablePriceNumber),
+  "avg1-holo": Schema.optional(NullablePriceNumber),
+  "avg7-holo": Schema.optional(NullablePriceNumber),
+  "avg30-holo": Schema.optional(NullablePriceNumber),
 });
 
 const TcgdexCardPricingPayload = Schema.Struct({
   pricing: Schema.optional(
-    Schema.Struct({
-      cardmarket: Schema.optional(
-        Schema.Struct({
-          prices: Schema.optional(
-            Schema.Record(Schema.String, Schema.Record(Schema.String, TcgdexPricePoint)),
-          ),
-        }),
-      ),
-    }),
+    Schema.NullOr(
+      Schema.Struct({
+        cardmarket: Schema.optional(Schema.NullOr(TcgdexCardmarketPricing)),
+      }),
+    ),
   ),
 });
 
-const eurosToCents = (value: number | undefined): number | null =>
-  value === undefined || !Number.isFinite(value) || value < 0 ? null : Math.round(value * 100);
-
-/** First value of a string-keyed record whose key matches (case-insensitive). */
-const findEntry = <V>(
-  record: Readonly<Record<string, V>>,
-  predicate: (key: string) => boolean,
-): V | undefined => {
-  for (const key of Object.keys(record)) {
-    if (predicate(key)) return record[key];
-  }
-  return undefined;
-};
-
-/** Extracts the fallback prices for `(variant, language)` from a TCGdex card payload. */
-export const pickTcgdexFallbackPrices = (
-  payload: typeof TcgdexCardPricingPayload.Type,
-  language: CardLanguage,
-  variant: CardVariant,
-): TcgdexFallbackPrices | null => {
-  const prices = payload.pricing?.cardmarket?.prices;
-  if (prices === undefined) return null;
-  const variantEntry = findEntry(prices, (key) => key.toLowerCase() === variant.toLowerCase());
-  if (variantEntry === undefined) return null;
-  const langEntry = findEntry(variantEntry, (key) => key.toUpperCase() === language.toUpperCase());
-  if (langEntry === undefined) return null;
-  const fallback: TcgdexFallbackPrices = {
-    trendCents: eurosToCents(langEntry.trend),
-    avg30Cents: eurosToCents(langEntry.avg30),
-    lowFrCents: eurosToCents(langEntry.low),
-  };
-  if (
-    fallback.trendCents === null &&
-    fallback.avg30Cents === null &&
-    fallback.lowFrCents === null
-  ) {
+const eurosToCents = (value: number | null | undefined): number | null => {
+  if (value === undefined || value === null || !Number.isFinite(value) || value < 0) {
     return null;
   }
-  return fallback;
+  const cents = Math.round(value * 100);
+  return Number.isSafeInteger(cents) && cents <= MAX_PRICE_CENTS ? cents : null;
+};
+
+/**
+ * Extracts fallback prices from a TCGdex v2 card payload (`pricing.cardmarket`).
+ *
+ * TCGdex exposes language-agnostic flat Cardmarket aggregates (`trend`, `avg`,
+ * `avg30`, `low`) and their foil counterparts (`*-holo`). For foil variants
+ * (`variant !== "normal"`), the `*-holo` fields are preferred with fallback to
+ * the base fields. Non-EUR currencies are ignored.
+ */
+export const pickTcgdexFallbackPrices = (
+  payload: typeof TcgdexCardPricingPayload.Type,
+  _language: CardLanguage,
+  variant: CardVariant,
+): TcgdexFallbackPrices | null => {
+  const cm = payload.pricing?.cardmarket;
+  if (cm === undefined || cm === null) return null;
+  if (typeof cm.unit === "string" && cm.unit.trim().length > 0 && cm.unit.toUpperCase() !== "EUR") {
+    return null;
+  }
+  const preferHolo = variant !== "normal";
+  const trendCents = preferHolo
+    ? (eurosToCents(cm["trend-holo"]) ??
+      eurosToCents(cm["avg-holo"]) ??
+      eurosToCents(cm.trend) ??
+      eurosToCents(cm.avg))
+    : (eurosToCents(cm.trend) ?? eurosToCents(cm.avg));
+  const avg30Cents = preferHolo
+    ? (eurosToCents(cm["avg30-holo"]) ?? eurosToCents(cm.avg30))
+    : eurosToCents(cm.avg30);
+  const lowFrCents = preferHolo
+    ? (eurosToCents(cm["low-holo"]) ?? eurosToCents(cm.low))
+    : eurosToCents(cm.low);
+
+  if (trendCents === null && avg30Cents === null && lowFrCents === null) {
+    return null;
+  }
+  return { trendCents, avg30Cents, lowFrCents };
 };
 
 export interface TcgdexPriceFallbackLiveOptions {
@@ -653,8 +806,8 @@ export interface TcgdexPriceFallbackLiveOptions {
 }
 
 /**
- * Live fallback over the TCGdex v2 API (`GET /v2/en/cards/{id}` →
- * `pricing.cardmarket.prices.<variant>.<lang>` with `trend` / `avg30` / `low`).
+ * Live fallback over the TCGdex v2 API (`GET /v2/en/cards/{id}` → flat
+ * `pricing.cardmarket.{unit, avg, low, trend, avg30, *-holo}`).
  */
 export const TcgdexPriceFallbackLive = (
   options?: TcgdexPriceFallbackLiveOptions,
@@ -798,6 +951,7 @@ interface CircuitInternal {
 
 type ScrapeOutcome =
   | { readonly kind: "ok"; readonly input: NewPriceSnapshot }
+  | { readonly kind: "circuit_open"; readonly error: PriceCircuitOpenError }
   | { readonly kind: "error"; readonly error: CardmarketScrapeError };
 
 const hasAtLeastOnePrice = (prices: {
@@ -885,14 +1039,30 @@ export const CardmarketPriceServiceLive = (
         }
       });
 
-      /** One Cardmarket scrape: jitter → fetch → parse → snapshot input (TTL explicit). */
-      const scrapeCardmarket = (target: PriceRefreshTarget): Effect.Effect<ScrapeOutcome> =>
+      /** One Cardmarket scrape: jitter → circuit re-check → fetch → parse → snapshot input (TTL explicit). */
+      const scrapeCardmarket = (
+        target: PriceRefreshTarget,
+        url: string,
+      ): Effect.Effect<ScrapeOutcome> =>
         Effect.gen(function* () {
           if (jitterMaxMs > 0) {
             const delayMs = yield* Random.nextIntBetween(jitterMinMs, jitterMaxMs);
             yield* Effect.sleep(delayMs);
           }
-          const url = target.cardmarketUrl as string;
+          // Re-check circuit breaker after semaphore wait + jitter so a concurrent
+          // 403/429 immediately halts sibling fibers before hitting Cardmarket.
+          const circuit = yield* readCircuit;
+          if (circuit.status === "open") {
+            const outcome: ScrapeOutcome = {
+              kind: "circuit_open",
+              error: new PriceCircuitOpenError({
+                openUntil: circuit.openUntil ?? new Date(circuit.openUntilMs).toISOString(),
+                consecutiveBlocks: circuit.consecutiveBlocks,
+                message: `circuit breaker open until ${circuit.openUntil ?? "?"}; no Cardmarket call for ${target.cardId}`,
+              }),
+            };
+            return outcome;
+          }
           const html = yield* fetcher.fetchProductPage(url);
           const prices = yield* parseCardmarketProductPage(html, { cardId: target.cardId, url });
           const fetchedAtMs = yield* Clock.currentTimeMillis;
@@ -1037,9 +1207,7 @@ export const CardmarketPriceServiceLive = (
           // 4. Scrape Cardmarket (SSRF-guarded), inside the semaphore.
           if (isAllowedCardmarketUrl(target.cardmarketUrl)) {
             const url = target.cardmarketUrl;
-            const outcome = yield* semaphore.withPermits(1)(
-              scrapeCardmarket({ ...target, cardmarketUrl: url }),
-            );
+            const outcome = yield* semaphore.withPermits(1)(scrapeCardmarket(target, url));
             if (outcome.kind === "ok") {
               yield* recordSuccess;
               const snapshot = yield* store.insertSnapshot(outcome.input);
@@ -1047,6 +1215,15 @@ export const CardmarketPriceServiceLive = (
                 Effect.annotateLogs({ cardId: target.cardId, snapshotId: snapshot.id }),
               );
               return { kind: "refreshed_cardmarket", snapshot } satisfies PriceRefreshResult;
+            }
+            if (outcome.kind === "circuit_open") {
+              yield* Effect.logInfo("cardmarket.refresh.circuit_open").pipe(
+                Effect.annotateLogs({
+                  cardId: target.cardId,
+                  openUntil: outcome.error.openUntil,
+                }),
+              );
+              return yield* fallbackOrDegraded(target, latest, outcome.error);
             }
             if (outcome.error._tag === "CardmarketBlockedError") {
               yield* recordBlock(outcome.error.retryAfterMs);
@@ -1077,7 +1254,8 @@ export const CardmarketPriceServiceLive = (
             new CardmarketParseError({
               cardId: target.cardId,
               url: target.cardmarketUrl ?? "",
-              message: "cardmarketUrl is not an allowed https://*.cardmarket.com URL",
+              message:
+                "cardmarketUrl is not an allowed https://www.cardmarket.com or https://cardmarket.com URL",
             }),
           );
         });

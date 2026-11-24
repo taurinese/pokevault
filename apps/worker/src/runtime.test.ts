@@ -1,6 +1,14 @@
 import { EventEmitter } from "node:events";
-import type { PriceBatchReport } from "@pokevault/domain";
-import { type CatalogSyncReport, ServiceConfigError } from "@pokevault/services";
+import { CardmarketBlockedError, type PriceBatchReport } from "@pokevault/domain";
+import {
+  CardmarketFetcherFake,
+  CardmarketPriceService,
+  CardmarketPriceServiceLive,
+  type CatalogSyncReport,
+  makePriceSnapshotStoreMemory,
+  ServiceConfigError,
+  TcgdexPriceFallbackFake,
+} from "@pokevault/services";
 import { ConfigProvider, Effect, Fiber, Layer, Logger, References } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
@@ -355,6 +363,66 @@ describe("runWorker with priceRefresh cron", () => {
     expect(messages).toContain("worker.price_refresh.interrupted");
     expect(messages.at(-1)).toBe("worker.stopped");
     expect(listenerCount(emitter)).toBe(0);
+  });
+
+  it("preserves circuit breaker state across cron ticks when the service layer is built once in scope", async () => {
+    const capture = makeCapture();
+    const store = makePriceSnapshotStoreMemory();
+    store.targets.push({
+      cardId: "sv03.5-199",
+      language: "FR",
+      variant: "normal",
+      cardmarketUrl: "https://www.cardmarket.com/fr/Pokemon/Products/Singles/sv035-199",
+      priority: "active_alert",
+    });
+    const fetchCalls: Array<string> = [];
+    const reports: Array<PriceBatchReport> = [];
+
+    const serviceLayer = CardmarketPriceServiceLive({
+      jitterMinMs: 0,
+      jitterMaxMs: 0,
+      circuitBasePauseMs: 15 * 60_000,
+    }).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          store.layer,
+          CardmarketFetcherFake((url) => {
+            fetchCalls.push(url);
+            return Effect.fail(new CardmarketBlockedError({ status: 403, message: "blocked" }));
+          }),
+          TcgdexPriceFallbackFake(() => Effect.succeed(null)),
+        ),
+      ),
+    );
+
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const env = yield* Layer.build(serviceLayer);
+        const run = Effect.flatMap(CardmarketPriceService, (service) =>
+          service.runScheduledRefresh({ batchLimit: 10 }),
+        ).pipe(
+          Effect.provide(env),
+          Effect.tap((batchReport) =>
+            Effect.sync(() => {
+              reports.push(batchReport);
+            }),
+          ),
+        );
+        const fiber = yield* Effect.forkChild(
+          priceRefreshLoop({ intervalMs: 5 * 60_000, batchLimit: 10, run }),
+        );
+        // Tick 1 at t=0 triggers HTTP 403 (opens circuit for 15 min);
+        // Tick 2 at t=5 min must see the open circuit and make 0 fetch calls.
+        yield* TestClock.adjust(6 * 60_000);
+        yield* Fiber.interrupt(fiber);
+      }),
+    );
+
+    await Effect.runPromise(withTestRuntime(program, capture.layer));
+    expect(reports).toHaveLength(2);
+    expect(fetchCalls).toHaveLength(1);
+    expect(reports[0]?.circuitOpenUntil).not.toBeNull();
+    expect(reports[1]?.skippedCircuitOpen).toBe(1);
   });
 });
 

@@ -5,6 +5,7 @@ import {
   CardmarketNetworkError,
   CardmarketParseError,
   computePriceFreshness,
+  MAX_PRICE_CENTS,
   PRICE_MANUAL_COOLDOWN_MS,
   PRICE_REFRESH_PRIORITY_RANK,
   PRICE_STALE_AMBER_MS,
@@ -97,6 +98,38 @@ describe("literal schemas", () => {
         isFresh: true,
       }),
     ).toThrow();
+
+    expect(() =>
+      Schema.decodeUnknownSync(PriceSnapshot)({
+        id: 1,
+        cardId: "x",
+        language: "FR",
+        variant: "normal",
+        source: "cardmarket",
+        trendCents: MAX_PRICE_CENTS + 1,
+        lowFrCents: null,
+        avg30Cents: null,
+        fetchedAt: "2026-01-01T10:00:00.000Z",
+        expiresAt: "2026-01-01T10:15:00.000Z",
+        isFresh: true,
+      }),
+    ).toThrow();
+
+    expect(
+      Schema.decodeUnknownSync(PriceSnapshot)({
+        id: 1,
+        cardId: "x",
+        language: "FR",
+        variant: "normal",
+        source: "cardmarket",
+        trendCents: MAX_PRICE_CENTS,
+        lowFrCents: null,
+        avg30Cents: null,
+        fetchedAt: "2026-01-01T10:00:00.000Z",
+        expiresAt: "2026-01-01T10:15:00.000Z",
+        isFresh: true,
+      }).trendCents,
+    ).toBe(MAX_PRICE_CENTS);
   });
 
   it("decodes a PriceBatchReport and TcgdexFallbackPrices", () => {

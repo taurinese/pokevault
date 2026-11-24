@@ -1,4 +1,4 @@
-import { CardmarketBlockedError, CardmarketParseError } from "@pokevault/domain";
+import { CardmarketBlockedError, CardmarketParseError, MAX_PRICE_CENTS } from "@pokevault/domain";
 import { Effect } from "effect";
 
 // ---------------------------------------------------------------------------
@@ -31,13 +31,21 @@ export type CardmarketPageParseError = CardmarketBlockedError | CardmarketParseE
 // Anti-bot challenge detection (Cloudflare / Turnstile / captcha)
 // ---------------------------------------------------------------------------
 
+/** Explicit interstitial page title served by Cloudflare / anti-bot gates. */
+const CHALLENGE_TITLE_PATTERN =
+  /<title[^>]*>[^<]*(attention required|just a moment|checking your browser|please verify|verify you are human|are you a robot|captcha|vérification de sécurité|security check)[^<]*<\/title>/i;
+
+/**
+ * Strict challenge interstitial signatures. Intentionally avoids matching
+ * generic Cloudflare telemetry beacons (`/cdn-cgi/challenge-platform/scripts/jsd/...`
+ * or unrelated `data-sitekey=` attributes) that Cloudflare injects on normal
+ * product pages.
+ */
 const CHALLENGE_PATTERNS: ReadonlyArray<RegExp> = [
-  /<title[^>]*>[^<]*(attention required|just a moment|checking your browser|please verify|verify you are human|are you a robot|captcha|vérification de sécurité|security check)[^<]*<\/title>/i,
+  CHALLENGE_TITLE_PATTERN,
   /cf-turnstile/i,
-  /challenge-platform/i,
-  /cdn\.cloudflare\.com\/challenge-platform/i,
   /class="[^"]*cf-chl/i,
-  /data-sitekey=/i,
+  /id="(?:challenge-form|cf-challenge-running)"/i,
   /name="captcha/i,
   /(?:google\.com\/recaptcha|hcaptcha\.com|arkoselabs)/i,
 ];
@@ -140,7 +148,7 @@ export const parseEuroAmountToCents = (raw: string): number | null => {
   }
   const cents =
     Number(intPart) * 100 + (fracPart.length > 0 ? Number(fracPart.padEnd(2, "0").slice(0, 2)) : 0);
-  if (!Number.isSafeInteger(cents) || cents < 0) return null;
+  if (!Number.isSafeInteger(cents) || cents < 0 || cents > MAX_PRICE_CENTS) return null;
   return cents;
 };
 
@@ -148,9 +156,11 @@ export const parseEuroAmountToCents = (raw: string): number | null => {
  * One euro amount token, in either order (`124,90 €` or `€1,250.50`, `98.00 EUR`).
  * The digit class deliberately excludes `\s` (newlines) so a match never spans
  * two flattened lines; only narrow thousand separators (nbsp, thin space) are allowed.
+ * Optional leading minus signs are captured so negative amounts (`-5,00 €`, `-€5.00`,
+ * `€-5.00`) are consumed whole and rejected rather than partially matched.
  */
 const PRICE_TOKEN =
-  /(?:€\s*(\d[\d.,\u00a0\u200b']*))|(?:(\d[\d.,\u00a0\u200b']*)\s*(?:€|eur\b|euros?\b))/gi;
+  /(?<![\d.,])([-\u2212]?)(?:€\s*([-\u2212]?)(\d[\d.,\u00a0\u200b']*)|(\d[\d.,\u00a0\u200b']*)\s*(?:€|eur\b|euros?\b))/gi;
 
 /** First euro amount found in `text` (nearest to the start), in integer cents (`null` when none). */
 export const findFirstPriceCents = (text: string): number | null => {
@@ -158,7 +168,8 @@ export const findFirstPriceCents = (text: string): number | null => {
   for (;;) {
     const match = PRICE_TOKEN.exec(text);
     if (match === null) return null;
-    const cents = parseEuroAmountToCents(match[1] ?? match[2] ?? "");
+    if ((match[1] ?? "") !== "" || (match[2] ?? "") !== "") continue;
+    const cents = parseEuroAmountToCents(match[3] ?? match[4] ?? "");
     if (cents !== null) return cents;
   }
 };
@@ -230,7 +241,7 @@ export const parseCardmarketProductPage = (
   html: string,
   context: CardmarketPageContext,
 ): Effect.Effect<CardmarketProductPrices, CardmarketPageParseError> => {
-  if (isChallengePage(html)) {
+  if (CHALLENGE_TITLE_PATTERN.test(html)) {
     return Effect.fail(
       new CardmarketBlockedError({
         status: "challenge",
@@ -241,15 +252,23 @@ export const parseCardmarketProductPage = (
   const trendCents = extractLabeledPrice(html, TREND_LABELS);
   const lowFrCents = extractLabeledPrice(html, LOW_LABELS);
   const avg30Cents = extractLabeledPrice(html, AVG30_LABELS);
-  if (trendCents === null && lowFrCents === null && avg30Cents === null) {
+  if (trendCents !== null || lowFrCents !== null || avg30Cents !== null) {
+    return Effect.succeed({ trendCents, lowFrCents, avg30Cents });
+  }
+  if (isChallengePage(html)) {
     return Effect.fail(
-      new CardmarketParseError({
-        cardId: context.cardId,
-        url: context.url,
-        message:
-          "no usable price found on the Cardmarket product page (HTML structure may have changed)",
+      new CardmarketBlockedError({
+        status: "challenge",
+        message: `anti-bot challenge page detected for card ${context.cardId} (${context.url})`,
       }),
     );
   }
-  return Effect.succeed({ trendCents, lowFrCents, avg30Cents });
+  return Effect.fail(
+    new CardmarketParseError({
+      cardId: context.cardId,
+      url: context.url,
+      message:
+        "no usable price found on the Cardmarket product page (HTML structure may have changed)",
+    }),
+  );
 };

@@ -14,6 +14,9 @@ export const PRICE_STALE_AMBER_MS = 6 * 60 * 60 * 1000;
 /** Global manual refresh cooldown: 5 minutes per card, shared instance-wide. */
 export const PRICE_MANUAL_COOLDOWN_MS = 5 * 60 * 1000;
 
+/** Maximum representable price in cents (Postgres `int4` max = 21,474,836.47 €). */
+export const MAX_PRICE_CENTS = 2_147_483_647;
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
@@ -26,8 +29,10 @@ export type PriceSource = typeof PriceSource.Type;
 export const PriceFreshness = Schema.Literals(["fresh", "aging", "stale", "missing"]);
 export type PriceFreshness = typeof PriceFreshness.Type;
 
-/** Price in euro cents (integer, never a float). */
-const PriceCents = Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)));
+/** Price in euro cents (Postgres int4 integer, never a float). */
+const PriceCents = Schema.NullOr(
+  Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(MAX_PRICE_CENTS)),
+);
 
 /** Row of `price_snapshots` / `card_latest_prices` (camelCase domain view). */
 export const PriceSnapshot = Schema.Struct({
@@ -72,7 +77,7 @@ export const PriceRefreshTarget = Schema.Struct({
   cardId: Schema.NonEmptyString,
   language: CardLanguage,
   variant: CardVariant,
-  /** Cardmarket product page URL (SSRF-guarded: `https://*.cardmarket.com` only). */
+  /** Cardmarket product page URL (SSRF-guarded: `https://www.cardmarket.com` / `https://cardmarket.com` only). */
   cardmarketUrl: Schema.NullOr(Schema.String),
   priority: PriceRefreshPriority,
   /** Pre-resolved TCGdex fallback prices, if already known. */

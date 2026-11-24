@@ -13,9 +13,11 @@ import {
 } from "@pokevault/domain";
 import { Clock, Effect, Fiber, Layer, Random } from "effect";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CardmarketFetcher,
   CardmarketFetcherFake,
+  CardmarketFetcherLive,
   CardmarketPriceService,
   type CardmarketPriceServiceConfig,
   CardmarketPriceServiceLive,
@@ -73,9 +75,7 @@ interface HarnessState {
 interface Harness {
   readonly state: HarnessState;
   readonly store: ReturnType<typeof makePriceSnapshotStoreMemory>;
-  readonly run: <A, E>(
-    program: Effect.Effect<A, E, CardmarketPriceService>,
-  ) => Promise<A>;
+  readonly run: <A, E>(program: Effect.Effect<A, E, CardmarketPriceService>) => Promise<A>;
 }
 
 const DEFAULT_FALLBACK: TcgdexFallbackPrices = {
@@ -153,9 +153,7 @@ const makeHarness = (options?: {
     ...options?.config,
   }).pipe(Layer.provide(Layer.mergeAll(store.layer, fetcherLayer, fallbackLayer)));
 
-  const run = <A, E>(
-    program: Effect.Effect<A, E, CardmarketPriceService>,
-  ): Promise<A> =>
+  const run = <A, E>(program: Effect.Effect<A, E, CardmarketPriceService>): Promise<A> =>
     Effect.runPromise(
       program.pipe(
         Effect.provide(Layer.mergeAll(baseLayer, TestClock.layer())),
@@ -198,7 +196,10 @@ describe("isAllowedCardmarketUrl (SSRF guard)", () => {
   it.each([
     ["https://www.cardmarket.com/en/Pokemon/Products/Singles/x", true],
     ["https://www.cardmarket.com/fr/Pokemon/Produits/Singles/x", true],
-    ["https://m.cardmarket.com/x", true],
+    ["https://cardmarket.com/fr/Pokemon/Products/Singles/x", true],
+    ["https://m.cardmarket.com/x", false],
+    ["https://www.cardmarket.com:8443/x", false],
+    ["https://user:pass@www.cardmarket.com/x", false],
     ["http://www.cardmarket.com/x", false],
     ["https://cardmarket.com.evil.example/x", false],
     ["https://evil.example/x", false],
@@ -238,41 +239,154 @@ describe("computeCircuitPauseMs", () => {
 });
 
 describe("pickTcgdexFallbackPrices", () => {
-  it("extracts variant/language prices in cents and rejects empty payloads", () => {
+  it("extracts flat TCGdex v2 Cardmarket prices (normal & holo) and rejects non-EUR / empty payloads", () => {
     const payload = {
       pricing: {
         cardmarket: {
-          prices: {
-            normal: { FR: { trend: 1.5, avg30: 2, low: 0.9 }, EN: { trend: 3 } },
-            holo: { fr: { low: 10 } },
-          },
+          unit: "EUR",
+          avg: 14.5,
+          low: 10.2,
+          trend: 15.1,
+          avg1: 15.0,
+          avg7: 14.9,
+          avg30: 14.8,
+          "avg-holo": 40.0,
+          "low-holo": 31.0,
+          "trend-holo": 42.5,
+          "avg30-holo": 39.0,
         },
       },
     };
     expect(pickTcgdexFallbackPrices(payload, "FR", "normal")).toEqual({
-      trendCents: 150,
-      avg30Cents: 200,
-      lowFrCents: 90,
-    });
-    expect(pickTcgdexFallbackPrices(payload, "EN", "normal")).toEqual({
-      trendCents: 300,
-      avg30Cents: null,
-      lowFrCents: null,
+      trendCents: 1510,
+      avg30Cents: 1480,
+      lowFrCents: 1020,
     });
     expect(pickTcgdexFallbackPrices(payload, "FR", "holo")).toEqual({
-      trendCents: null,
-      avg30Cents: null,
-      lowFrCents: 1000,
+      trendCents: 4250,
+      avg30Cents: 3900,
+      lowFrCents: 3100,
     });
-    expect(pickTcgdexFallbackPrices(payload, "JP", "normal")).toBeNull();
-    expect(pickTcgdexFallbackPrices({}, "FR", "normal")).toBeNull();
+    // Foil variant without *-holo fields falls back to base fields, and trend falls back to avg.
     expect(
       pickTcgdexFallbackPrices(
-        { pricing: { cardmarket: { prices: { normal: { FR: { trend: -1 } } } } } },
+        { pricing: { cardmarket: { unit: "EUR", avg: 8.75, low: null, trend: null, avg30: 9.0 } } },
+        "EN",
+        "reverse",
+      ),
+    ).toEqual({
+      trendCents: 875,
+      avg30Cents: 900,
+      lowFrCents: null,
+    });
+    // Non-EUR unit rejected.
+    expect(
+      pickTcgdexFallbackPrices(
+        { pricing: { cardmarket: { unit: "USD", trend: 10 } } },
         "FR",
         "normal",
       ),
     ).toBeNull();
+    expect(pickTcgdexFallbackPrices({}, "FR", "normal")).toBeNull();
+    expect(
+      pickTcgdexFallbackPrices({ pricing: { cardmarket: { trend: -1 } } }, "FR", "normal"),
+    ).toBeNull();
+  });
+});
+
+describe("CardmarketFetcherLive (SSRF redirects, size cap, cf-mitigated)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const runLiveFetch = (url: string, options?: { readonly maxHtmlBytes?: number }) =>
+    Effect.runPromise(
+      Effect.flip(
+        Effect.flatMap(CardmarketFetcher, (fetcher) => fetcher.fetchProductPage(url)).pipe(
+          Effect.provide(CardmarketFetcherLive(options)),
+        ),
+      ),
+    );
+
+  it("rejects redirects to external hosts (SSRF) without following them", async () => {
+    const requestedUrls: Array<string> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        requestedUrls.push(String(input));
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://169.254.169.254/latest/meta-data" },
+        });
+      }),
+    );
+
+    const error = await runLiveFetch("https://www.cardmarket.com/en/Pokemon/Products/Singles/c1");
+    expect(error).toBeInstanceOf(CardmarketNetworkError);
+    expect(error.message).toContain("SSRF");
+    expect(requestedUrls).toEqual(["https://www.cardmarket.com/en/Pokemon/Products/Singles/c1"]);
+  });
+
+  it("follows allowed Cardmarket redirects and returns the HTML body", async () => {
+    const requestedUrls: Array<string> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        requestedUrls.push(url);
+        if (requestedUrls.length === 1) {
+          return new Response(null, {
+            status: 301,
+            headers: { location: "/fr/Pokemon/Produits/Singles/c1" },
+          });
+        }
+        return new Response(HTML_OK, { status: 200 });
+      }),
+    );
+
+    const html = await Effect.runPromise(
+      Effect.flatMap(CardmarketFetcher, (fetcher) =>
+        fetcher.fetchProductPage("https://www.cardmarket.com/en/Pokemon/Products/Singles/c1"),
+      ).pipe(Effect.provide(CardmarketFetcherLive())),
+    );
+    expect(html).toBe(HTML_OK);
+    expect(requestedUrls).toEqual([
+      "https://www.cardmarket.com/en/Pokemon/Products/Singles/c1",
+      "https://www.cardmarket.com/fr/Pokemon/Produits/Singles/c1",
+    ]);
+  });
+
+  it("aborts and rejects bodies exceeding the byte ceiling", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("x".repeat(2048), { status: 200 })),
+    );
+
+    const error = await runLiveFetch("https://www.cardmarket.com/en/Pokemon/Products/Singles/big", {
+      maxHtmlBytes: 512,
+    });
+    expect(error).toBeInstanceOf(CardmarketNetworkError);
+    expect(error.message).toContain("512 bytes");
+  });
+
+  it("maps HTTP 503 with cf-mitigated: challenge to CardmarketBlockedError(challenge)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("<html><title>Just a moment...</title></html>", {
+            status: 503,
+            headers: { "cf-mitigated": "challenge", "retry-after": "120" },
+          }),
+      ),
+    );
+
+    const error = await runLiveFetch("https://www.cardmarket.com/en/Pokemon/Products/Singles/cf");
+    expect(error).toBeInstanceOf(CardmarketBlockedError);
+    if (error instanceof CardmarketBlockedError) {
+      expect(error.status).toBe("challenge");
+      expect(error.retryAfterMs).toBe(120_000);
+    }
   });
 });
 
@@ -626,6 +740,34 @@ describe("circuit breaker", () => {
     expect(result.res.kind).toBe("refreshed_fallback");
     expect(result.circuit.status).toBe("closed");
     expect(result.circuit.consecutiveBlocks).toBe(0);
+  });
+
+  it("re-checks the circuit inside the semaphore so a queued fiber skips Cardmarket after a block", async () => {
+    const h = makeHarness({
+      mode: "403",
+      config: { maxConcurrency: 1, jitterMinMs: 100, jitterMaxMs: 100 },
+    });
+    const results = await h.run(
+      Effect.gen(function* () {
+        const svc = yield* CardmarketPriceService;
+        const fiber = yield* Effect.forkChild(
+          Effect.all(
+            [
+              svc.refreshCardPrice(target("c1"), { force: true }),
+              svc.refreshCardPrice(target("c2"), { force: true }),
+            ],
+            { concurrency: 2 },
+          ),
+        );
+        yield* TestClock.adjust(1_000);
+        return yield* Fiber.join(fiber);
+      }),
+    );
+    expect(results[0].kind).toBe("refreshed_fallback");
+    expect(results[1].kind).toBe("refreshed_fallback");
+    // c1 opened the circuit on HTTP 403; c2 was already past the pre-semaphore
+    // gate, waited for the permit, re-checked the circuit, and skipped Cardmarket.
+    expect(h.state.calls).toEqual([urlFor("c1")]);
   });
 });
 

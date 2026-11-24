@@ -129,19 +129,33 @@ describe("parseEuroAmountToCents", () => {
     expect(parseEuroAmountToCents(raw)).toBe(expected);
   });
 
-  it.each([["abc"], [""], ["-5,00"], ["12,9,0"], ["NaN"], ["1,2,3,4,5,6,7"]])(
-    "rejects %s",
-    (raw) => {
-      expect(parseEuroAmountToCents(raw)).toBeNull();
-    },
-  );
+  it.each([
+    ["abc"],
+    [""],
+    ["-5,00"],
+    ["12,9,0"],
+    ["NaN"],
+    ["1,2,3,4,5,6,7"],
+    ["21.474.836,48"], // exceeds Postgres int4 max (2_147_483_647)
+  ])("rejects %s", (raw) => {
+    expect(parseEuroAmountToCents(raw)).toBeNull();
+  });
+
+  it("accepts Postgres int4 maximum (21.474.836,47 €)", () => {
+    expect(parseEuroAmountToCents("21.474.836,47")).toBe(2_147_483_647);
+  });
 });
 
 describe("findFirstPriceCents", () => {
-  it("finds amounts after or before the € symbol", () => {
+  it("finds amounts after or before the € symbol and rejects negative prices", () => {
     expect(findFirstPriceCents("124,90 €")).toBe(12490);
     expect(findFirstPriceCents("€1,250.50")).toBe(125050);
     expect(findFirstPriceCents("98.00 EUR")).toBe(9800);
+    expect(findFirstPriceCents("-5,00 €")).toBeNull();
+    expect(findFirstPriceCents("-€12.90")).toBeNull();
+    expect(findFirstPriceCents("€-12.90")).toBeNull();
+    expect(findFirstPriceCents("−5,00 €")).toBeNull();
+    expect(findFirstPriceCents("Variation -5,00 € · 12,00 €")).toBe(1200);
     expect(findFirstPriceCents("N/A")).toBeNull();
     expect(findFirstPriceCents("")).toBeNull();
   });
@@ -210,6 +224,30 @@ describe("parseCardmarketProductPage", () => {
     expect(Exit.isSuccess(result)).toBe(true);
     if (Exit.isSuccess(result)) {
       expect(result.value.trendCents).toBe(125050);
+    }
+  });
+
+  it("parses a valid product page that includes Cloudflare telemetry scripts or unrelated data-sitekey", () => {
+    const withCfTelemetry = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <title>Pikachu ex 238/131 — Cardmarket</title>
+  <script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>
+</head>
+<body>
+  <div data-sitekey="0x4-newsletter"></div>
+  <table>
+    <tr><td>Tendance des prix</td><td>124,90&nbsp;€</td></tr>
+    <tr><td>À partir de</td><td>110,00&nbsp;€</td></tr>
+    <tr><td>Prix moyen 30 jours</td><td>119,50&nbsp;€</td></tr>
+  </table>
+</body>
+</html>`;
+    expect(isChallengePage(withCfTelemetry)).toBe(false);
+    const result = run(withCfTelemetry);
+    expect(Exit.isSuccess(result)).toBe(true);
+    if (Exit.isSuccess(result)) {
+      expect(result.value).toEqual({ trendCents: 12490, lowFrCents: 11000, avg30Cents: 11950 });
     }
   });
 });
