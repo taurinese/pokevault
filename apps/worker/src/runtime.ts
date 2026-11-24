@@ -1,3 +1,4 @@
+import type { PriceBatchReport } from "@pokevault/domain";
 import type { CatalogSyncReport } from "@pokevault/services";
 import { Cause, Effect, Ref } from "effect";
 
@@ -97,11 +98,63 @@ export const catalogSyncLoop = (cron: CatalogSyncCron): Effect.Effect<never, unk
     }),
   ).pipe(Effect.onInterrupt(() => Effect.logInfo("worker.catalog_sync.interrupted")));
 
+/** Configuration of the Cardmarket price refresh cron. */
+export interface PriceRefreshCron {
+  /** Delay between two refresh runs, in milliseconds (strictly positive, default 15 min). */
+  readonly intervalMs: number;
+  /** Max cards refreshed per run (reported in the structured logs). */
+  readonly batchLimit: number;
+  /**
+   * One price refresh batch. Its typed errors are logged (`worker.price_refresh.failed`)
+   * and never crash the worker; interruption is always propagated.
+   */
+  readonly run: Effect.Effect<PriceBatchReport, unknown>;
+}
+
+/**
+ * Cardmarket price refresh cron: runs `run` immediately, then every `intervalMs`.
+ * Failures are logged as warnings and the loop keeps going; interrupting the loop
+ * (SIGTERM/SIGINT shutdown) stops it and logs `worker.price_refresh.interrupted`.
+ */
+export const priceRefreshLoop = (cron: PriceRefreshCron): Effect.Effect<never, unknown> =>
+  Effect.forever(
+    Effect.gen(function* () {
+      yield* Effect.logInfo("worker.price_refresh.started").pipe(
+        Effect.annotateLogs({ batchLimit: cron.batchLimit }),
+      );
+      yield* cron.run.pipe(
+        Effect.tap((report) =>
+          Effect.logInfo("worker.price_refresh.completed").pipe(
+            Effect.annotateLogs({
+              attempted: report.attempted,
+              refreshedCardmarket: report.refreshedCardmarket,
+              refreshedFallback: report.refreshedFallback,
+              skippedFresh: report.skippedFresh,
+              skippedCooldown: report.skippedCooldown,
+              skippedCircuitOpen: report.skippedCircuitOpen,
+              failed: report.failed,
+              circuitOpenUntil: report.circuitOpenUntil,
+              durationMs: report.durationMs,
+            }),
+          ),
+        ),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("worker.price_refresh.failed", cause),
+        ),
+      );
+      yield* Effect.sleep(cron.intervalMs);
+    }),
+  ).pipe(Effect.onInterrupt(() => Effect.logInfo("worker.price_refresh.interrupted")));
+
 export interface RunWorkerOptions {
   readonly heartbeatIntervalMs: number;
   readonly signals: SignalSource;
   /** Optional catalog sync cron, forked in a supervised fiber of the worker scope. */
   readonly catalogSync?: CatalogSyncCron | undefined;
+  /** Optional Cardmarket price refresh cron, forked in a supervised fiber of the worker scope. */
+  readonly priceRefresh?: PriceRefreshCron | undefined;
 }
 
 /**
@@ -118,6 +171,9 @@ export const runWorker = (options: RunWorkerOptions): Effect.Effect<ShutdownSign
       );
       if (options.catalogSync !== undefined) {
         yield* Effect.forkScoped(catalogSyncLoop(options.catalogSync));
+      }
+      if (options.priceRefresh !== undefined) {
+        yield* Effect.forkScoped(priceRefreshLoop(options.priceRefresh));
       }
       const signal = yield* Effect.raceFirst(
         awaitShutdownSignal(options.signals),

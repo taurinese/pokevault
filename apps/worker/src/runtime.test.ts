@@ -1,10 +1,25 @@
 import { EventEmitter } from "node:events";
-import { type CatalogSyncReport, ServiceConfigError } from "@pokevault/services";
+import { CardmarketBlockedError, type PriceBatchReport } from "@pokevault/domain";
+import {
+  CardmarketFetcherFake,
+  CardmarketPriceService,
+  CardmarketPriceServiceLive,
+  type CatalogSyncReport,
+  makePriceSnapshotStoreMemory,
+  ServiceConfigError,
+  TcgdexPriceFallbackFake,
+} from "@pokevault/services";
 import { ConfigProvider, Effect, Fiber, Layer, Logger, References } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import { loadWorkerConfig } from "./config.ts";
-import { awaitShutdownSignal, catalogSyncLoop, runWorker, SHUTDOWN_SIGNALS } from "./runtime.ts";
+import {
+  awaitShutdownSignal,
+  catalogSyncLoop,
+  priceRefreshLoop,
+  runWorker,
+  SHUTDOWN_SIGNALS,
+} from "./runtime.ts";
 import { parseSyncCatalogArgs, SYNC_CATALOG_FLAG } from "./sync-catalog.ts";
 
 interface Captured {
@@ -235,6 +250,182 @@ describe("catalogSyncLoop", () => {
   });
 });
 
+describe("priceRefreshLoop", () => {
+  const report: PriceBatchReport = {
+    attempted: 30,
+    refreshedCardmarket: 20,
+    refreshedFallback: 5,
+    skippedFresh: 2,
+    skippedCooldown: 1,
+    skippedCircuitOpen: 0,
+    failed: 2,
+    circuitOpenUntil: null,
+    durationMs: 1234,
+  };
+
+  it("runs immediately then on each interval, and stops cleanly when interrupted", async () => {
+    const capture = makeCapture();
+    const runs: Array<number> = [];
+    const run = Effect.sync(() => {
+      runs.push(runs.length + 1);
+      return report;
+    });
+
+    const program = Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        priceRefreshLoop({ intervalMs: 1_000, batchLimit: 30, run }),
+      );
+      yield* TestClock.adjust(2_500); // runs at t=0, 1s, 2s
+      yield* Fiber.interrupt(fiber);
+      yield* TestClock.adjust(5_000); // no further run after interruption
+    });
+
+    await Effect.runPromise(withTestRuntime(program, capture.layer));
+    expect(runs).toEqual([1, 2, 3]);
+    const messages = capture.entries.map((entry) => entry.message);
+    expect(messages.filter((message) => message === "worker.price_refresh.started")).toHaveLength(
+      3,
+    );
+    expect(messages.filter((message) => message === "worker.price_refresh.completed")).toHaveLength(
+      3,
+    );
+    expect(messages).toContain("worker.price_refresh.interrupted");
+  });
+
+  it("logs batch failures as worker.price_refresh.failed and keeps the cron alive", async () => {
+    const capture = makeCapture();
+    let attempts = 0;
+    const run = Effect.suspend((): Effect.Effect<PriceBatchReport, Error> => {
+      attempts += 1;
+      return attempts === 1 ? Effect.fail(new Error("boom")) : Effect.succeed(report);
+    });
+
+    const program = Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        priceRefreshLoop({ intervalMs: 1_000, batchLimit: 30, run }),
+      );
+      yield* TestClock.adjust(2_100); // 3 runs: fail, ok, ok
+      yield* Fiber.interrupt(fiber);
+    });
+
+    await Effect.runPromise(withTestRuntime(program, capture.layer));
+    expect(attempts).toBe(3);
+    const messages = capture.entries.map((entry) => entry.message);
+    expect(messages).toContain("worker.price_refresh.failed");
+    expect(messages.filter((message) => message === "worker.price_refresh.completed")).toHaveLength(
+      2,
+    );
+    expect(messages).toContain("worker.price_refresh.interrupted");
+  });
+});
+
+describe("runWorker with priceRefresh cron", () => {
+  it("runs the price refresh cron then stops gracefully on SIGTERM", async () => {
+    const emitter = new EventEmitter();
+    const capture = makeCapture();
+    const runs: Array<number> = [];
+    const report: PriceBatchReport = {
+      attempted: 3,
+      refreshedCardmarket: 3,
+      refreshedFallback: 0,
+      skippedFresh: 0,
+      skippedCooldown: 0,
+      skippedCircuitOpen: 0,
+      failed: 0,
+      circuitOpenUntil: null,
+      durationMs: 12,
+    };
+    const run = Effect.sync(() => {
+      runs.push(runs.length + 1);
+      return report;
+    });
+
+    const program = Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        runWorker({
+          heartbeatIntervalMs: 60_000,
+          signals: emitter,
+          priceRefresh: { intervalMs: 1_000, batchLimit: 30, run },
+        }),
+      );
+      yield* TestClock.adjust(2_500); // price refresh runs at t=0, 1s, 2s
+      emitter.emit("SIGTERM");
+      return yield* Fiber.join(fiber);
+    });
+
+    const signal = await Effect.runPromise(withTestRuntime(program, capture.layer));
+
+    expect(signal).toBe("SIGTERM");
+    expect(runs).toEqual([1, 2, 3]);
+    const messages = capture.entries.map((entry) => entry.message);
+    expect(messages).toContain("worker.price_refresh.started");
+    expect(messages).toContain("worker.price_refresh.completed");
+    expect(messages).toContain("worker.price_refresh.interrupted");
+    expect(messages.at(-1)).toBe("worker.stopped");
+    expect(listenerCount(emitter)).toBe(0);
+  });
+
+  it("preserves circuit breaker state across cron ticks when the service layer is built once in scope", async () => {
+    const capture = makeCapture();
+    const store = makePriceSnapshotStoreMemory();
+    store.targets.push({
+      cardId: "sv03.5-199",
+      language: "FR",
+      variant: "normal",
+      cardmarketUrl: "https://www.cardmarket.com/fr/Pokemon/Products/Singles/sv035-199",
+      priority: "active_alert",
+    });
+    const fetchCalls: Array<string> = [];
+    const reports: Array<PriceBatchReport> = [];
+
+    const serviceLayer = CardmarketPriceServiceLive({
+      jitterMinMs: 0,
+      jitterMaxMs: 0,
+      circuitBasePauseMs: 15 * 60_000,
+    }).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          store.layer,
+          CardmarketFetcherFake((url) => {
+            fetchCalls.push(url);
+            return Effect.fail(new CardmarketBlockedError({ status: 403, message: "blocked" }));
+          }),
+          TcgdexPriceFallbackFake(() => Effect.succeed(null)),
+        ),
+      ),
+    );
+
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const env = yield* Layer.build(serviceLayer);
+        const run = Effect.flatMap(CardmarketPriceService, (service) =>
+          service.runScheduledRefresh({ batchLimit: 10 }),
+        ).pipe(
+          Effect.provide(env),
+          Effect.tap((batchReport) =>
+            Effect.sync(() => {
+              reports.push(batchReport);
+            }),
+          ),
+        );
+        const fiber = yield* Effect.forkChild(
+          priceRefreshLoop({ intervalMs: 5 * 60_000, batchLimit: 10, run }),
+        );
+        // Tick 1 at t=0 triggers HTTP 403 (opens circuit for 15 min);
+        // Tick 2 at t=5 min must see the open circuit and make 0 fetch calls.
+        yield* TestClock.adjust(6 * 60_000);
+        yield* Fiber.interrupt(fiber);
+      }),
+    );
+
+    await Effect.runPromise(withTestRuntime(program, capture.layer));
+    expect(reports).toHaveLength(2);
+    expect(fetchCalls).toHaveLength(1);
+    expect(reports[0]?.circuitOpenUntil).not.toBeNull();
+    expect(reports[1]?.skippedCircuitOpen).toBe(1);
+  });
+});
+
 describe("parseSyncCatalogArgs", () => {
   it("parses --set filters, --base-url and ignores the sync flag itself", () => {
     expect(
@@ -375,5 +566,111 @@ describe("loadWorkerConfig", () => {
     );
     expect(error).toBeInstanceOf(ServiceConfigError);
     expect(error.key).toBe("TCGDEX_BASE_URL");
+  });
+
+  it("defaults the Cardmarket price sync settings (disabled, 15 min interval, batch 30)", async () => {
+    const config = await Effect.runPromise(
+      loadWorkerConfig.pipe(
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      ),
+    );
+    expect(config.cardmarketPriceSyncEnabled).toBe(false);
+    expect(config.cardmarketPriceSyncIntervalMs).toBe(15 * 60 * 1000);
+    expect(config.cardmarketPriceBatchLimit).toBe(30);
+  });
+
+  it("enables the price sync when CARDMARKET_PRICE_SYNC_ENABLED=true and DATABASE_URL is set", async () => {
+    const config = await Effect.runPromise(
+      loadWorkerConfig.pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                DATABASE_URL: "postgres://postgres:pass@postgres:5432/postgres?sslmode=disable",
+                CARDMARKET_PRICE_SYNC_ENABLED: "true",
+                CARDMARKET_PRICE_SYNC_INTERVAL_MS: "1800000",
+                CARDMARKET_PRICE_BATCH_LIMIT: "50",
+              },
+            }),
+          ),
+        ),
+      ),
+    );
+    expect(config.cardmarketPriceSyncEnabled).toBe(true);
+    expect(config.tcgdexSyncEnabled).toBe(false);
+    expect(config.databaseUrl).toBe(
+      "postgres://postgres:pass@postgres:5432/postgres?sslmode=disable",
+    );
+    expect(config.cardmarketPriceSyncIntervalMs).toBe(1_800_000);
+    expect(config.cardmarketPriceBatchLimit).toBe(50);
+  });
+
+  it("fails with ServiceConfigError when CARDMARKET_PRICE_SYNC_ENABLED=true but DATABASE_URL is missing", async () => {
+    const error = await Effect.runPromise(
+      Effect.flip(
+        loadWorkerConfig.pipe(
+          Effect.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({ env: { CARDMARKET_PRICE_SYNC_ENABLED: "1" } }),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(error).toBeInstanceOf(ServiceConfigError);
+    expect(error.key).toBe("DATABASE_URL");
+  });
+
+  it.each(["0", "-60000", "abc"])(
+    "fails with ServiceConfigError for invalid CARDMARKET_PRICE_SYNC_INTERVAL_MS=%s",
+    async (raw) => {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          loadWorkerConfig.pipe(
+            Effect.provide(
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({ env: { CARDMARKET_PRICE_SYNC_INTERVAL_MS: raw } }),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(error).toBeInstanceOf(ServiceConfigError);
+      expect(error.key).toBe("CARDMARKET_PRICE_SYNC_INTERVAL_MS");
+    },
+  );
+
+  it.each(["0", "-1", "201", "abc"])(
+    "fails with ServiceConfigError for invalid CARDMARKET_PRICE_BATCH_LIMIT=%s",
+    async (raw) => {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          loadWorkerConfig.pipe(
+            Effect.provide(
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({ env: { CARDMARKET_PRICE_BATCH_LIMIT: raw } }),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(error).toBeInstanceOf(ServiceConfigError);
+      expect(error.key).toBe("CARDMARKET_PRICE_BATCH_LIMIT");
+    },
+  );
+
+  it("accepts the boundary batch limits 1 and 200", async () => {
+    for (const raw of ["1", "200"]) {
+      const config = await Effect.runPromise(
+        loadWorkerConfig.pipe(
+          Effect.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({ env: { CARDMARKET_PRICE_BATCH_LIMIT: raw } }),
+            ),
+          ),
+        ),
+      );
+      expect(config.cardmarketPriceBatchLimit).toBe(Number(raw));
+    }
   });
 });
