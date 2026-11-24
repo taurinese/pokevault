@@ -267,16 +267,35 @@ describe("BinderGridScreen (03) — grille virtualisée 3 colonnes", () => {
     expect(countOccurrences(html, "grid grid-cols-3")).toBe(6);
   });
 
-  it("chaque carte est un <button> accessible avec ratio 63/88 et vignette low.webp", async () => {
+  it("chaque carte est un <button> accessible annonçant l'état (possédée / doublon / manquante), ratio 63/88 et low.webp", async () => {
     const html = await renderView(makeState());
     expect(html).toContain("<button");
     expect(html).toContain('data-testid="binder-card"');
-    expect(html).toContain('aria-label="Ouvrir la fiche de Carte 1 (n° 1)"');
+    expect(html).toContain(
+      'aria-label="Ouvrir la fiche de Carte 1 (n° 1) — Carte possédée : Carte 1"',
+    );
+    expect(html).toContain(
+      'aria-label="Ouvrir la fiche de Carte 2 (n° 2) — Carte en 3 exemplaires : Carte 2"',
+    );
+    expect(html).toContain(
+      'aria-label="Ouvrir la fiche de Carte 3 (n° 3) — Carte manquante : Carte 3 — Carte en wishlist"',
+    );
+    expect(html).toContain(
+      'aria-label="Ouvrir la fiche de Carte 5 (n° 5) — Carte manquante : Carte 5"',
+    );
     expect(html).toContain(`aspect-ratio:${CardAspectRatio}`);
     expect(html).toContain('src="https://assets.tcgdex.net/fr/sv/sv03.5/1/low.webp"');
     // Pied de tuile : #localId en font-mono tabular-nums + nom tronqué 1 ligne.
     expect(html).toMatch(/font-mono text-\[11px\] tabular-nums[^"]*"[^>]*>#1</);
     expect(html).toContain("truncate text-xs font-semibold text-primary");
+  });
+
+  it("classeur vide sans filtre : notice dédiée sans bouton Réinitialiser", async () => {
+    const emptyBinder = { ...setPayload, cards: [] };
+    const html = await renderView(makeState({ load: { status: "ready", payload: emptyBinder } }));
+    expect(html).toContain('data-testid="binder-grid-empty"');
+    expect(html).toContain("Ce classeur est vide");
+    expect(html).not.toContain('data-testid="empty-reset"');
   });
 
   it("priority sur les 9 premières cartes (eager), lazy ensuite", async () => {

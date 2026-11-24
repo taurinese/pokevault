@@ -320,6 +320,9 @@ export const fr = {
   "binderGrid.empty.title": "Aucune carte à afficher",
   "binderGrid.empty.description":
     "Aucune carte ne correspond aux filtres actifs. Élargissez ou réinitialisez les filtres.",
+  "binderGrid.empty.binderTitle": "Ce classeur est vide",
+  "binderGrid.empty.binderDescription":
+    "Ajoutez des cartes depuis la recherche ou une extension pour remplir ce classeur.",
   "binderGrid.empty.reset": "Réinitialiser les filtres",
 } as const;
 

@@ -203,7 +203,7 @@ const BinderHeader = ({
       className="sticky top-0 z-20 shrink-0 border-b border-line bg-canvas/95 px-4 pb-3 backdrop-blur"
       style={{ paddingTop: "calc(0.75rem + var(--safe-area-inset-top))" }}
     >
-      <h1 className="sr-only">{t("binderGrid.heading")}</h1>
+      {binder === null ? <h1 className="sr-only">{t("binderGrid.heading")}</h1> : null}
       <div className="flex items-center gap-2">
         <Link
           to="/collection"
@@ -221,9 +221,9 @@ const BinderHeader = ({
             />
           ) : (
             <>
-              <p data-testid="binder-title" className="truncate text-base font-bold text-primary">
+              <h1 data-testid="binder-title" className="truncate text-base font-bold text-primary">
                 {binder.title}
-              </p>
+              </h1>
               <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
                 {binder.setCode === null ? null : (
                   <span
@@ -361,115 +361,122 @@ const FiltersBar = ({
     readonly rarities: ReadonlyArray<string>;
     readonly types: ReadonlyArray<string>;
   };
-}) => (
-  <>
-    <fieldset className="flex shrink-0 items-center gap-2 overflow-x-auto px-4 py-2.5">
-      <legend className="sr-only">{t("binderGrid.filters.label")}</legend>
-      {QUICK_FILTERS.map((filter) => {
-        const active = state.quickFilter === filter.id;
-        return (
-          <button
-            key={filter.id}
-            type="button"
-            data-testid={`quick-filter-${filter.id}`}
-            aria-pressed={active}
-            onClick={() => actions.onQuickFilterChange(filter.id)}
-            className={quickPillClass(active)}
-          >
-            {t(filter.labelKey)}
-            <span className="font-mono text-xs tabular-nums opacity-70">
-              {countBinderGridQuickFilter(cards, filter.id)}
-            </span>
-          </button>
-        );
-      })}
-      <button
-        type="button"
-        data-testid="advanced-toggle"
-        aria-expanded={state.advancedOpen}
-        aria-controls="binder-advanced-filters"
-        onClick={actions.onToggleAdvanced}
-        className={quickPillClass(state.advancedOpen)}
-      >
-        <SlidersHorizontal size={14} aria-hidden="true" />
-        {t("binderGrid.advanced.toggle")}
-      </button>
-    </fieldset>
-    {state.advancedOpen ? (
-      <section
-        id="binder-advanced-filters"
-        data-testid="advanced-filters"
-        aria-label={t("binderGrid.advanced.heading")}
-        className="mx-4 mb-2 flex shrink-0 flex-col gap-3 rounded-sheet border border-line bg-surface-1 p-3 shadow-card"
-      >
-        <h2 className="text-xs font-semibold tracking-wide text-muted uppercase">
-          {t("binderGrid.advanced.heading")}
-        </h2>
-        <div className="grid grid-cols-2 gap-2">
-          <FilterSelect
-            id="advanced-rarity"
-            label={t("binderGrid.advanced.rarity")}
-            value={state.advanced.rarity ?? ""}
-            options={facets.rarities.map((rarity) => ({ value: rarity, label: rarity }))}
-            onChange={(value) =>
-              actions.onAdvancedChange({
-                ...state.advanced,
-                rarity: value === "" ? null : value,
-              })
-            }
-          />
-          <FilterSelect
-            id="advanced-type"
-            label={t("binderGrid.advanced.type")}
-            value={state.advanced.type ?? ""}
-            options={facets.types.map((type) => ({ value: type, label: type }))}
-            onChange={(value) =>
-              actions.onAdvancedChange({ ...state.advanced, type: value === "" ? null : value })
-            }
-          />
-          <FilterSelect
-            id="advanced-language"
-            label={t("binderGrid.advanced.language")}
-            value={state.advanced.language ?? ""}
-            options={LANGUAGES.map((language) => ({
-              value: language,
-              label: t(LANGUAGE_LABELS[language]),
-            }))}
-            onChange={(value) =>
-              actions.onAdvancedChange({
-                ...state.advanced,
-                language: value === "" ? null : (value as CardLanguage),
-              })
-            }
-          />
-          <FilterSelect
-            id="advanced-variant"
-            label={t("binderGrid.advanced.variant")}
-            value={state.advanced.variant ?? ""}
-            options={VARIANTS.map((variant) => ({
-              value: variant,
-              label: t(VARIANT_LABELS[variant]),
-            }))}
-            onChange={(value) =>
-              actions.onAdvancedChange({
-                ...state.advanced,
-                variant: value === "" ? null : (value as CardVariant),
-              })
-            }
-          />
-        </div>
+}) => {
+  const counts = useMemo(
+    () =>
+      Object.fromEntries(
+        QUICK_FILTERS.map((filter) => [filter.id, countBinderGridQuickFilter(cards, filter.id)]),
+      ) as Record<BinderGridQuickFilter, number>,
+    [cards],
+  );
+  return (
+    <>
+      <fieldset className="flex shrink-0 items-center gap-2 overflow-x-auto px-4 py-2.5">
+        <legend className="sr-only">{t("binderGrid.filters.label")}</legend>
+        {QUICK_FILTERS.map((filter) => {
+          const active = state.quickFilter === filter.id;
+          return (
+            <button
+              key={filter.id}
+              type="button"
+              data-testid={`quick-filter-${filter.id}`}
+              aria-pressed={active}
+              onClick={() => actions.onQuickFilterChange(filter.id)}
+              className={quickPillClass(active)}
+            >
+              {t(filter.labelKey)}
+              <span className="font-mono text-xs tabular-nums opacity-70">{counts[filter.id]}</span>
+            </button>
+          );
+        })}
         <button
           type="button"
-          data-testid="advanced-reset"
-          onClick={actions.onResetFilters}
-          className={`self-start text-sm font-semibold text-gold ${focusRing} min-h-11 rounded-pill px-3`}
+          data-testid="advanced-toggle"
+          aria-expanded={state.advancedOpen}
+          aria-controls="binder-advanced-filters"
+          onClick={actions.onToggleAdvanced}
+          className={quickPillClass(state.advancedOpen)}
         >
-          {t("binderGrid.advanced.reset")}
+          <SlidersHorizontal size={14} aria-hidden="true" />
+          {t("binderGrid.advanced.toggle")}
         </button>
-      </section>
-    ) : null}
-  </>
-);
+      </fieldset>
+      {state.advancedOpen ? (
+        <section
+          id="binder-advanced-filters"
+          data-testid="advanced-filters"
+          aria-label={t("binderGrid.advanced.heading")}
+          className="mx-4 mb-2 flex shrink-0 flex-col gap-3 rounded-sheet border border-line bg-surface-1 p-3 shadow-card"
+        >
+          <h2 className="text-xs font-semibold tracking-wide text-muted uppercase">
+            {t("binderGrid.advanced.heading")}
+          </h2>
+          <div className="grid grid-cols-2 gap-2">
+            <FilterSelect
+              id="advanced-rarity"
+              label={t("binderGrid.advanced.rarity")}
+              value={state.advanced.rarity ?? ""}
+              options={facets.rarities.map((rarity) => ({ value: rarity, label: rarity }))}
+              onChange={(value) =>
+                actions.onAdvancedChange({
+                  ...state.advanced,
+                  rarity: value === "" ? null : value,
+                })
+              }
+            />
+            <FilterSelect
+              id="advanced-type"
+              label={t("binderGrid.advanced.type")}
+              value={state.advanced.type ?? ""}
+              options={facets.types.map((type) => ({ value: type, label: type }))}
+              onChange={(value) =>
+                actions.onAdvancedChange({ ...state.advanced, type: value === "" ? null : value })
+              }
+            />
+            <FilterSelect
+              id="advanced-language"
+              label={t("binderGrid.advanced.language")}
+              value={state.advanced.language ?? ""}
+              options={LANGUAGES.map((language) => ({
+                value: language,
+                label: t(LANGUAGE_LABELS[language]),
+              }))}
+              onChange={(value) =>
+                actions.onAdvancedChange({
+                  ...state.advanced,
+                  language: value === "" ? null : (value as CardLanguage),
+                })
+              }
+            />
+            <FilterSelect
+              id="advanced-variant"
+              label={t("binderGrid.advanced.variant")}
+              value={state.advanced.variant ?? ""}
+              options={VARIANTS.map((variant) => ({
+                value: variant,
+                label: t(VARIANT_LABELS[variant]),
+              }))}
+              onChange={(value) =>
+                actions.onAdvancedChange({
+                  ...state.advanced,
+                  variant: value === "" ? null : (value as CardVariant),
+                })
+              }
+            />
+          </div>
+          <button
+            type="button"
+            data-testid="advanced-reset"
+            onClick={actions.onResetFilters}
+            className={`self-start text-sm font-semibold text-gold ${focusRing} min-h-11 rounded-pill px-3`}
+          >
+            {t("binderGrid.advanced.reset")}
+          </button>
+        </section>
+      ) : null}
+    </>
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Tuile de la grille (bouton accessible 63/88 → `onSelectCard`, prêt T4.2)
@@ -487,16 +494,24 @@ const GridCard = ({
   const tile = cardTileStateFor(card.totalQuantity);
   const missing = tile.state === "missing";
   const duplicateCount = tile.state === "duplicate" ? tile.count : 0;
-  const ariaLabel = t("binderGrid.card.open", { name: card.nameFr, localId: card.localId });
+  const ownershipLabel =
+    tile.state === "duplicate"
+      ? tPlural("cardTile.duplicate", duplicateCount, { name: card.nameFr })
+      : missing
+        ? t("cardTile.missing", { name: card.nameFr })
+        : t("cardTile.owned", { name: card.nameFr });
+  const baseAriaLabel = `${t("binderGrid.card.open", { name: card.nameFr, localId: card.localId })} — ${ownershipLabel}`;
+  const ariaLabel =
+    missing && card.inWishlist
+      ? `${baseAriaLabel} — ${t("binderGrid.card.wishlist")}`
+      : baseAriaLabel;
   return (
     <button
       type="button"
       data-testid="binder-card"
       data-card-id={card.id}
       data-state={tile.state}
-      aria-label={
-        missing && card.inWishlist ? `${ariaLabel} — ${t("binderGrid.card.wishlist")}` : ariaLabel
-      }
+      aria-label={ariaLabel}
       onClick={() => onSelectCard(card)}
       className={`flex min-w-0 flex-col gap-1 rounded-card text-left ${
         missing ? "border border-dashed border-line" : "border border-transparent"
@@ -567,6 +582,8 @@ const GridBody = ({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW_HEIGHT_PX,
+    // Cohérent avec `gap-2.5` (10 px) entre les colonnes et dans le repli SSR.
+    gap: 10,
     overscan: 4,
   });
   const virtualRows = virtualizer.getVirtualItems();
@@ -673,8 +690,16 @@ export const BinderGridView = ({ state, actions }: BinderGridViewProps) => {
             <CenteredNotice
               testId="binder-grid-empty"
               icon={<SearchX size={28} />}
-              title={t("binderGrid.empty.title")}
-              description={t("binderGrid.empty.description")}
+              title={
+                allCards.length === 0
+                  ? t("binderGrid.empty.binderTitle")
+                  : t("binderGrid.empty.title")
+              }
+              description={
+                allCards.length === 0
+                  ? t("binderGrid.empty.binderDescription")
+                  : t("binderGrid.empty.description")
+              }
             >
               {filtersActive ? (
                 <button
