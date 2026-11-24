@@ -29,6 +29,7 @@ export const oauthLoginHref = (provider: OAuthProvider, redirectTo?: string): st
 // ---------------------------------------------------------------------------
 
 export const ACCOUNT_PATH = "/account";
+export const SEARCH_PATH = "/search";
 export const AUTH_LINK_API_PATH = "/api/auth/link";
 export const AUTH_LOGOUT_API_PATH = "/api/auth/logout";
 

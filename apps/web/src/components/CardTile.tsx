@@ -20,6 +20,11 @@ export type CardTileState = "owned" | "duplicate" | "missing";
 export type CardTileProps = CardTileOwnership & {
   /** Nom de la carte (utilisé dans le libellé accessible). */
   readonly name: string;
+  /**
+   * Libellé accessible explicite (remplace celui dérivé de la possession), pour
+   * les contextes où la possession est inconnue ou sans objet (ex. recherche du catalogue).
+   */
+  readonly label?: string | undefined;
   readonly imageUrl?: string | undefined;
   /** Compteur du mode saisie rafale (badge doré `+N`). */
   readonly burstCount?: number | undefined;
@@ -52,11 +57,13 @@ export const CardTile = (props: CardTileProps) => {
   }, [imageUrl]);
 
   const baseLabel =
-    duplicateCount !== undefined
-      ? tPlural("cardTile.duplicate", duplicateCount, { name })
-      : isMissing
-        ? t("cardTile.missing", { name })
-        : t("cardTile.owned", { name });
+    props.label !== undefined
+      ? props.label
+      : duplicateCount !== undefined
+        ? tPlural("cardTile.duplicate", duplicateCount, { name })
+        : isMissing
+          ? t("cardTile.missing", { name })
+          : t("cardTile.owned", { name });
   const label = hasBurst
     ? `${baseLabel} — ${t("cardTile.burst", { count: burstCount })}`
     : baseLabel;
