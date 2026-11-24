@@ -23,6 +23,8 @@ export type CardTileProps = CardTileOwnership & {
   readonly imageUrl?: string | undefined;
   /** Compteur du mode saisie rafale (badge doré `+N`). */
   readonly burstCount?: number | undefined;
+  /** Visuel au-dessus de la ligne de flottaison : chargement `eager` au lieu de `lazy`. */
+  readonly priority?: boolean | undefined;
 };
 
 /**
@@ -34,7 +36,7 @@ export type CardTileProps = CardTileOwnership & {
  * Zéro couleur hex brute : uniquement des tokens.
  */
 export const CardTile = (props: CardTileProps) => {
-  const { name, imageUrl, burstCount } = props;
+  const { name, imageUrl, burstCount, priority = false } = props;
   const duplicateCount = props.state === "duplicate" && props.count >= 2 ? props.count : undefined;
   const isMissing = props.state === "missing";
   const hasBurst = burstCount !== undefined && burstCount > 0;
@@ -72,7 +74,7 @@ export const CardTile = (props: CardTileProps) => {
           ref={imageRef}
           src={imageUrl}
           alt=""
-          loading="lazy"
+          loading={priority ? "eager" : "lazy"}
           decoding="async"
           onError={() => setFailedUrl(imageUrl)}
           className="h-full w-full object-cover"
