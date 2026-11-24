@@ -31,7 +31,8 @@ export const parseSyncCatalogArgs = (args: ReadonlyArray<string>): SyncCatalogCl
 
 /**
  * One-shot catalog sync job (bootstrap): synchronizes the TCGdex catalogue into
- * Postgres and completes with a process exit code (0 = success, 1 = failure).
+ * Postgres and completes with a process exit code (0 = success, 1 = failure,
+ * including when at least one set failed to sync).
  * `DATABASE_URL` is required; `--set=<id>` restricts the import to given sets.
  */
 export const runSyncCatalogCli = (args: ReadonlyArray<string>): Effect.Effect<number, never> =>
@@ -77,10 +78,25 @@ export const runSyncCatalogCli = (args: ReadonlyArray<string>): Effect.Effect<nu
         seriesCount: report.seriesCount,
         setsCount: report.setsCount,
         cardsCount: report.cardsCount,
+        failedCards: report.failedCards,
         failedSets: report.failedSets.length,
         durationMs: report.durationMs,
       }),
     );
+    if (setIds !== undefined && report.setsCount + report.failedSets.length === 0) {
+      yield* Effect.logWarning("sync.catalog.no_set_synced").pipe(
+        Effect.annotateLogs({
+          setIds: setIds.join(","),
+          hint: "unknown set id (--set=) or set of an excluded series",
+        }),
+      );
+    }
+    if (report.failedSets.length > 0) {
+      yield* Effect.logError("sync.catalog.failed_sets").pipe(
+        Effect.annotateLogs({ failedSets: report.failedSets.join(",") }),
+      );
+      return 1;
+    }
     return 0;
   });
 

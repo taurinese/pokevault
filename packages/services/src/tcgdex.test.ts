@@ -1,14 +1,16 @@
-import { Effect, Fiber, type Layer } from "effect";
+import { Duration, Effect, Fiber, type Layer, Schedule } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import {
   fetchTransport,
   makeTcgdexClient,
+  TCGDEX_MAX_RETRY_DELAY,
   TcgdexClient,
   TcgdexClientLive,
   TcgdexDecodeError,
   TcgdexHttpError,
   type TcgdexTransport,
+  tcgdexRetrySchedule,
 } from "./tcgdex.ts";
 
 // ---------------------------------------------------------------------------
@@ -321,6 +323,66 @@ describe("makeTcgdexClient / TcgdexClientLive", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("passes an AbortSignal to fetch and aborts the in-flight request on timeout", async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((_url: unknown, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return new Promise<Response>(() => {});
+    }) as typeof fetch;
+    try {
+      const transport = fetchTransport(50);
+      const error = await Effect.runPromise(
+        Effect.flip(withTestClock(transport(`${BASE}/fr/series`))),
+      );
+      expect(error).toBeInstanceOf(TcgdexHttpError);
+      expect((error as TcgdexHttpError).status).toBe(0);
+      expect(signals).toHaveLength(1);
+      const signal = signals[0];
+      expect(signal).toBeInstanceOf(AbortSignal);
+      // The timeout interrupted the fetch fiber → the socket request was aborted.
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("still retries after a 10 s request timeout (retry schedule is not capped by elapsed time)", async () => {
+    let attempts = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      attempts += 1;
+      return attempts < 3
+        ? new Promise<Response>(() => {})
+        : Promise.resolve(new Response(JSON.stringify(SERIES_FR), { status: 200 }));
+    }) as typeof fetch;
+    try {
+      const client = makeTcgdexClient({ baseUrl: BASE, maxRetries: 5 }); // default 10 s timeout
+      const series = await Effect.runPromise(withTestClock(client.listSeries("fr")));
+      expect(series).toEqual(SERIES_FR);
+      expect(attempts).toBe(3); // two 10 s timeouts, then success
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("caps each retry delay at 5 s (exponential backoff, jittered)", async () => {
+    const delays = await Effect.runPromise(
+      Effect.gen(function* () {
+        const step = yield* Schedule.toStep(tcgdexRetrySchedule);
+        const collected: Array<number> = [];
+        for (let index = 0; index < 12; index++) {
+          const [, delay] = yield* step(index * 1_000, undefined);
+          collected.push(Duration.toMillis(delay));
+        }
+        return collected;
+      }),
+    );
+    expect(Duration.toMillis(Duration.fromInputUnsafe(TCGDEX_MAX_RETRY_DELAY))).toBe(5_000);
+    for (const delay of delays) expect(delay).toBeLessThanOrEqual(5_000);
+    expect(Math.max(...delays)).toBeGreaterThan(100); // grows beyond the first step
   });
 
   it("maps fetch rejections to a retryable transport-level TcgdexHttpError", async () => {

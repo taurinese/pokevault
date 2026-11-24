@@ -137,10 +137,11 @@ export interface TcgdexVariants {
 /**
  * Maps the TCGdex `variants` summary to the SQL `available_variants` array.
  *
- * `wPromo` → `"promo"`; `firstEdition` printings are folded into `"promo"` as
- * well because the CHECK constraint has no dedicated first-edition variant.
- * The result is deduplicated and sorted in {@link CARD_VARIANT_ORDER} order so
- * it is stable across syncs (idempotent upserts).
+ * Only `normal`, `reverse`, `holo` and `wPromo` (→ `"promo"`) are mapped:
+ * `firstEdition` printings are ignored because the CHECK constraint has no
+ * first-edition variant and they are not promos. The result is deduplicated
+ * and sorted in {@link CARD_VARIANT_ORDER} order so it is stable across syncs
+ * (idempotent upserts).
  */
 export const extractAvailableVariants = (
   variants?: TcgdexVariants | undefined,
@@ -150,7 +151,7 @@ export const extractAvailableVariants = (
   if (variants.normal === true) selected.add("normal");
   if (variants.reverse === true) selected.add("reverse");
   if (variants.holo === true) selected.add("holo");
-  if (variants.wPromo === true || variants.firstEdition === true) selected.add("promo");
+  if (variants.wPromo === true) selected.add("promo");
   return CARD_VARIANT_ORDER.filter((variant) => selected.has(variant));
 };
 
@@ -176,8 +177,9 @@ export interface TeraTextEntry {
 }
 
 // Word-boundary match on "tera" / "téra" and its compounds (téracristal,
-// teracrystal, terastallized, terastal...). "Terapagos" does NOT match.
-const TERA_PATTERN = /\bt[ée]ra(?:cristal|crystal|stall\w*)?\b/i;
+// téracristallisé, teracrystal, terastal, terastallized...). "Terapagos" does
+// NOT match.
+const TERA_PATTERN = /\bt[ée]ra(?:cristal\w*|crystal\w*|stal\w*)?\b/i;
 
 /**
  * Detects Téracristal / Tera cards (e.g. `Orbe Téracristal`, `Tera Orb`,

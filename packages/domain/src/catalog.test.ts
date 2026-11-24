@@ -160,7 +160,8 @@ describe("extractAvailableVariants", () => {
       "holo",
     ]);
     expect(extractAvailableVariants({ wPromo: true })).toEqual(["promo"]);
-    expect(extractAvailableVariants({ firstEdition: true })).toEqual(["promo"]);
+    // first-edition printings are NOT promos
+    expect(extractAvailableVariants({ firstEdition: true })).toEqual([]);
   });
 
   it("deduplicates and sorts in canonical order", () => {
@@ -173,6 +174,7 @@ describe("extractAvailableVariants", () => {
         firstEdition: true,
       }),
     ).toEqual(["normal", "reverse", "holo", "promo"]);
+    expect(extractAvailableVariants({ normal: true, firstEdition: true })).toEqual(["normal"]);
     expect(CARD_VARIANT_ORDER).toEqual([
       "normal",
       "reverse",
@@ -196,6 +198,9 @@ describe("detectIsTera", () => {
     expect(detectIsTera({ name: "Tera Orb" })).toBe(true);
     expect(detectIsTera({ stage: "TéraCristal" })).toBe(true);
     expect(detectIsTera({ stage: "Terastallized" })).toBe(true);
+    expect(detectIsTera({ stage: "Téracristallisé" })).toBe(true);
+    expect(detectIsTera({ description: "Pokémon téracristallisé" })).toBe(true);
+    expect(detectIsTera({ description: "Pokémon Terastal" })).toBe(true);
     expect(detectIsTera({ description: "Pokémon Téracristal" })).toBe(true);
     expect(detectIsTera({ suffix: "ex", name: "Pikachu ex", stage: "Terastallized" })).toBe(true);
   });

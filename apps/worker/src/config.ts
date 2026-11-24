@@ -1,11 +1,8 @@
-import { ServiceConfigError } from "@pokevault/services";
+import { DEFAULT_TCGDEX_BASE_URL, ServiceConfigError } from "@pokevault/services";
 import { Config, Effect, Option } from "effect";
 
 /** Default delay between two heartbeat ticks (30 s). */
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
-
-/** Default TCGdex v2 API root. */
-export const DEFAULT_TCGDEX_BASE_URL = "https://api.tcgdex.net/v2";
 
 /** Default catalog sync interval: once every 24 h. */
 export const DEFAULT_TCGDEX_SYNC_INTERVAL_MS = 86_400_000;

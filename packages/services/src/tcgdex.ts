@@ -184,6 +184,21 @@ export class TcgdexClient extends Context.Service<TcgdexClient, TcgdexClientShap
  */
 export type TcgdexTransport = (url: string) => Effect.Effect<string, TcgdexHttpError>;
 
+/** Maximum wait between two retries (each delay is capped, not the total elapsed time). */
+export const TCGDEX_MAX_RETRY_DELAY = "5 seconds";
+
+/**
+ * Retry schedule: jittered exponential backoff (200 ms, 400 ms, ...) whose
+ * *per-retry* delay is capped at {@link TCGDEX_MAX_RETRY_DELAY} (the cap is
+ * applied after the jitter, so the bound is strict). The number of
+ * retries is bounded separately (`times`), so a long request timeout can never
+ * cancel the remaining retries.
+ */
+export const tcgdexRetrySchedule = Schedule.min([
+  Schedule.jittered(Schedule.exponential("200 millis")),
+  Schedule.spaced(TCGDEX_MAX_RETRY_DELAY),
+]);
+
 export interface TcgdexClientConfig {
   /** e.g. `https://api.tcgdex.net/v2`. */
   readonly baseUrl: string;
@@ -199,12 +214,19 @@ export const DEFAULT_TCGDEX_BASE_URL = "https://api.tcgdex.net/v2";
 export const DEFAULT_TCGDEX_TIMEOUT_MS = 10_000;
 export const DEFAULT_TCGDEX_MAX_RETRIES = 5;
 
-/** Real transport backed by the global `fetch` (Node >= 18). */
+/**
+ * Real transport backed by the global `fetch` (Node >= 18). The Effect
+ * `AbortSignal` is forwarded to `fetch`, so `Effect.timeout` (or any fiber
+ * interruption) really aborts the HTTP request and releases the socket.
+ */
 export const fetchTransport = (timeoutMs: number): TcgdexTransport => {
   const transport: TcgdexTransport = (url) =>
     Effect.tryPromise({
-      try: async () => {
-        const response = await fetch(url, { headers: { accept: "application/json" } });
+      try: async (signal) => {
+        const response = await fetch(url, {
+          signal,
+          headers: { accept: "application/json" },
+        });
         const body = await response.text();
         if (!response.ok) {
           throw new TcgdexHttpError({
@@ -234,8 +256,8 @@ export const fetchTransport = (timeoutMs: number): TcgdexTransport => {
 
 /**
  * Builds a {@link TcgdexClientShape} from a config. Every request is decoded
- * through an `Effect.Schema` at the boundary and retried with an exponential,
- * jittered, bounded backoff on retryable HTTP failures only.
+ * through an `Effect.Schema` at the boundary and retried with a jittered
+ * exponential backoff (per-retry delay capped) on retryable HTTP failures only.
  */
 export const makeTcgdexClient = (config: TcgdexClientConfig): TcgdexClientShape => {
   const baseUrl = config.baseUrl.replace(/\/+$/, "");
@@ -265,10 +287,7 @@ export const makeTcgdexClient = (config: TcgdexClientConfig): TcgdexClientShape 
     return Effect.retry(raw, {
       while: (error) => error._tag === "TcgdexHttpError" && error.retryable,
       times: maxRetries,
-      schedule: Schedule.exponential("100 millis").pipe(
-        Schedule.jittered,
-        Schedule.upTo({ duration: "5 seconds" }),
-      ),
+      schedule: tcgdexRetrySchedule,
     });
   };
 

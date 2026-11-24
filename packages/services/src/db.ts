@@ -50,20 +50,6 @@ export const DatabaseLive = (options: DatabaseLiveOptions): Layer.Layer<Database
           connect_timeout: 10,
         }),
       ),
-      (sql) => Effect.promise(() => sql.end({ timeout: 5 })),
+      (sql) => Effect.tryPromise(() => sql.end({ timeout: 5 })).pipe(Effect.ignore),
     ).pipe(Effect.map((sql) => ({ sql }))),
-  );
-
-/**
- * Runs a query against the injected {@link Database} and maps any failure to a
- * typed {@link DatabaseError}.
- */
-export const runQuery = <A>(
-  query: (sql: Sql) => Promise<A>,
-): Effect.Effect<A, DatabaseError, Database> =>
-  Effect.flatMap(Database, (db) =>
-    Effect.tryPromise({
-      try: () => query(db.sql),
-      catch: (cause) => new DatabaseError({ message: "postgres query failed", cause }),
-    }),
   );

@@ -126,6 +126,7 @@ describe("runWorker", () => {
       seriesCount: 19,
       setsCount: 203,
       cardsCount: 20_000,
+      failedCards: 0,
       failedSets: [],
       durationMs: 42,
     };
@@ -168,6 +169,7 @@ describe("runWorker", () => {
       seriesCount: 1,
       setsCount: 1,
       cardsCount: 2,
+      failedCards: 1,
       failedSets: ["sv08"],
       durationMs: 7,
     };
@@ -212,6 +214,7 @@ describe("catalogSyncLoop", () => {
         seriesCount: 0,
         setsCount: 0,
         cardsCount: 0,
+        failedCards: 0,
         failedSets: [],
         durationMs: 0,
       } satisfies CatalogSyncReport;

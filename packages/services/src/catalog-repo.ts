@@ -9,7 +9,10 @@ import { Database, DatabaseError, type Sql } from "./db.ts";
 /**
  * Persistence port for the TCGdex catalogue tables (`catalog_series`,
  * `catalog_sets`, `catalog_cards`). Every upsert is idempotent
- * (`INSERT ... ON CONFLICT (id) DO UPDATE SET ...`) and batched.
+ * (`INSERT ... ON CONFLICT (id) DO UPDATE SET ... WHERE ... IS DISTINCT FROM ...`,
+ * so unchanged rows are never rewritten) and batched by {@link UPSERT_BATCH_SIZE}.
+ * Callers must pass rows already deduplicated by `id` (Postgres cannot update
+ * the same row twice in one statement) and by `(set_id, local_id)`.
  */
 export interface CatalogRepositoryShape {
   readonly upsertSeries: (
@@ -78,6 +81,8 @@ export const CatalogRepositoryLive: Layer.Layer<CatalogRepository, never, Databa
             name_fr = EXCLUDED.name_fr,
             name_en = EXCLUDED.name_en,
             release_order = EXCLUDED.release_order
+          WHERE (catalog_series.name_fr, catalog_series.name_en, catalog_series.release_order)
+            IS DISTINCT FROM (EXCLUDED.name_fr, EXCLUDED.name_en, EXCLUDED.release_order)
         `,
         ),
       upsertSets: (rows) =>
@@ -109,6 +114,29 @@ export const CatalogRepositoryLive: Layer.Layer<CatalogRepository, never, Databa
             release_date = EXCLUDED.release_date,
             official_count = EXCLUDED.official_count,
             total_count = EXCLUDED.total_count
+          WHERE (
+            catalog_sets.series_id,
+            catalog_sets.code,
+            catalog_sets.cardmarket_code,
+            catalog_sets.name_fr,
+            catalog_sets.name_en,
+            catalog_sets.logo_url,
+            catalog_sets.symbol_url,
+            catalog_sets.release_date,
+            catalog_sets.official_count,
+            catalog_sets.total_count
+          ) IS DISTINCT FROM (
+            EXCLUDED.series_id,
+            EXCLUDED.code,
+            EXCLUDED.cardmarket_code,
+            EXCLUDED.name_fr,
+            EXCLUDED.name_en,
+            EXCLUDED.logo_url,
+            EXCLUDED.symbol_url,
+            EXCLUDED.release_date,
+            EXCLUDED.official_count,
+            EXCLUDED.total_count
+          )
         `,
         ),
       upsertCards: (rows) =>
@@ -150,6 +178,39 @@ export const CatalogRepositoryLive: Layer.Layer<CatalogRepository, never, Databa
             available_variants = EXCLUDED.available_variants,
             cardmarket_product_id = EXCLUDED.cardmarket_product_id,
             cardmarket_url = EXCLUDED.cardmarket_url
+          WHERE (
+            catalog_cards.set_id,
+            catalog_cards.local_id,
+            catalog_cards.local_id_numeric,
+            catalog_cards.name_fr,
+            catalog_cards.name_en,
+            catalog_cards.rarity,
+            catalog_cards.holo_effect,
+            catalog_cards.category,
+            catalog_cards.types,
+            catalog_cards.hp,
+            catalog_cards.illustrator,
+            catalog_cards.image_base_url,
+            catalog_cards.available_variants,
+            catalog_cards.cardmarket_product_id,
+            catalog_cards.cardmarket_url
+          ) IS DISTINCT FROM (
+            EXCLUDED.set_id,
+            EXCLUDED.local_id,
+            EXCLUDED.local_id_numeric,
+            EXCLUDED.name_fr,
+            EXCLUDED.name_en,
+            EXCLUDED.rarity,
+            EXCLUDED.holo_effect,
+            EXCLUDED.category,
+            EXCLUDED.types,
+            EXCLUDED.hp,
+            EXCLUDED.illustrator,
+            EXCLUDED.image_base_url,
+            EXCLUDED.available_variants,
+            EXCLUDED.cardmarket_product_id,
+            EXCLUDED.cardmarket_url
+          )
         `,
         ),
     } satisfies CatalogRepositoryShape;

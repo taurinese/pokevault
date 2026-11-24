@@ -81,6 +81,7 @@ export const catalogSyncLoop = (cron: CatalogSyncCron): Effect.Effect<never, unk
               seriesCount: report.seriesCount,
               setsCount: report.setsCount,
               cardsCount: report.cardsCount,
+              failedCards: report.failedCards,
               failedSets: report.failedSets.length,
               durationMs: report.durationMs,
             }),
