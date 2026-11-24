@@ -8,6 +8,8 @@
 --
 -- Cette migration est autonome (pas de dépendance à 001_*).
 
+BEGIN;
+
 -- ---------------------------------------------------------------------------
 -- Extensions
 -- ---------------------------------------------------------------------------
@@ -56,6 +58,7 @@ CREATE TABLE public.catalog_sets (
   release_date    date,
   official_count  integer NOT NULL DEFAULT 0 CHECK (official_count >= 0),
   total_count     integer NOT NULL DEFAULT 0 CHECK (total_count >= 0),
+  CHECK (total_count >= official_count),
   updated_at      timestamptz NOT NULL DEFAULT now()
 );
 
@@ -67,9 +70,10 @@ CREATE INDEX idx_catalog_sets_series_release
 -- ---------------------------------------------------------------------------
 CREATE TABLE public.catalog_cards (
   id                    text PRIMARY KEY,
-  set_id                text NOT NULL REFERENCES public.catalog_sets (id) ON DELETE CASCADE,
+  set_id                text NOT NULL REFERENCES public.catalog_sets (id) ON DELETE RESTRICT,
   local_id              text NOT NULL,
   local_id_numeric      integer,
+  UNIQUE (set_id, local_id),
   name_fr               text NOT NULL,
   name_en               text,
   rarity                text,
@@ -86,10 +90,11 @@ CREATE TABLE public.catalog_cards (
   cardmarket_product_id integer,
   cardmarket_url        text,
   search_vector         tsvector GENERATED ALWAYS AS (
-      setweight(to_tsvector('french',  coalesce(name_fr, '')),     'A')
-   || setweight(to_tsvector('english', coalesce(name_en, '')),     'B')
-   || setweight(to_tsvector('simple',  coalesce(local_id, '')),    'A')
-   || setweight(to_tsvector('simple',  coalesce(illustrator, '')), 'C')
+      setweight(to_tsvector('french',  coalesce(name_fr, '')),                  'A')
+   || setweight(to_tsvector('english', coalesce(name_en, '')),                  'B')
+   || setweight(to_tsvector('simple',  coalesce(local_id, '')),                 'A')
+   || setweight(to_tsvector('simple',  coalesce(local_id_numeric::text, '')),   'A')
+   || setweight(to_tsvector('simple',  coalesce(illustrator, '')),              'C')
   ) STORED,
   updated_at            timestamptz NOT NULL DEFAULT now()
 );
@@ -132,7 +137,7 @@ CREATE TRIGGER trg_catalog_cards_updated_at
 -- ---------------------------------------------------------------------------
 -- Droits & RLS : lecture authenticated, écriture service_role uniquement
 -- ---------------------------------------------------------------------------
-REVOKE ALL ON FUNCTION public.set_catalog_updated_at() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.set_catalog_updated_at() FROM PUBLIC, anon, authenticated;
 
 REVOKE ALL ON public.catalog_series, public.catalog_sets, public.catalog_cards
   FROM PUBLIC, anon, authenticated;
@@ -156,3 +161,5 @@ CREATE POLICY catalog_cards_select_authenticated ON public.catalog_cards
   FOR SELECT TO authenticated USING (true);
 -- Aucune politique INSERT/UPDATE/DELETE : `service_role` (BYPASSRLS) écrit,
 -- personne d'autre.
+
+COMMIT;

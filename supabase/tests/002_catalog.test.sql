@@ -1,7 +1,9 @@
 -- PokéVault — Tests d'intégration de la migration 002_catalog.sql.
 -- Exécution (superuser) : psql -v ON_ERROR_STOP=1 -f supabase/tests/002_catalog.test.sql
 -- Chaque bloc DO échoue (RAISE EXCEPTION) à la première assertion violée.
--- Les données de test sont nettoyées en fin de script.
+-- Isolé dans une transaction ROLLBACK : aucune donnée de test ne persiste.
+
+BEGIN;
 
 \echo '== 1. Insertion série / set / cartes =='
 DO $$
@@ -62,13 +64,25 @@ BEGIN
     RAISE EXCEPTION 'official_count >= 0 CHECK not enforced';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
+  BEGIN
+    INSERT INTO public.catalog_sets (id, series_id, name_fr, official_count, total_count)
+    VALUES ('bad-counts', 'sv', 'Bad', 165, 100);
+    RAISE EXCEPTION 'total_count >= official_count CHECK not enforced';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO public.catalog_cards (id, set_id, local_id, name_fr)
+    VALUES ('dup-local', 'sv03.5', '199', 'Doublon');
+    RAISE EXCEPTION 'UNIQUE (set_id, local_id) not enforced';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
 
-  SELECT updated_at INTO v_before FROM public.catalog_cards WHERE id = 'sv03.5-199';
-  PERFORM pg_sleep(0.05);
-  UPDATE public.catalog_cards SET rarity = 'SIR' WHERE id = 'sv03.5-199';
+  -- now() étant figé dans une transaction, on recule updated_at via une valeur connue
+  -- (le trigger écrase updated_at par now() à chaque UPDATE).
+  UPDATE public.catalog_cards SET updated_at = TIMESTAMPTZ '2000-01-01 00:00:00+00' WHERE id = 'sv03.5-199';
   SELECT updated_at INTO v_after FROM public.catalog_cards WHERE id = 'sv03.5-199';
-  IF v_after <= v_before THEN
-    RAISE EXCEPTION 'updated_at trigger did not advance the timestamp';
+  IF v_after <= TIMESTAMPTZ '2000-01-01 00:00:00+00' THEN
+    RAISE EXCEPTION 'updated_at trigger did not reset timestamp to now()';
   END IF;
 END $$;
 
@@ -124,6 +138,11 @@ BEGIN
                  WHERE id = 'sv03.5-199'
                    AND search_vector @@ plainto_tsquery('simple', '199')) THEN
     RAISE EXCEPTION 'FTS local_id "199" did not match sv03.5-199';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.catalog_cards
+                 WHERE id = 'sv03.5-006'
+                   AND search_vector @@ plainto_tsquery('simple', '6')) THEN
+    RAISE EXCEPTION 'FTS local_id_numeric "6" did not match sv03.5-006';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM public.catalog_cards
                  WHERE id = 'sv03.5-199'
@@ -337,14 +356,28 @@ BEGIN
 END $$;
 RESET ROLE;
 
-\echo '== 6. ON DELETE CASCADE set -> cards, puis nettoyage =='
+\echo '== 5e. RLS : postgres (rôle worker, écriture ok) =='
+SET ROLE postgres;
 DO $$
 BEGIN
-  DELETE FROM public.catalog_sets WHERE id = 'sv03.5';
-  IF EXISTS (SELECT 1 FROM public.catalog_cards WHERE set_id = 'sv03.5') THEN
-    RAISE EXCEPTION 'ON DELETE CASCADE not applied on catalog_cards.set_id';
+  IF current_user <> 'postgres' THEN
+    RAISE EXCEPTION 'expected role postgres, got %', current_user;
   END IF;
-  DELETE FROM public.catalog_series WHERE id = 'sv';
+  INSERT INTO public.catalog_series (id, name_fr, release_order) VALUES ('xy', 'XY', 15);
+  DELETE FROM public.catalog_series WHERE id = 'xy';
 END $$;
+RESET ROLE;
+
+\echo '== 6. ON DELETE RESTRICT set -> cards =='
+DO $$
+BEGIN
+  BEGIN
+    DELETE FROM public.catalog_sets WHERE id = 'sv03.5';
+    RAISE EXCEPTION 'ON DELETE RESTRICT not enforced on catalog_cards.set_id';
+  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  END;
+END $$;
+
+ROLLBACK;
 
 \echo 'OK — 002_catalog : toutes les assertions sont passées.'
