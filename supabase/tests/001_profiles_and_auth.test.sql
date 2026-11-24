@@ -95,13 +95,18 @@ BEGIN
      OR has_table_privilege('authenticated', 'public.allowed_users', 'INSERT') THEN
     RAISE EXCEPTION '[0] anon/authenticated must have no privilege on public.allowed_users';
   END IF;
-  -- profiles : SELECT + UPDATE seulement pour authenticated, rien pour anon.
+  -- profiles : SELECT + UPDATE par colonne seulement pour authenticated, rien pour anon.
   IF has_table_privilege('anon', 'public.profiles', 'SELECT')
      OR has_table_privilege('authenticated', 'public.profiles', 'INSERT')
      OR has_table_privilege('authenticated', 'public.profiles', 'DELETE')
      OR NOT has_table_privilege('authenticated', 'public.profiles', 'SELECT')
-     OR NOT has_table_privilege('authenticated', 'public.profiles', 'UPDATE') THEN
-    RAISE EXCEPTION '[0] unexpected table privileges on public.profiles';
+     OR has_table_privilege('authenticated', 'public.profiles', 'UPDATE')
+     OR NOT has_column_privilege('authenticated', 'public.profiles', 'theme', 'UPDATE')
+     OR has_column_privilege('authenticated', 'public.profiles', 'discord_user_id', 'UPDATE')
+     OR has_column_privilege('authenticated', 'public.profiles', 'id', 'UPDATE')
+     OR has_column_privilege('authenticated', 'public.profiles', 'created_at', 'UPDATE')
+     OR has_column_privilege('authenticated', 'public.profiles', 'updated_at', 'UPDATE') THEN
+    RAISE EXCEPTION '[0] unexpected table/column privileges on public.profiles';
   END IF;
   -- Fonctions de trigger non exécutables par les rôles API.
   IF has_function_privilege('anon', 'public.handle_new_user()', 'EXECUTE')
@@ -145,7 +150,16 @@ BEGIN
           ('00000000-0000-4000-8000-0000000000f1', '00000000-0000-4000-8000-0000000000f2')) THEN
     RAISE EXCEPTION '[1] rejected sign-up must leave no auth.users / profiles row';
   END IF;
-  RAISE NOTICE 'ok [1] sign-up outside the allowlist rejected (42501)';
+  -- E-mail dans l'allowlist mais explicitement non vérifié côté provider : refusé.
+  INSERT INTO public.allowed_users (email) VALUES ('unverified@pokevault.test');
+  IF pg_temp.sqlstate_as('supabase_auth_admin', NULL, $q$
+       INSERT INTO auth.users (id, email, raw_user_meta_data)
+       VALUES ('00000000-0000-4000-8000-0000000000f4', 'unverified@pokevault.test', '{"email_verified": false}')
+     $q$) IS DISTINCT FROM '42501' THEN
+    RAISE EXCEPTION '[1] unverified provider e-mail must be rejected with 42501';
+  END IF;
+  DELETE FROM public.allowed_users WHERE email = 'unverified@pokevault.test';
+  RAISE NOTICE 'ok [1] sign-up outside the allowlist or unverified rejected (42501)';
 END $$;
 
 -- ===========================================================================
@@ -274,14 +288,18 @@ BEGIN
     RAISE EXCEPTION '[3] user B profile was modified: %', row_to_json(p);
   END IF;
 
-  -- Prise de contrôle / modification des colonnes immuables : refusé.
+  -- Prise de contrôle / modification des colonnes protégées ou immuables : refusé.
   IF pg_temp.sqlstate_as('authenticated', c_a,
        format($q$UPDATE public.profiles SET id = %L WHERE id = %L$q$, c_b, c_a)) IS DISTINCT FROM '42501'
      OR pg_temp.sqlstate_as('authenticated', c_a,
        format($q$UPDATE public.profiles SET id = gen_random_uuid() WHERE id = %L$q$, c_a)) IS DISTINCT FROM '42501'
      OR pg_temp.sqlstate_as('authenticated', c_a,
-       format($q$UPDATE public.profiles SET created_at = '2000-01-01' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '42501' THEN
-    RAISE EXCEPTION '[3] id / created_at must be immutable for authenticated (42501)';
+       format($q$UPDATE public.profiles SET created_at = '2000-01-01' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '42501'
+     OR pg_temp.sqlstate_as('authenticated', c_a,
+       format($q$UPDATE public.profiles SET updated_at = '2000-01-01' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '42501'
+     OR pg_temp.sqlstate_as('authenticated', c_a,
+       format($q$UPDATE public.profiles SET discord_user_id = '999999999' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '42501' THEN
+    RAISE EXCEPTION '[3] id / created_at / updated_at / discord_user_id must not be writable by authenticated (42501)';
   END IF;
   -- Valeurs hors CHECK.
   IF pg_temp.sqlstate_as('authenticated', c_a,
@@ -289,8 +307,16 @@ BEGIN
      OR pg_temp.sqlstate_as('authenticated', c_a,
        format($q$UPDATE public.profiles SET avatar_initials = 'ABC' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '23514'
      OR pg_temp.sqlstate_as('authenticated', c_a,
-       format($q$UPDATE public.profiles SET display_name = '   ' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '23514' THEN
-    RAISE EXCEPTION '[3] CHECK constraints must reject invalid theme / initials / blank name (23514)';
+       format($q$UPDATE public.profiles SET display_name = '   ' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '23514'
+     OR pg_temp.sqlstate_as('authenticated', c_a,
+       format($q$UPDATE public.profiles SET display_name = E'\t\n' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '23514'
+     OR pg_temp.sqlstate_as('authenticated', c_a,
+       format($q$UPDATE public.profiles SET display_name = repeat('a', 51) WHERE id = %L$q$, c_a)) IS DISTINCT FROM '23514'
+     OR pg_temp.sqlstate_as('authenticated', c_a,
+       format($q$UPDATE public.profiles SET locale = 'xx' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '23514'
+     OR pg_temp.sqlstate_as('authenticated', c_a,
+       format($q$UPDATE public.profiles SET currency = 'BTC' WHERE id = %L$q$, c_a)) IS DISTINCT FROM '23514' THEN
+    RAISE EXCEPTION '[3] CHECK constraints must reject invalid theme / initials / name / locale / currency (23514)';
   END IF;
   RAISE NOTICE 'ok [3] UPDATE own row only, updated_at trigger, immutable columns, CHECKs';
 END $$;
@@ -387,7 +413,11 @@ BEGIN
      OR pg_temp.rows_as('service_role', NULL, 'SELECT 1 FROM public.allowed_users') < 5 THEN
     RAISE EXCEPTION '[5] service_role must read all profiles and allowed_users';
   END IF;
-  RAISE NOTICE 'ok [5] service_role access';
+  PERFORM pg_temp.rows_as('service_role', NULL,
+    $q$INSERT INTO public.allowed_users (email, note) VALUES ('srv-invite@pokevault.test', 'via service_role')$q$);
+  PERFORM pg_temp.rows_as('service_role', NULL,
+    $q$DELETE FROM public.allowed_users WHERE email = 'srv-invite@pokevault.test'$q$);
+  RAISE NOTICE 'ok [5] service_role read/write access';
 END $$;
 
 -- ===========================================================================

@@ -22,6 +22,21 @@
 -- fonctions SECURITY DEFINER ci-dessous lisent `allowed_users` et écrivent dans
 -- `profiles`, tables en FORCE ROW LEVEL SECURITY.
 
+BEGIN;
+
+-- Garde-fou : vérifie que le rôle propriétaire cible (`postgres`) a bien BYPASSRLS
+-- (les fonctions SECURITY DEFINER seront explicitement cédées à `postgres`, jamais
+-- laissées en superuser `supabase_admin`).
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles
+    WHERE rolname = 'postgres' AND (rolsuper OR rolbypassrls)
+  ) THEN
+    RAISE EXCEPTION 'role postgres must have BYPASSRLS to own auth trigger functions';
+  END IF;
+END $$;
+
 -- ============================================================================
 -- 1. Fonctions utilitaires (triggers de `profiles`)
 -- ============================================================================
@@ -33,7 +48,7 @@ LANGUAGE plpgsql
 SET search_path = ''
 AS $$
 BEGIN
-  NEW.updated_at := now();
+  NEW.updated_at := pg_catalog.now();
   RETURN NEW;
 END;
 $$;
@@ -62,10 +77,16 @@ $$;
 
 CREATE TABLE public.profiles (
   id                     uuid        PRIMARY KEY REFERENCES auth.users (id) ON DELETE CASCADE,
-  display_name           text        NOT NULL CHECK (char_length(trim(display_name)) > 0),
+  display_name           text        NOT NULL
+                                     CHECK (
+                                       char_length(regexp_replace(display_name, '\s', '', 'g')) > 0
+                                       AND char_length(display_name) <= 50
+                                     ),
   avatar_initials        text        NOT NULL CHECK (char_length(avatar_initials) BETWEEN 1 AND 2),
-  locale                 text        NOT NULL DEFAULT 'fr',
-  currency               text        NOT NULL DEFAULT 'EUR',
+  locale                 text        NOT NULL DEFAULT 'fr'
+                                     CHECK (locale IN ('fr', 'en')),
+  currency               text        NOT NULL DEFAULT 'EUR'
+                                     CHECK (currency IN ('EUR', 'USD')),
   theme                  text        NOT NULL DEFAULT 'dark'
                                      CHECK (theme IN ('system', 'dark', 'light')),
   default_card_lang      text        NOT NULL DEFAULT 'FR'
@@ -105,8 +126,23 @@ ALTER TABLE public.profiles FORCE ROW LEVEL SECURITY;
 
 -- Supabase accorde par défaut ALL aux rôles API sur les nouvelles tables :
 -- on repart de zéro. Pas d'INSERT (trigger) ni de DELETE (cascade auth.users).
+-- Droits UPDATE strictement par colonne : `id`, `created_at`, `updated_at` et
+-- `discord_user_id` (synchronisé côté serveur via linkIdentity, docs/04 §3)
+-- ne sont jamais modifiables par `authenticated`.
 REVOKE ALL ON public.profiles FROM PUBLIC, anon, authenticated;
-GRANT SELECT, UPDATE ON public.profiles TO authenticated;
+GRANT SELECT ON public.profiles TO authenticated;
+GRANT UPDATE (
+  display_name,
+  avatar_initials,
+  locale,
+  currency,
+  theme,
+  default_card_lang,
+  default_card_condition,
+  discord_webhook_url,
+  push_enabled,
+  discord_alerts_enabled
+) ON public.profiles TO authenticated;
 GRANT ALL ON public.profiles TO service_role;
 
 CREATE POLICY profiles_select_own ON public.profiles
@@ -152,6 +188,15 @@ SECURITY DEFINER
 SET search_path = ''
 AS $$
 BEGIN
+  -- Défense en profondeur : si le fournisseur OAuth (ex. Discord) indique
+  -- explicitement un e-mail non vérifié, on refuse l'inscription.
+  IF (NEW.raw_user_meta_data ? 'email_verified')
+     AND lower(btrim(coalesce(NEW.raw_user_meta_data ->> 'email_verified', ''))) <> 'true'
+  THEN
+    RAISE EXCEPTION 'access_denied: unverified provider email'
+      USING ERRCODE = '42501';
+  END IF;
+
   IF NEW.email IS NULL
      OR NOT EXISTS (
        SELECT 1
@@ -194,8 +239,8 @@ BEGIN
   v_words := array_remove(regexp_split_to_array(v_display_name, '[^[:alnum:]]+'), '');
 
   v_initials := CASE
-    WHEN cardinality(v_words) >= 2 THEN upper(left(v_words[1], 1) || left(v_words[2], 1))
-    WHEN cardinality(v_words) = 1 THEN upper(left(v_words[1], 2))
+    WHEN cardinality(v_words) >= 2 THEN left(upper(left(v_words[1], 1) || left(v_words[2], 1)), 2)
+    WHEN cardinality(v_words) = 1 THEN left(upper(left(v_words[1], 2)), 2)
     ELSE 'CO'
   END;
 
@@ -206,6 +251,13 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+-- Propriétaire explicite `postgres` (BYPASSRLS sans privilège superuser),
+-- même si la migration est jouée en `supabase_admin`.
+ALTER FUNCTION public.set_updated_at() OWNER TO postgres;
+ALTER FUNCTION public.protect_profile_immutable_columns() OWNER TO postgres;
+ALTER FUNCTION public.enforce_allowed_user() OWNER TO postgres;
+ALTER FUNCTION public.handle_new_user() OWNER TO postgres;
 
 -- Les fonctions de trigger ne sont pas appelables par les rôles API
 -- (l'exécution d'un trigger ne vérifie pas EXECUTE : GoTrue n'est pas affecté).
@@ -223,3 +275,5 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+COMMIT;
