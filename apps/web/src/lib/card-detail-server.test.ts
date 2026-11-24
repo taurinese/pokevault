@@ -3,22 +3,35 @@ import {
   CardCopyConflictError,
   CardCopyNotFoundError,
   CatalogItemNotFoundError,
+  PriceCircuitOpenError,
+  PriceRefreshCooldownError,
+  type PriceRefreshTarget,
+  type PriceSnapshot,
   UnauthorizedBinderAccess,
   type UserCardCopy,
   ValidationError,
 } from "@pokevault/domain";
-import type { BinderServiceShape, CollectionServiceShape, Sql } from "@pokevault/services";
+import type {
+  BinderServiceShape,
+  CardmarketPriceServiceShape,
+  CollectionServiceShape,
+  PriceRefreshResult,
+  Sql,
+} from "@pokevault/services";
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import { ACCESS_TOKEN_COOKIE, type AuthConfig, REFRESH_TOKEN_COOKIE } from "./auth.ts";
 import {
   type CardDetailServerDeps,
+  type CardPriceRefreshDeps,
   handleAddCardCopy,
   handleCardBinder,
   handleCardDetail,
+  handleCardPriceRefresh,
   handleDeleteCardCopy,
   handlePatchCardCopy,
   MAX_BODY_BYTES,
+  PRICE_REFRESH_MAX_BODY_BYTES,
 } from "./card-detail-server.ts";
 
 const config: AuthConfig = {
@@ -821,5 +834,430 @@ describe("/api/cards/$cardId/binders", () => {
         )
       ).status,
     ).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/cards/$cardId — prix Cardmarket (LEFT JOIN LATERAL … LIMIT 1)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/cards/$cardId — prix", () => {
+  it("joint card_latest_prices en LEFT JOIN LATERAL … LIMIT 1 (FR/normal d'abord)", async () => {
+    const h = makeHarness();
+    await handleCardDetail(get(`/api/cards/${CARD_ID}`, signedIn), CARD_ID, h.deps);
+    const query = h.queries.find((q) => q.includes("from public.catalog_cards")) ?? "";
+    expect(query).toContain("left join lateral");
+    expect(query).toContain("from public.card_latest_prices");
+    expect(query).toContain("lp.card_id = c.id");
+    expect(query).toMatch(/limit 1\s*\) p on true/);
+    expect(query).toContain("lp.language = 'FR' and lp.variant = 'normal'");
+  });
+
+  it("renvoie price: null sans snapshot", async () => {
+    const h = makeHarness();
+    const response = await handleCardDetail(
+      get(`/api/cards/${CARD_ID}`, signedIn),
+      CARD_ID,
+      h.deps,
+    );
+    const body = (await response.json()) as { price: unknown };
+    expect(body.price).toBeNull();
+  });
+
+  it("renvoie le dernier prix (centimes, source, dates ISO, isFresh)", async () => {
+    const h = makeHarness({
+      responder: (query) =>
+        query.includes("from public.catalog_cards")
+          ? [
+              {
+                ...cardRow,
+                price_source: "cardmarket",
+                price_trend_cents: 1234,
+                price_low_fr_cents: 950,
+                price_avg30_cents: null,
+                price_fetched_at: new Date("2026-06-01T11:54:00.000Z"),
+                price_expires_at: "2026-06-01T12:09:00.000Z",
+                price_is_fresh: true,
+              },
+            ]
+          : [],
+    });
+    const response = await handleCardDetail(
+      get(`/api/cards/${CARD_ID}`, signedIn),
+      CARD_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { price: unknown };
+    expect(body.price).toEqual({
+      trendCents: 1234,
+      lowFrCents: 950,
+      avg30Cents: null,
+      source: "cardmarket",
+      fetchedAt: "2026-06-01T11:54:00.000Z",
+      expiresAt: "2026-06-01T12:09:00.000Z",
+      isFresh: true,
+    });
+  });
+
+  it("conserve la source tcgdex_fallback", async () => {
+    const h = makeHarness({
+      responder: (query) =>
+        query.includes("from public.catalog_cards")
+          ? [
+              {
+                ...cardRow,
+                price_source: "tcgdex_fallback",
+                price_trend_cents: 500,
+                price_low_fr_cents: null,
+                price_avg30_cents: null,
+                price_fetched_at: "2026-06-01T08:00:00.000Z",
+                price_expires_at: "2026-06-01T08:15:00.000Z",
+                price_is_fresh: false,
+              },
+            ]
+          : [],
+    });
+    const response = await handleCardDetail(
+      get(`/api/cards/${CARD_ID}`, signedIn),
+      CARD_ID,
+      h.deps,
+    );
+    const body = (await response.json()) as { price: { source: string; isFresh: boolean } };
+    expect(body.price.source).toBe("tcgdex_fallback");
+    expect(body.price.isFresh).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/cards/$cardId/price-refresh
+// ---------------------------------------------------------------------------
+
+const snapshotFixture = (overrides: Partial<PriceSnapshot> = {}): PriceSnapshot => ({
+  id: 7,
+  cardId: CARD_ID,
+  language: "FR",
+  variant: "normal",
+  source: "cardmarket",
+  trendCents: 1234,
+  lowFrCents: 950,
+  avg30Cents: 1180,
+  fetchedAt: "2026-06-01T12:00:00.000Z",
+  expiresAt: "2026-06-01T12:15:00.000Z",
+  isFresh: true,
+  ...overrides,
+});
+
+interface RefreshHarness {
+  readonly deps: CardPriceRefreshDeps;
+  readonly refreshCardPrice: ReturnType<typeof vi.fn>;
+  readonly log: ReturnType<typeof vi.fn>;
+  readonly queries: string[];
+}
+
+const makeRefreshHarness = (
+  options: {
+    readonly noDatabase?: boolean;
+    readonly outcome?: Effect.Effect<PriceRefreshResult, unknown>;
+    readonly responder?: (query: string) => unknown;
+  } = {},
+): RefreshHarness => {
+  const refreshCardPrice = vi.fn(
+    (_target: PriceRefreshTarget, _options?: unknown) =>
+      options.outcome ??
+      Effect.succeed<PriceRefreshResult>({
+        kind: "refreshed_cardmarket",
+        snapshot: snapshotFixture(),
+      }),
+  );
+  const log = vi.fn();
+  const { sql, queries } = makeSql(
+    options.responder ??
+      ((query) =>
+        query.includes("from public.catalog_cards")
+          ? [{ id: CARD_ID, cardmarket_url: "https://www.cardmarket.com/fr/Pokemon/Products/123" }]
+          : []),
+  );
+  const deps: CardPriceRefreshDeps = {
+    auth: { config, fetch: async (url, init) => gotrue(url, init) },
+    sql: options.noDatabase ? null : sql,
+    prices: options.noDatabase
+      ? null
+      : ({ refreshCardPrice } as unknown as CardmarketPriceServiceShape),
+    log,
+  };
+  return { deps, refreshCardPrice, log, queries };
+};
+
+const refreshRequest = (options: Parameters<typeof req>[2] = { cookie: signedIn }): Request =>
+  req("POST", `/api/cards/${CARD_ID}/price-refresh`, options);
+
+describe("POST /api/cards/$cardId/price-refresh", () => {
+  it("returns 403 for a cross-origin request before anything else", async () => {
+    const h = makeRefreshHarness();
+    const response = await handleCardPriceRefresh(
+      refreshRequest({ cookie: signedIn, origin: "https://evil.example" }),
+      CARD_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "forbidden_origin" });
+    expect(h.refreshCardPrice).not.toHaveBeenCalled();
+    expect(h.queries).toHaveLength(0);
+  });
+
+  it("returns 401 without a session (no-store) and never refreshes", async () => {
+    const h = makeRefreshHarness();
+    const response = await handleCardPriceRefresh(refreshRequest({}), CARD_ID, h.deps);
+    expect(response.status).toBe(401);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(h.refreshCardPrice).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 above the 4 KiB cap (declared and streamed)", async () => {
+    const h = makeRefreshHarness();
+    const declared = await handleCardPriceRefresh(
+      refreshRequest({
+        cookie: signedIn,
+        raw: "{}",
+        contentLength: String(PRICE_REFRESH_MAX_BODY_BYTES + 1),
+      }),
+      CARD_ID,
+      h.deps,
+    );
+    expect(declared.status).toBe(413);
+    const streamed = await handleCardPriceRefresh(
+      refreshRequest({
+        cookie: signedIn,
+        raw: JSON.stringify({ language: "FR", pad: "x".repeat(PRICE_REFRESH_MAX_BODY_BYTES) }),
+      }),
+      CARD_ID,
+      h.deps,
+    );
+    expect(streamed.status).toBe(413);
+    expect(await streamed.json()).toEqual({ error: "payload_too_large" });
+    expect(h.refreshCardPrice).not.toHaveBeenCalled();
+  });
+
+  it("uses a dedicated 4 KiB cap (stricter than the 8 KiB of the other card mutations)", () => {
+    expect(PRICE_REFRESH_MAX_BODY_BYTES).toBe(4096);
+    expect(PRICE_REFRESH_MAX_BODY_BYTES).toBeLessThan(MAX_BODY_BYTES);
+  });
+
+  it.each([
+    ["invalid JSON", { raw: "{not json" }],
+    ["array body", { body: ["FR"] }],
+    ["string body", { body: "FR" }],
+    ["unknown language", { body: { language: "DE" } }],
+    ["unknown variant", { body: { variant: "gold" } }],
+    ["non-string language", { body: { language: 3 } }],
+    ["unknown key", { body: { language: "FR", cardId: "other" } }],
+  ])("returns 400 for %s", async (_label, options) => {
+    const h = makeRefreshHarness();
+    const response = await handleCardPriceRefresh(
+      refreshRequest({ cookie: signedIn, ...options }),
+      CARD_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid_input" });
+    expect(h.refreshCardPrice).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the card is unknown to the catalogue (before refreshing)", async () => {
+    const h = makeRefreshHarness({ responder: () => [] });
+    const response = await handleCardPriceRefresh(refreshRequest(), CARD_ID, h.deps);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "not_found" });
+    expect(h.queries.some((q) => q.includes("from public.catalog_cards"))).toBe(true);
+    expect(h.refreshCardPrice).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for a malformed card id without hitting the database", async () => {
+    const h = makeRefreshHarness();
+    const response = await handleCardPriceRefresh(refreshRequest(), "sv 03.5", h.deps);
+    expect(response.status).toBe(404);
+    expect(h.queries).toHaveLength(0);
+  });
+
+  it("returns 503 without DATABASE_URL", async () => {
+    const h = makeRefreshHarness({ noDatabase: true });
+    const response = await handleCardPriceRefresh(refreshRequest(), CARD_ID, h.deps);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "price_unavailable" });
+    expect(h.log).toHaveBeenCalledWith(
+      "cardDetail.database_url_missing",
+      expect.objectContaining({ operation: "price-refresh" }),
+    );
+  });
+
+  it("refreshes with { manual: true, force: true } and FR/normal defaults (empty body)", async () => {
+    const h = makeRefreshHarness();
+    const response = await handleCardPriceRefresh(refreshRequest(), CARD_ID, h.deps);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(h.refreshCardPrice).toHaveBeenCalledWith(
+      {
+        cardId: CARD_ID,
+        language: "FR",
+        variant: "normal",
+        cardmarketUrl: "https://www.cardmarket.com/fr/Pokemon/Products/123",
+        priority: "featured",
+      },
+      { manual: true, force: true },
+    );
+    expect(await response.json()).toEqual({
+      kind: "refreshed_cardmarket",
+      price: {
+        trendCents: 1234,
+        lowFrCents: 950,
+        avg30Cents: 1180,
+        source: "cardmarket",
+        fetchedAt: "2026-06-01T12:00:00.000Z",
+        expiresAt: "2026-06-01T12:15:00.000Z",
+        isFresh: true,
+      },
+    });
+  });
+
+  it("forwards a validated language / variant from the JSON body", async () => {
+    const h = makeRefreshHarness();
+    const response = await handleCardPriceRefresh(
+      refreshRequest({ cookie: signedIn, body: { language: "EN", variant: "holo" } }),
+      CARD_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(200);
+    expect(h.refreshCardPrice.mock.calls[0]?.[0]).toMatchObject({
+      language: "EN",
+      variant: "holo",
+    });
+  });
+
+  it.each(["refreshed_fallback", "fresh_cache", "degraded"] as const)(
+    "returns 200 { kind: %s, price }",
+    async (kind) => {
+      const h = makeRefreshHarness({
+        outcome: Effect.succeed<PriceRefreshResult>({
+          kind,
+          snapshot: snapshotFixture({
+            source: kind === "refreshed_fallback" ? "tcgdex_fallback" : "cardmarket",
+          }),
+        }),
+      });
+      const response = await handleCardPriceRefresh(refreshRequest(), CARD_ID, h.deps);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { kind: string; price: { source: string } };
+      expect(body.kind).toBe(kind);
+      expect(body.price.source).toBe(
+        kind === "refreshed_fallback" ? "tcgdex_fallback" : "cardmarket",
+      );
+    },
+  );
+
+  it("propagates refreshed session cookies on success", async () => {
+    const h = makeRefreshHarness();
+    const response = await handleCardPriceRefresh(
+      refreshRequest({ cookie: `${REFRESH_TOKEN_COOKIE}=refresh-old` }),
+      CARD_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")).toContain(`${ACCESS_TOKEN_COOKIE}=`);
+  });
+
+  it("maps the cooldown to 429 with Retry-After rounded up to the second", async () => {
+    const h = makeRefreshHarness({
+      outcome: Effect.fail(
+        new PriceRefreshCooldownError({
+          cardId: CARD_ID,
+          retryAfterMs: 61_200,
+          nextAllowedAt: "2026-06-01T12:05:00.000Z",
+          message: "cooldown",
+        }),
+      ),
+    });
+    const response = await handleCardPriceRefresh(refreshRequest(), CARD_ID, h.deps);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("62");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      error: "cooldown",
+      retryAfterMs: 61_200,
+      nextAllowedAt: "2026-06-01T12:05:00.000Z",
+    });
+  });
+
+  it("keeps Set-Cookie on the 429 response", async () => {
+    const h = makeRefreshHarness({
+      outcome: Effect.fail(
+        new PriceRefreshCooldownError({
+          cardId: CARD_ID,
+          retryAfterMs: 1_000,
+          nextAllowedAt: "2026-06-01T12:05:00.000Z",
+          message: "cooldown",
+        }),
+      ),
+    });
+    const response = await handleCardPriceRefresh(
+      refreshRequest({ cookie: `${REFRESH_TOKEN_COOKIE}=refresh-old` }),
+      CARD_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect(response.headers.get("set-cookie")).toContain(`${ACCESS_TOKEN_COOKIE}=`);
+  });
+
+  it("maps an open circuit breaker to 503 price_unavailable without leaking internals", async () => {
+    const h = makeRefreshHarness({
+      outcome: Effect.fail(
+        new PriceCircuitOpenError({
+          openUntil: "2026-06-01T12:30:00.000Z",
+          consecutiveBlocks: 2,
+          message: "circuit breaker open until secret-internal",
+        }),
+      ),
+    });
+    const response = await handleCardPriceRefresh(refreshRequest(), CARD_ID, h.deps);
+    expect(response.status).toBe(503);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({ error: "price_unavailable" });
+    expect(text).not.toContain("secret-internal");
+    expect(text).not.toContain("circuit");
+    expect(h.log).toHaveBeenCalledWith(
+      "cardDetail.price_circuit_open",
+      expect.objectContaining({ operation: "price-refresh", errorTag: "PriceCircuitOpenError" }),
+    );
+  });
+
+  it("maps any other failure (no fallback) to 503 without leaking details", async () => {
+    const h = makeRefreshHarness({
+      outcome: Effect.fail({ _tag: "CardmarketBlockedError", message: "Cloudflare challenge xyz" }),
+    });
+    const response = await handleCardPriceRefresh(refreshRequest(), CARD_ID, h.deps);
+    expect(response.status).toBe(503);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({ error: "price_unavailable" });
+    expect(text).not.toContain("Cloudflare");
+  });
+
+  it("maps a defect (unexpected throw) to 503", async () => {
+    const h = makeRefreshHarness({ outcome: Effect.die(new Error("db password leaked")) });
+    const response = await handleCardPriceRefresh(refreshRequest(), CARD_ID, h.deps);
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("leaked");
+  });
+
+  it("maps a catalogue lookup failure to 503 without SQL details", async () => {
+    const h = makeRefreshHarness({
+      responder: () => {
+        throw new Error("boom: select * from secrets");
+      },
+    });
+    const response = await handleCardPriceRefresh(refreshRequest(), CARD_ID, h.deps);
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("secrets");
+    expect(h.refreshCardPrice).not.toHaveBeenCalled();
   });
 });

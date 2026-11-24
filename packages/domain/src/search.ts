@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import type { HoloEffect } from "./card.ts";
+import type { PriceSource } from "./pricing.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -62,6 +63,23 @@ export type SearchQuery = typeof SearchQuery.Type;
 // Payloads (JSON entre `/api/catalog/*` et l'écran de recherche)
 // ---------------------------------------------------------------------------
 
+/**
+ * Dernier prix Cardmarket connu d'une carte (vue `card_latest_prices`), exposé
+ * aux tuiles de recherche : `(FR, normal)` de préférence, sinon le snapshot le
+ * plus récent de la carte.
+ */
+export interface CardSearchPrice {
+  readonly trendCents: number | null;
+  readonly lowFrCents: number | null;
+  readonly avg30Cents: number | null;
+  readonly source: PriceSource;
+  /** ISO 8601 de la collecte. */
+  readonly fetchedAt: string;
+  /** ISO 8601 de la limite TTL. */
+  readonly expiresAt: string;
+  readonly isFresh: boolean;
+}
+
 /** Carte du catalogue telle qu'affichée par la recherche. */
 export interface CardSearchHit {
   readonly id: string;
@@ -76,6 +94,11 @@ export interface CardSearchHit {
   readonly illustrator: string | null;
   /** Miniature `low.webp` TCGdex (jamais d'URL brute dans l'UI) ou `null`. */
   readonly imageUrl: string | null;
+  /**
+   * Dernier prix connu (`null` : aucun snapshot ; absent : non enrichi, ex.
+   * implémentation mémoire ou table de prix indisponible).
+   */
+  readonly price?: CardSearchPrice | null | undefined;
 }
 
 /** Extension du catalogue telle qu'affichée par la recherche. */

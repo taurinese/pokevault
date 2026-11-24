@@ -6,6 +6,9 @@ import {
   cardCopiesApiPath,
   cardCopyApiPath,
   cardDetailApiPath,
+  cardPriceRefreshApiPath,
+  computePriceAge,
+  cooldownMinutes,
   defaultVariantFor,
   deleteCardCopy,
   type FetchLike,
@@ -15,7 +18,10 @@ import {
   isSafeHttpsUrl,
   parsePurchasePriceEuros,
   purchasePriceEurosToCents,
+  readCardDetailPrice,
+  refreshCardPrice,
   setCardInBinder,
+  tilePriceCents,
   updateCardCopy,
 } from "./card-detail-client.ts";
 
@@ -282,5 +288,158 @@ describe("mutations", () => {
     expect(callAt(mock, 0).init.method).toBe("POST");
     expect(callAt(mock, 1).init.method).toBe("DELETE");
     expect(JSON.parse(String(callAt(mock, 1).init.body))).toEqual({ binderId: "b" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prix Cardmarket : helpers purs
+// ---------------------------------------------------------------------------
+
+describe("tilePriceCents", () => {
+  it("prefers the trend, then the 30-day average, then the lowest FR price", () => {
+    expect(tilePriceCents({ trendCents: 500, lowFrCents: 100, avg30Cents: 300 })).toBe(500);
+    expect(tilePriceCents({ trendCents: null, lowFrCents: 100, avg30Cents: 300 })).toBe(300);
+    expect(tilePriceCents({ trendCents: null, lowFrCents: 100, avg30Cents: null })).toBe(100);
+  });
+
+  it("keeps a legitimate 0-cent price and returns null when nothing is quoted", () => {
+    expect(tilePriceCents({ trendCents: 0, lowFrCents: 100, avg30Cents: null })).toBe(0);
+    expect(tilePriceCents({ trendCents: null, lowFrCents: null, avg30Cents: null })).toBeNull();
+    expect(tilePriceCents(null)).toBeNull();
+    expect(tilePriceCents(undefined)).toBeNull();
+  });
+});
+
+describe("computePriceAge", () => {
+  const NOW = Date.parse("2026-06-01T12:00:00.000Z");
+  const ago = (ms: number): string => new Date(NOW - ms).toISOString();
+
+  it("returns a real, structured relative age", () => {
+    expect(computePriceAge(ago(0), NOW)).toEqual({ kind: "just_now" });
+    expect(computePriceAge(ago(59_999), NOW)).toEqual({ kind: "just_now" });
+    expect(computePriceAge(ago(60_000), NOW)).toEqual({ kind: "minutes", count: 1 });
+    expect(computePriceAge(ago(6 * 60_000), NOW)).toEqual({ kind: "minutes", count: 6 });
+    expect(computePriceAge(ago(59 * 60_000), NOW)).toEqual({ kind: "minutes", count: 59 });
+    expect(computePriceAge(ago(2 * 3_600_000 + 5 * 60_000), NOW)).toEqual({
+      kind: "hours",
+      count: 2,
+    });
+    expect(computePriceAge(ago(24 * 3_600_000), NOW)).toEqual({ kind: "days", count: 1 });
+    expect(computePriceAge(ago(3 * 24 * 3_600_000 + 1), NOW)).toEqual({ kind: "days", count: 3 });
+  });
+
+  it("never goes negative on clock skew and rejects unreadable dates", () => {
+    expect(computePriceAge(new Date(NOW + 5 * 60_000).toISOString(), NOW)).toEqual({
+      kind: "just_now",
+    });
+    expect(computePriceAge("pas une date", NOW)).toBeNull();
+  });
+});
+
+describe("cooldownMinutes", () => {
+  it("rounds up and never shows less than 1 minute", () => {
+    expect(cooldownMinutes(300_000)).toBe(5);
+    expect(cooldownMinutes(240_001)).toBe(5);
+    expect(cooldownMinutes(61_000)).toBe(2);
+    expect(cooldownMinutes(1)).toBe(1);
+    expect(cooldownMinutes(0)).toBe(1);
+    expect(cooldownMinutes(-5)).toBe(1);
+  });
+});
+
+const priceJson = {
+  trendCents: 1234,
+  lowFrCents: 950,
+  avg30Cents: null,
+  source: "cardmarket",
+  fetchedAt: "2026-06-01T12:00:00.000Z",
+  expiresAt: "2026-06-01T12:15:00.000Z",
+  isFresh: true,
+};
+
+describe("readCardDetailPrice", () => {
+  it("decodes a valid price and rejects malformed ones", () => {
+    expect(readCardDetailPrice(priceJson)).toEqual(priceJson);
+    expect(readCardDetailPrice(null)).toBeNull();
+    expect(readCardDetailPrice([])).toBeNull();
+    expect(readCardDetailPrice({ ...priceJson, source: "other" })).toBeNull();
+    expect(readCardDetailPrice({ ...priceJson, trendCents: "12" })).toBeNull();
+    expect(readCardDetailPrice({ ...priceJson, fetchedAt: 3 })).toBeNull();
+    expect(readCardDetailPrice({ ...priceJson, isFresh: "yes" })).toBeNull();
+  });
+});
+
+describe("refreshCardPrice", () => {
+  it("POSTs to /api/cards/$cardId/price-refresh with a JSON body and same-origin credentials", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ kind: "refreshed_cardmarket", price: priceJson }),
+    );
+    const result = await refreshCardPrice(
+      CARD_ID,
+      { language: "EN", variant: "holo" },
+      fetchImpl as unknown as FetchLike,
+    );
+    expect(result).toEqual({ kind: "ok", refresh: "refreshed_cardmarket", price: priceJson });
+    expect(cardPriceRefreshApiPath(CARD_ID)).toBe(`/api/cards/${CARD_ID}/price-refresh`);
+    const call = callAt(asMock(fetchImpl), 0);
+    expect(call.input).toBe(`/api/cards/${CARD_ID}/price-refresh`);
+    expect(call.init.method).toBe("POST");
+    expect(call.init.credentials).toBe("same-origin");
+    expect(JSON.parse(String(call.init.body))).toEqual({ language: "EN", variant: "holo" });
+  });
+
+  it("maps 429 to a cooldown with retryAfterMs / nextAllowedAt from the body", async () => {
+    const fetchImpl = (async () =>
+      jsonResponse(
+        { error: "cooldown", retryAfterMs: 125_000, nextAllowedAt: "2026-06-01T12:05:00.000Z" },
+        429,
+      )) as FetchLike;
+    expect(await refreshCardPrice(CARD_ID, {}, fetchImpl)).toEqual({
+      kind: "cooldown",
+      retryAfterMs: 125_000,
+      nextAllowedAt: "2026-06-01T12:05:00.000Z",
+    });
+  });
+
+  it("falls back to the Retry-After header (seconds) when the 429 body is unreadable", async () => {
+    const fetchImpl = (async () =>
+      new Response("oops", { status: 429, headers: { "Retry-After": "90" } })) as FetchLike;
+    expect(await refreshCardPrice(CARD_ID, {}, fetchImpl)).toEqual({
+      kind: "cooldown",
+      retryAfterMs: 90_000,
+      nextAllowedAt: null,
+    });
+  });
+
+  it("maps 503 to unavailable and the other statuses to dedicated kinds", async () => {
+    const statusKind = async (status: number): Promise<string> =>
+      (await refreshCardPrice(CARD_ID, {}, (async () => jsonResponse({}, status)) as FetchLike))
+        .kind;
+    expect(await statusKind(503)).toBe("unavailable");
+    expect(await statusKind(401)).toBe("unauthorized");
+    expect(await statusKind(403)).toBe("forbidden");
+    expect(await statusKind(404)).toBe("not-found");
+    expect(await statusKind(400)).toBe("invalid");
+    expect(await statusKind(413)).toBe("invalid");
+    expect(await statusKind(500)).toBe("error");
+  });
+
+  it("reports an error on network failure and on a malformed 200 body (never throws)", async () => {
+    const failing = (async () => {
+      throw new TypeError("network down");
+    }) as FetchLike;
+    expect((await refreshCardPrice(CARD_ID, {}, failing)).kind).toBe("error");
+    const badKind = (async () => jsonResponse({ kind: "weird", price: priceJson })) as FetchLike;
+    expect((await refreshCardPrice(CARD_ID, {}, badKind)).kind).toBe("error");
+    const badPrice = (async () =>
+      jsonResponse({ kind: "degraded", price: { nope: true } })) as FetchLike;
+    expect((await refreshCardPrice(CARD_ID, {}, badPrice)).kind).toBe("error");
+  });
+
+  it("keeps the degraded outcome (last known price served)", async () => {
+    const fetchImpl = (async () =>
+      jsonResponse({ kind: "degraded", price: priceJson })) as FetchLike;
+    const result = await refreshCardPrice(CARD_ID, {}, fetchImpl);
+    expect(result).toEqual({ kind: "ok", refresh: "degraded", price: priceJson });
   });
 });

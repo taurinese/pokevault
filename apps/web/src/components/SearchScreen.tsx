@@ -2,6 +2,7 @@ import {
   addRecentSearch,
   type CardSearchHit,
   clearRecentSearches,
+  computePriceFreshness,
   removeRecentSearch,
   SEARCH_DEFAULT_LIMIT,
   SEARCH_MAX_QUERY_LENGTH,
@@ -19,6 +20,7 @@ import { Heart, LayoutGrid, List, Plus, Search, SearchX, TriangleAlert, X } from
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { type TranslationKey, t, tPlural } from "../i18n/index.ts";
 import { loginRedirectTo, SEARCH_PATH } from "../lib/auth-shared.ts";
+import { formatPriceCents, tilePriceCents } from "../lib/card-detail-client.ts";
 import {
   type ApiResult,
   fetchDiscovery,
@@ -27,7 +29,7 @@ import {
   loadRecentSearches,
   saveRecentSearches,
 } from "../lib/search-client.ts";
-import { CardTile } from "./CardTile.tsx";
+import { CardTile, cardTilePriceLabel, PriceFreshnessDot } from "./CardTile.tsx";
 
 // ---------------------------------------------------------------------------
 // Modèle de vue (pur : rendu testable via `renderToStaticMarkup`)
@@ -64,6 +66,8 @@ export interface SearchViewState {
   readonly wishlistIds: ReadonlySet<string>;
   /** Message annoncé aux lecteurs d'écran (région `role="status"`). */
   readonly announcement: string;
+  /** Instant de référence (ms) du calcul de fraîcheur des prix (défaut : `Date.now()`). */
+  readonly nowMs?: number | undefined;
 }
 
 export interface SearchViewActions {
@@ -292,6 +296,15 @@ const CardActions = ({
 // Carte : grille (05D) et ligne de liste (05C)
 // ---------------------------------------------------------------------------
 
+/**
+ * Prix de référence d'une carte (tendance, sinon moy. 30 j, sinon plus bas FR) et
+ * fraîcheur associée (`computePriceFreshness`) ; `priceCents: null` sans prix coté.
+ */
+const cardPriceOf = (card: CardSearchHit, nowMs: number) => ({
+  priceCents: tilePriceCents(card.price),
+  priceFreshness: computePriceFreshness(card.price ?? null, nowMs),
+});
+
 const cardMeta = (card: CardSearchHit): string =>
   [card.setName, card.setCode].filter((part): part is string => part !== null).join(" · ");
 
@@ -300,11 +313,13 @@ const CardGridItem = ({
   wishlisted,
   actions,
   priority,
+  nowMs,
 }: {
   readonly card: CardSearchHit;
   readonly wishlisted: boolean;
   readonly actions: SearchViewActions;
   readonly priority: boolean;
+  readonly nowMs: number;
 }) => (
   <li data-testid="result-card" className="flex min-w-0 flex-col gap-1.5">
     <div className="relative">
@@ -313,6 +328,7 @@ const CardGridItem = ({
         label={card.nameFr}
         imageUrl={card.imageUrl ?? undefined}
         priority={priority}
+        {...cardPriceOf(card, nowMs)}
       />
       <CardActions
         card={card}
@@ -332,53 +348,73 @@ const CardListItem = ({
   wishlisted,
   actions,
   priority,
+  nowMs,
 }: {
   readonly card: CardSearchHit;
   readonly wishlisted: boolean;
   readonly actions: SearchViewActions;
   readonly priority: boolean;
-}) => (
-  <li
-    data-testid="result-card"
-    className="flex items-center gap-3 rounded-sheet border border-line bg-surface-1 p-2.5 shadow-card"
-  >
-    <div className="w-14 shrink-0">
-      <CardTile
-        name={card.nameFr}
-        label={card.nameFr}
-        imageUrl={card.imageUrl ?? undefined}
-        priority={priority}
+  readonly nowMs: number;
+}) => {
+  // Vignette de 56 px : trop étroite pour la micro-pill, le prix est donc une ligne de la rangée.
+  const { priceCents, priceFreshness } = cardPriceOf(card, nowMs);
+  return (
+    <li
+      data-testid="result-card"
+      className="flex items-center gap-3 rounded-sheet border border-line bg-surface-1 p-2.5 shadow-card"
+    >
+      <div className="w-14 shrink-0">
+        <CardTile
+          name={card.nameFr}
+          label={card.nameFr}
+          imageUrl={card.imageUrl ?? undefined}
+          priority={priority}
+        />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <p className="truncate text-sm font-semibold text-primary">{card.nameFr}</p>
+        <p className="truncate text-xs text-secondary">
+          {cardMeta(card)}
+          {cardMeta(card) === "" ? null : " · "}
+          <span className="font-mono tabular-nums">#{card.localId}</span>
+        </p>
+        {card.rarity === null ? null : <p className="truncate text-xs text-muted">{card.rarity}</p>}
+        {priceCents === null ? null : (
+          <p
+            data-testid="result-price"
+            data-freshness={priceFreshness}
+            title={cardTilePriceLabel(priceCents, priceFreshness) ?? undefined}
+            className="flex items-center gap-1.5 text-xs font-semibold text-primary"
+          >
+            <PriceFreshnessDot freshness={priceFreshness} testId="result-price-dot" />
+            <span className="font-mono tabular-nums">{formatPriceCents(priceCents)}</span>
+            <span className="sr-only">{cardTilePriceLabel(priceCents, priceFreshness)}</span>
+          </p>
+        )}
+      </div>
+      <CardActions
+        card={card}
+        wishlisted={wishlisted}
+        layout="inline"
+        onToggleWishlist={actions.onToggleWishlist}
+        onQuickAdd={actions.onQuickAdd}
       />
-    </div>
-    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-      <p className="truncate text-sm font-semibold text-primary">{card.nameFr}</p>
-      <p className="truncate text-xs text-secondary">
-        {cardMeta(card)}
-        {cardMeta(card) === "" ? null : " · "}
-        <span className="font-mono tabular-nums">#{card.localId}</span>
-      </p>
-      {card.rarity === null ? null : <p className="truncate text-xs text-muted">{card.rarity}</p>}
-    </div>
-    <CardActions
-      card={card}
-      wishlisted={wishlisted}
-      layout="inline"
-      onToggleWishlist={actions.onToggleWishlist}
-      onQuickAdd={actions.onQuickAdd}
-    />
-  </li>
-);
+    </li>
+  );
+};
 
 const CardResults = ({
   cards,
   viewMode,
   wishlistIds,
   actions,
+  nowMs,
 }: {
   readonly cards: ReadonlyArray<CardSearchHit>;
   readonly viewMode: SearchViewMode;
   readonly wishlistIds: ReadonlySet<string>;
   readonly actions: SearchViewActions;
+  readonly nowMs: number;
 }) =>
   viewMode === "grid" ? (
     <ul data-testid="results-grid" className="grid grid-cols-3 gap-x-2.5 gap-y-3.5">
@@ -389,6 +425,7 @@ const CardResults = ({
           wishlisted={wishlistIds.has(card.id)}
           actions={actions}
           priority={index < 6}
+          nowMs={nowMs}
         />
       ))}
     </ul>
@@ -401,6 +438,7 @@ const CardResults = ({
           wishlisted={wishlistIds.has(card.id)}
           actions={actions}
           priority={index < 4}
+          nowMs={nowMs}
         />
       ))}
     </ul>
@@ -608,6 +646,7 @@ const NeutralState = ({
               viewMode="grid"
               wishlistIds={state.wishlistIds}
               actions={actions}
+              nowMs={state.nowMs ?? Date.now()}
             />
           ) : discovery.status === "loading" ? (
             <CardGridSkeleton count={6} />
@@ -1025,6 +1064,7 @@ const ResultsReady = ({
             viewMode={state.viewMode}
             wishlistIds={state.wishlistIds}
             actions={actions}
+            nowMs={state.nowMs ?? Date.now()}
           />
         </section>
       )}
@@ -1114,6 +1154,9 @@ const toLoadable = <T,>(result: ApiResult<T>): Loadable<T> => {
   return { status: "error" };
 };
 
+/** Période de mise à jour de l'horloge de fraîcheur des prix des tuiles. */
+const PRICE_CLOCK_TICK_MS = 60_000;
+
 export const SearchScreen = ({ onToggleWishlist, onQuickAdd }: SearchScreenProps) => {
   const [input, setInput] = useState("");
   const [committed, setCommitted] = useState("");
@@ -1135,6 +1178,8 @@ export const SearchScreen = ({ onToggleWishlist, onQuickAdd }: SearchScreenProps
   const [wishlistIds, setWishlistIds] = useState<ReadonlySet<string>>(new Set());
   const [announcement, setAnnouncement] = useState("");
   const [retryToken, setRetryToken] = useState(0);
+  // Horloge du calcul de fraîcheur des prix : rafraîchie chaque minute.
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1147,6 +1192,11 @@ export const SearchScreen = ({ onToggleWishlist, onQuickAdd }: SearchScreenProps
   // Historique local : lu après l'hydratation (jamais pendant le rendu serveur).
   useEffect(() => {
     setRecents(loadRecentSearches());
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), PRICE_CLOCK_TICK_MS);
+    return () => clearInterval(timer);
   }, []);
 
   const updateRecents = (next: ReadonlyArray<string>): void => {
@@ -1366,6 +1416,7 @@ export const SearchScreen = ({ onToggleWishlist, onQuickAdd }: SearchScreenProps
           loadingMore,
           wishlistIds,
           announcement,
+          nowMs,
         }}
       />
     </div>

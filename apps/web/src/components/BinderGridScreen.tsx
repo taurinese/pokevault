@@ -1,4 +1,9 @@
-import { type CardLanguage, type CardVariant, tcgdexCardImageUrl } from "@pokevault/domain";
+import {
+  type CardLanguage,
+  type CardVariant,
+  computePriceFreshness,
+  tcgdexCardImageUrl,
+} from "@pokevault/domain";
 import { Link } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -29,7 +34,8 @@ import {
   filterBinderGridCards,
   hasActiveAdvancedFilters,
 } from "../lib/binder-grid-client.ts";
-import { CardTile } from "./CardTile.tsx";
+import { formatPriceCents, tilePriceCents } from "../lib/card-detail-client.ts";
+import { CardTile, cardTilePriceLabel } from "./CardTile.tsx";
 
 // ---------------------------------------------------------------------------
 // Modèle de vue (pur : rendu testable via `renderToStaticMarkup`)
@@ -47,6 +53,8 @@ export interface BinderGridViewState {
   readonly quickFilter: BinderGridQuickFilter;
   readonly advanced: BinderGridAdvancedFilters;
   readonly advancedOpen: boolean;
+  /** Instant de référence (ms) du calcul de fraîcheur des prix (défaut : `Date.now()`). */
+  readonly nowMs?: number | undefined;
 }
 
 export interface BinderGridViewActions {
@@ -308,6 +316,20 @@ const BinderHeader = ({
           </span>
         </div>
       )}
+      {stats?.totalValueCents == null ? null : (
+        <p
+          data-testid="binder-value"
+          className="mt-1.5 flex items-baseline justify-between gap-2 text-[11px] text-muted"
+        >
+          <span>{t("binderGrid.value.label")}</span>
+          <span
+            data-testid="binder-value-amount"
+            className="font-mono text-sm font-semibold tabular-nums text-primary"
+          >
+            {formatPriceCents(stats.totalValueCents)}
+          </span>
+        </p>
+      )}
     </header>
   );
 };
@@ -485,10 +507,12 @@ const FiltersBar = ({
 const GridCard = ({
   card,
   priority,
+  nowMs,
   onSelectCard,
 }: {
   readonly card: BinderGridCard;
   readonly priority: boolean;
+  readonly nowMs: number;
   readonly onSelectCard: (card: BinderGridCard) => void;
 }) => {
   const tile = cardTileStateFor(card.totalQuantity);
@@ -500,7 +524,12 @@ const GridCard = ({
       : missing
         ? t("cardTile.missing", { name: card.nameFr })
         : t("cardTile.owned", { name: card.nameFr });
-  const baseAriaLabel = `${t("binderGrid.card.open", { name: card.nameFr, localId: card.localId })} — ${ownershipLabel}`;
+  const priceCents = tilePriceCents(card.price);
+  const priceFreshness = computePriceFreshness(card.price ?? null, nowMs);
+  const priceLabel = cardTilePriceLabel(priceCents, priceFreshness);
+  const baseAriaLabel = `${t("binderGrid.card.open", { name: card.nameFr, localId: card.localId })} — ${ownershipLabel}${
+    priceLabel === null ? "" : ` — ${priceLabel}`
+  }`;
   const ariaLabel =
     missing && card.inWishlist
       ? `${baseAriaLabel} — ${t("binderGrid.card.wishlist")}`
@@ -528,6 +557,8 @@ const GridCard = ({
           imageUrl={tcgdexCardImageUrl(card.imageBaseUrl, "low")}
           state={tile.state === "duplicate" ? "owned" : tile.state}
           priority={priority}
+          priceCents={priceCents}
+          priceFreshness={priceFreshness}
         />
         {tile.state === "owned" ? (
           <span
@@ -571,9 +602,11 @@ const GridCard = ({
 
 const GridBody = ({
   cards,
+  nowMs,
   onSelectCard,
 }: {
   readonly cards: ReadonlyArray<BinderGridCard>;
+  readonly nowMs: number;
   readonly onSelectCard: (card: BinderGridCard) => void;
 }) => {
   const scrollRef = useRef<HTMLElement>(null);
@@ -610,6 +643,7 @@ const GridBody = ({
                   key={card.id}
                   card={card}
                   priority={rowIndex * BINDER_GRID_COLUMNS + cardIndex < PRIORITY_CARD_COUNT}
+                  nowMs={nowMs}
                   onSelectCard={onSelectCard}
                 />
               ))}
@@ -642,6 +676,7 @@ const GridBody = ({
                   priority={
                     virtualRow.index * BINDER_GRID_COLUMNS + cardIndex < PRIORITY_CARD_COUNT
                   }
+                  nowMs={nowMs}
                   onSelectCard={onSelectCard}
                 />
               )) ?? null}
@@ -713,7 +748,11 @@ export const BinderGridView = ({ state, actions }: BinderGridViewProps) => {
               ) : null}
             </CenteredNotice>
           ) : (
-            <GridBody cards={filtered} onSelectCard={actions.onSelectCard} />
+            <GridBody
+              cards={filtered}
+              nowMs={state.nowMs ?? Date.now()}
+              onSelectCard={actions.onSelectCard}
+            />
           )}
         </>
       ) : load.status === "loading" ? (
@@ -773,6 +812,9 @@ export interface BinderGridScreenProps {
   readonly onOpenShare?: (() => void) | undefined;
 }
 
+/** Période de mise à jour de l'horloge de fraîcheur des prix des tuiles. */
+const PRICE_CLOCK_TICK_MS = 60_000;
+
 const isAbort = (error: unknown): boolean =>
   error instanceof DOMException && error.name === "AbortError";
 
@@ -792,10 +834,17 @@ export const BinderGridScreen = ({
   const [advanced, setAdvanced] = useState<BinderGridAdvancedFilters>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
+  // Horloge du calcul de fraîcheur des prix : mise à jour à chaque chargement puis chaque minute.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   // Identifiant du classeur actuellement chargé : les rechargements suivants
   // sur le MÊME classeur (`reloadToken`, mutations Fiche Carte T4.2) sont
   // silencieux ; un changement de `binderId` repasse proprement en `loading`.
   const loadedBinderIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), PRICE_CLOCK_TICK_MS);
+    return () => clearInterval(timer);
+  }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `retryToken`/`reloadToken` relancent volontairement le chargement
   useEffect(() => {
@@ -808,6 +857,7 @@ export const BinderGridScreen = ({
     fetchBinderGrid(binderId, controller.signal)
       .then((result) => {
         if (result.kind === "ok") {
+          setNowMs(Date.now());
           loadedBinderIdRef.current = result.payload.binder === null ? null : binderId;
           setLoad(
             result.payload.binder === null
@@ -850,5 +900,10 @@ export const BinderGridScreen = ({
     ...(onOpenShare === undefined ? {} : { onOpenShare }),
   };
 
-  return <BinderGridView state={{ load, quickFilter, advanced, advancedOpen }} actions={actions} />;
+  return (
+    <BinderGridView
+      state={{ load, quickFilter, advanced, advancedOpen, nowMs }}
+      actions={actions}
+    />
+  );
 };

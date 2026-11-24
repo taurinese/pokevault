@@ -17,6 +17,7 @@ import { Route as CollectionRouteImport } from './routes/collection'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SearchRouteImport } from './routes/search'
 import { Route as WishlistRouteImport } from './routes/wishlist'
+import { Route as ApiDashboardRouteImport } from './routes/api/dashboard'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as BinderIdRouteImport } from './routes/binder/$id'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
@@ -32,12 +33,16 @@ import { Route as ApiBurstSetsRouteImport } from './routes/api/burst/sets'
 import { Route as ApiCatalogDiscoverRouteImport } from './routes/api/catalog/discover'
 import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/search'
 import { Route as ApiCatalogSuggestRouteImport } from './routes/api/catalog/suggest'
+import { Route as ApiWishlistIndexRouteImport } from './routes/api/wishlist/index'
 import { Route as ApiBindersIdIndexRouteImport } from './routes/api/binders/$id/index'
 import { Route as ApiBindersIdCoverRouteImport } from './routes/api/binders/$id/cover'
 import { Route as ApiCardsCardIdIndexRouteImport } from './routes/api/cards/$cardId/index'
 import { Route as ApiCardsCardIdBindersRouteImport } from './routes/api/cards/$cardId/binders'
 import { Route as ApiCardsCardIdCopiesRouteImport } from './routes/api/cards/$cardId/copies'
+import { Route as ApiCardsCardIdPriceRefreshRouteImport } from './routes/api/cards/$cardId/price-refresh'
 import { Route as ApiCardsCopiesCopyIdRouteImport } from './routes/api/cards/copies/$copyId'
+import { Route as ApiWishlistIdIndexRouteImport } from './routes/api/wishlist/$id/index'
+import { Route as ApiWishlistIdAcquireRouteImport } from './routes/api/wishlist/$id/acquire'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -77,6 +82,11 @@ const SearchRoute = SearchRouteImport.update({
 const WishlistRoute = WishlistRouteImport.update({
   id: '/wishlist',
   path: '/wishlist',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDashboardRoute = ApiDashboardRouteImport.update({
+  id: '/api/dashboard',
+  path: '/api/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiHealthRoute = ApiHealthRouteImport.update({
@@ -154,6 +164,11 @@ const ApiCatalogSuggestRoute = ApiCatalogSuggestRouteImport.update({
   path: '/api/catalog/suggest',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiWishlistIndexRoute = ApiWishlistIndexRouteImport.update({
+  id: '/api/wishlist/',
+  path: '/api/wishlist/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiBindersIdIndexRoute = ApiBindersIdIndexRouteImport.update({
   id: '/api/binders/$id/',
   path: '/api/binders/$id/',
@@ -179,9 +194,25 @@ const ApiCardsCardIdCopiesRoute = ApiCardsCardIdCopiesRouteImport.update({
   path: '/api/cards/$cardId/copies',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCardsCardIdPriceRefreshRoute =
+  ApiCardsCardIdPriceRefreshRouteImport.update({
+    id: '/api/cards/$cardId/price-refresh',
+    path: '/api/cards/$cardId/price-refresh',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiCardsCopiesCopyIdRoute = ApiCardsCopiesCopyIdRouteImport.update({
   id: '/api/cards/copies/$copyId',
   path: '/api/cards/copies/$copyId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiWishlistIdIndexRoute = ApiWishlistIdIndexRouteImport.update({
+  id: '/api/wishlist/$id/',
+  path: '/api/wishlist/$id/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiWishlistIdAcquireRoute = ApiWishlistIdAcquireRouteImport.update({
+  id: '/api/wishlist/$id/acquire',
+  path: '/api/wishlist/$id/acquire',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -194,6 +225,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
+  '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
   '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
@@ -209,12 +241,16 @@ export interface FileRoutesByFullPath {
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
   '/api/binders/': typeof ApiBindersIndexRoute
+  '/api/wishlist/': typeof ApiWishlistIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
   '/api/cards/$cardId/binders': typeof ApiCardsCardIdBindersRoute
   '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
+  '/api/cards/$cardId/price-refresh': typeof ApiCardsCardIdPriceRefreshRoute
   '/api/cards/copies/$copyId': typeof ApiCardsCopiesCopyIdRoute
+  '/api/wishlist/$id/acquire': typeof ApiWishlistIdAcquireRoute
   '/api/binders/$id/': typeof ApiBindersIdIndexRoute
   '/api/cards/$cardId/': typeof ApiCardsCardIdIndexRoute
+  '/api/wishlist/$id/': typeof ApiWishlistIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -225,6 +261,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
+  '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
   '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
@@ -240,12 +277,16 @@ export interface FileRoutesByTo {
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
   '/api/binders': typeof ApiBindersIndexRoute
+  '/api/wishlist': typeof ApiWishlistIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
   '/api/cards/$cardId/binders': typeof ApiCardsCardIdBindersRoute
   '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
+  '/api/cards/$cardId/price-refresh': typeof ApiCardsCardIdPriceRefreshRoute
   '/api/cards/copies/$copyId': typeof ApiCardsCopiesCopyIdRoute
+  '/api/wishlist/$id/acquire': typeof ApiWishlistIdAcquireRoute
   '/api/binders/$id': typeof ApiBindersIdIndexRoute
   '/api/cards/$cardId': typeof ApiCardsCardIdIndexRoute
+  '/api/wishlist/$id': typeof ApiWishlistIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -257,6 +298,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
+  '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
   '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
@@ -272,12 +314,16 @@ export interface FileRoutesById {
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
   '/api/binders/': typeof ApiBindersIndexRoute
+  '/api/wishlist/': typeof ApiWishlistIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
   '/api/cards/$cardId/binders': typeof ApiCardsCardIdBindersRoute
   '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
+  '/api/cards/$cardId/price-refresh': typeof ApiCardsCardIdPriceRefreshRoute
   '/api/cards/copies/$copyId': typeof ApiCardsCopiesCopyIdRoute
+  '/api/wishlist/$id/acquire': typeof ApiWishlistIdAcquireRoute
   '/api/binders/$id/': typeof ApiBindersIdIndexRoute
   '/api/cards/$cardId/': typeof ApiCardsCardIdIndexRoute
+  '/api/wishlist/$id/': typeof ApiWishlistIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -290,6 +336,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/search'
     | '/wishlist'
+    | '/api/dashboard'
     | '/api/health'
     | '/binder/$id'
     | '/api/auth/callback'
@@ -305,12 +352,16 @@ export interface FileRouteTypes {
     | '/api/catalog/search'
     | '/api/catalog/suggest'
     | '/api/binders/'
+    | '/api/wishlist/'
     | '/api/binders/$id/cover'
     | '/api/cards/$cardId/binders'
     | '/api/cards/$cardId/copies'
+    | '/api/cards/$cardId/price-refresh'
     | '/api/cards/copies/$copyId'
+    | '/api/wishlist/$id/acquire'
     | '/api/binders/$id/'
     | '/api/cards/$cardId/'
+    | '/api/wishlist/$id/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -321,6 +372,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/search'
     | '/wishlist'
+    | '/api/dashboard'
     | '/api/health'
     | '/binder/$id'
     | '/api/auth/callback'
@@ -336,12 +388,16 @@ export interface FileRouteTypes {
     | '/api/catalog/search'
     | '/api/catalog/suggest'
     | '/api/binders'
+    | '/api/wishlist'
     | '/api/binders/$id/cover'
     | '/api/cards/$cardId/binders'
     | '/api/cards/$cardId/copies'
+    | '/api/cards/$cardId/price-refresh'
     | '/api/cards/copies/$copyId'
+    | '/api/wishlist/$id/acquire'
     | '/api/binders/$id'
     | '/api/cards/$cardId'
+    | '/api/wishlist/$id'
   id:
     | '__root__'
     | '/'
@@ -352,6 +408,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/search'
     | '/wishlist'
+    | '/api/dashboard'
     | '/api/health'
     | '/binder/$id'
     | '/api/auth/callback'
@@ -367,12 +424,16 @@ export interface FileRouteTypes {
     | '/api/catalog/search'
     | '/api/catalog/suggest'
     | '/api/binders/'
+    | '/api/wishlist/'
     | '/api/binders/$id/cover'
     | '/api/cards/$cardId/binders'
     | '/api/cards/$cardId/copies'
+    | '/api/cards/$cardId/price-refresh'
     | '/api/cards/copies/$copyId'
+    | '/api/wishlist/$id/acquire'
     | '/api/binders/$id/'
     | '/api/cards/$cardId/'
+    | '/api/wishlist/$id/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -384,6 +445,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   SearchRoute: typeof SearchRoute
   WishlistRoute: typeof WishlistRoute
+  ApiDashboardRoute: typeof ApiDashboardRoute
   ApiHealthRoute: typeof ApiHealthRoute
   BinderIdRoute: typeof BinderIdRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
@@ -399,12 +461,16 @@ export interface RootRouteChildren {
   ApiCatalogSearchRoute: typeof ApiCatalogSearchRoute
   ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
   ApiBindersIndexRoute: typeof ApiBindersIndexRoute
+  ApiWishlistIndexRoute: typeof ApiWishlistIndexRoute
   ApiBindersIdCoverRoute: typeof ApiBindersIdCoverRoute
   ApiCardsCardIdBindersRoute: typeof ApiCardsCardIdBindersRoute
   ApiCardsCardIdCopiesRoute: typeof ApiCardsCardIdCopiesRoute
+  ApiCardsCardIdPriceRefreshRoute: typeof ApiCardsCardIdPriceRefreshRoute
   ApiCardsCopiesCopyIdRoute: typeof ApiCardsCopiesCopyIdRoute
+  ApiWishlistIdAcquireRoute: typeof ApiWishlistIdAcquireRoute
   ApiBindersIdIndexRoute: typeof ApiBindersIdIndexRoute
   ApiCardsCardIdIndexRoute: typeof ApiCardsCardIdIndexRoute
+  ApiWishlistIdIndexRoute: typeof ApiWishlistIdIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -463,6 +529,13 @@ declare module '@tanstack/react-router' {
       path: '/wishlist'
       fullPath: '/wishlist'
       preLoaderRoute: typeof WishlistRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/dashboard': {
+      id: '/api/dashboard'
+      path: '/api/dashboard'
+      fullPath: '/api/dashboard'
+      preLoaderRoute: typeof ApiDashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/health': {
@@ -570,6 +643,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCatalogSuggestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/wishlist/': {
+      id: '/api/wishlist/'
+      path: '/api/wishlist'
+      fullPath: '/api/wishlist/'
+      preLoaderRoute: typeof ApiWishlistIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/binders/$id/': {
       id: '/api/binders/$id/'
       path: '/api/binders/$id'
@@ -605,11 +685,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCardsCardIdCopiesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/cards/$cardId/price-refresh': {
+      id: '/api/cards/$cardId/price-refresh'
+      path: '/api/cards/$cardId/price-refresh'
+      fullPath: '/api/cards/$cardId/price-refresh'
+      preLoaderRoute: typeof ApiCardsCardIdPriceRefreshRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/cards/copies/$copyId': {
       id: '/api/cards/copies/$copyId'
       path: '/api/cards/copies/$copyId'
       fullPath: '/api/cards/copies/$copyId'
       preLoaderRoute: typeof ApiCardsCopiesCopyIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/wishlist/$id/': {
+      id: '/api/wishlist/$id/'
+      path: '/api/wishlist/$id'
+      fullPath: '/api/wishlist/$id/'
+      preLoaderRoute: typeof ApiWishlistIdIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/wishlist/$id/acquire': {
+      id: '/api/wishlist/$id/acquire'
+      path: '/api/wishlist/$id/acquire'
+      fullPath: '/api/wishlist/$id/acquire'
+      preLoaderRoute: typeof ApiWishlistIdAcquireRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -624,6 +725,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   SearchRoute: SearchRoute,
   WishlistRoute: WishlistRoute,
+  ApiDashboardRoute: ApiDashboardRoute,
   ApiHealthRoute: ApiHealthRoute,
   BinderIdRoute: BinderIdRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
@@ -639,12 +741,16 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCatalogSearchRoute: ApiCatalogSearchRoute,
   ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
   ApiBindersIndexRoute: ApiBindersIndexRoute,
+  ApiWishlistIndexRoute: ApiWishlistIndexRoute,
   ApiBindersIdCoverRoute: ApiBindersIdCoverRoute,
   ApiCardsCardIdBindersRoute: ApiCardsCardIdBindersRoute,
   ApiCardsCardIdCopiesRoute: ApiCardsCardIdCopiesRoute,
+  ApiCardsCardIdPriceRefreshRoute: ApiCardsCardIdPriceRefreshRoute,
   ApiCardsCopiesCopyIdRoute: ApiCardsCopiesCopyIdRoute,
+  ApiWishlistIdAcquireRoute: ApiWishlistIdAcquireRoute,
   ApiBindersIdIndexRoute: ApiBindersIdIndexRoute,
   ApiCardsCardIdIndexRoute: ApiCardsCardIdIndexRoute,
+  ApiWishlistIdIndexRoute: ApiWishlistIdIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -32,8 +32,10 @@ import {
   type BinderGridCard,
   type BinderGridCopy,
   type BinderGridPayload,
+  type BinderGridPrice,
   emptyBinderGridPayload,
 } from "./binder-grid-client.ts";
+import { tilePriceCents } from "./card-detail-client.ts";
 
 // ---------------------------------------------------------------------------
 // Dépendances injectables
@@ -185,7 +187,17 @@ interface CatalogCardRow {
   readonly image_base_url: string | null;
 }
 
-interface CopyRow {
+/** Colonnes d'un snapshot de `card_latest_prices` (toutes `null` / absentes sans snapshot). */
+interface PriceColumns {
+  readonly price_source?: string | null;
+  readonly price_trend_cents?: number | null;
+  readonly price_low_fr_cents?: number | null;
+  readonly price_avg30_cents?: number | null;
+  readonly price_fetched_at?: Date | string | null;
+  readonly price_expires_at?: Date | string | null;
+}
+
+interface CopyRow extends PriceColumns {
   readonly id: string;
   readonly card_id: string;
   readonly language: CardLanguage;
@@ -195,6 +207,58 @@ interface CopyRow {
   readonly grading_company: string | null;
   readonly grading_score: string | null;
 }
+
+interface CardPriceRow extends PriceColumns {
+  readonly card_id: string;
+}
+
+const isoOf = (value: Date | string): string =>
+  value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+
+/** Colonnes de prix → prix du payload (`null` sans snapshot). */
+const toGridPrice = (row: PriceColumns): BinderGridPrice | null => {
+  const source = row.price_source;
+  const fetchedAt = row.price_fetched_at;
+  const expiresAt = row.price_expires_at;
+  if (
+    (source !== "cardmarket" && source !== "tcgdex_fallback") ||
+    fetchedAt === null ||
+    fetchedAt === undefined ||
+    expiresAt === null ||
+    expiresAt === undefined
+  ) {
+    return null;
+  }
+  return {
+    trendCents: row.price_trend_cents ?? null,
+    lowFrCents: row.price_low_fr_cents ?? null,
+    avg30Cents: row.price_avg30_cents ?? null,
+    source,
+    fetchedAt: isoOf(fetchedAt),
+    expiresAt: isoOf(expiresAt),
+  };
+};
+
+/**
+ * Prix de référence d'une carte : celui de l'exemplaire possédé (langue FR puis
+ * variante `normal` d'abord, ordre canonique) qui a un snapshot, sinon le prix par
+ * défaut de la carte (`(FR, normal)` de préférence, sinon le plus récent).
+ */
+const pickCardPrice = (
+  copies: ReadonlyArray<CopyRow>,
+  fallback: BinderGridPrice | null,
+): BinderGridPrice | null => {
+  const ranked = [...copies].sort(
+    (a, b) =>
+      LANGUAGE_ORDER.indexOf(a.language) - LANGUAGE_ORDER.indexOf(b.language) ||
+      CARD_VARIANT_ORDER.indexOf(a.variant) - CARD_VARIANT_ORDER.indexOf(b.variant),
+  );
+  for (const copy of ranked) {
+    const price = toGridPrice(copy);
+    if (price !== null) return price;
+  }
+  return fallback;
+};
 
 /**
  * Charge le classeur, ses cartes et les exemplaires de l'utilisateur dans la
@@ -233,20 +297,70 @@ const loadBinderGrid = async (
            order by bc.position asc, bc.added_at asc`;
 
   const cardIds = cardRows.map((row) => row.id);
+  // Prix : chaque exemplaire porte le snapshot de SA langue/variante (`LEFT JOIN LATERAL
+  // (… LIMIT 1)` sur `card_latest_prices` : le `LIMIT 1` pousse `(card_id, language,
+  // variant)` dans la vue `DISTINCT ON` → Index Scan sur `idx_price_snapshots_lookup`).
   const copyRows: ReadonlyArray<CopyRow> =
     cardIds.length === 0
       ? []
       : await tx<CopyRow[]>`
           select c.id, c.card_id, c.language, c.variant, c.condition, c.quantity,
-                 c.grading_company, c.grading_score
+                 c.grading_company, c.grading_score,
+                 p.source as price_source, p.trend_cents as price_trend_cents,
+                 p.low_fr_cents as price_low_fr_cents, p.avg30_cents as price_avg30_cents,
+                 p.fetched_at as price_fetched_at, p.expires_at as price_expires_at
             from public.user_card_copies c
+            left join lateral (
+              select lp.source, lp.trend_cents, lp.low_fr_cents, lp.avg30_cents,
+                     lp.fetched_at, lp.expires_at
+                from public.card_latest_prices lp
+               where lp.card_id = c.card_id and lp.language = c.language
+                 and lp.variant = c.variant
+               limit 1
+            ) p on true
            where c.user_id = ${userId} and c.card_id in ${tx(cardIds)}`;
+
+  // Prix par défaut de chaque carte (non possédée, ou exemplaire sans snapshot exact) :
+  // `(FR, normal)` d'abord, sinon le snapshot le plus récent (toujours `LIMIT 1`).
+  const defaultPriceRows: ReadonlyArray<CardPriceRow> =
+    cardIds.length === 0
+      ? []
+      : await tx<CardPriceRow[]>`
+          select c.id as card_id,
+                 p.source as price_source, p.trend_cents as price_trend_cents,
+                 p.low_fr_cents as price_low_fr_cents, p.avg30_cents as price_avg30_cents,
+                 p.fetched_at as price_fetched_at, p.expires_at as price_expires_at
+            from public.catalog_cards c
+            left join lateral (
+              select lp.source, lp.trend_cents, lp.low_fr_cents, lp.avg30_cents,
+                     lp.fetched_at, lp.expires_at
+                from public.card_latest_prices lp
+               where lp.card_id = c.id
+               order by (lp.language = 'FR' and lp.variant = 'normal') desc,
+                        lp.fetched_at desc, lp.id desc
+               limit 1
+            ) p on true
+           where c.id in ${tx(cardIds)}`;
+  const defaultPriceByCard = new Map<string, BinderGridPrice | null>(
+    defaultPriceRows.map((row) => [row.card_id, toGridPrice(row)] as const),
+  );
 
   const copiesByCard = new Map<string, Array<CopyRow>>();
   for (const row of copyRows) {
     const list = copiesByCard.get(row.card_id) ?? [];
     list.push(row);
     copiesByCard.set(row.card_id, list);
+  }
+
+  // Valeur réelle du classeur : Σ quantité × prix de l'exemplaire (sa langue/variante,
+  // sinon le prix par défaut de la carte) ; `null` si aucun exemplaire n'est coté.
+  let totalValueCents = 0;
+  let pricedCopies = 0;
+  for (const copy of copyRows) {
+    const unit = tilePriceCents(toGridPrice(copy) ?? defaultPriceByCard.get(copy.card_id) ?? null);
+    if (unit === null) continue;
+    totalValueCents += unit * copy.quantity;
+    pricedCopies += 1;
   }
 
   const cards: ReadonlyArray<BinderGridCard> = cardRows.map((row): BinderGridCard => {
@@ -281,6 +395,7 @@ const loadBinderGrid = async (
           gradingScore: copy.grading_score,
         }),
       ),
+      price: pickCardPrice(copies, defaultPriceByCard.get(row.id) ?? null),
     };
   });
 
@@ -330,7 +445,7 @@ const loadBinderGrid = async (
       setId: binder.set_id,
       setCode: binder.set_code,
       setNameFr: binder.set_name_fr,
-      stats,
+      stats: { ...stats, totalValueCents: pricedCopies === 0 ? null : totalValueCents },
     },
     cards,
   };
