@@ -228,18 +228,48 @@ export type ParsedBody =
   | { readonly ok: false; readonly status: 400 | 413 };
 
 /**
- * Lit un corps JSON borné : `content-length` déclaré > plafond ou texte trop
- * long → 413 ; JSON illisible → 400.
+ * Lit un corps JSON borné en octets réels :
+ * - vérifie d'abord `content-length` déclaré (> plafond → 413) ;
+ * - lit le flux chunk par chunk et interrompt dès que le cumul dépasse
+ *   `MAX_BODY_BYTES` (jamais un corps illimité en mémoire, y compris chunked
+ *   sans `content-length`) ;
+ * - erreur de lecture du flux ou JSON illisible → 400 (jamais 500).
  */
 export const readJsonBody = async (request: Request): Promise<ParsedBody> => {
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
     return { ok: false, status: 413 };
   }
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) return { ok: false, status: 413 };
+  let bytes: Uint8Array;
+  if (request.body === null) {
+    bytes = new Uint8Array(0);
+  } else {
+    const reader = request.body.getReader();
+    const chunks: Array<Uint8Array> = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_BODY_BYTES) {
+          void reader.cancel().catch(() => {});
+          return { ok: false, status: 413 };
+        }
+        chunks.push(value);
+      }
+    } catch {
+      return { ok: false, status: 400 };
+    }
+    bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+  }
   try {
-    return { ok: true, body: JSON.parse(text) };
+    return { ok: true, body: JSON.parse(new TextDecoder().decode(bytes)) };
   } catch {
     return { ok: false, status: 400 };
   }
@@ -478,7 +508,8 @@ export const handleAddCardCopy = async (
   }
 
   // Le service décode/valide via `decodeUpsertCardCopyInput` (ValidationError → 400).
-  const input = { cardId, ...parsed.body } as UpsertCardCopyInput;
+  // Le `cardId` de l'URL prime toujours sur un éventuel champ `cardId` du corps.
+  const input = { ...parsed.body, cardId } as UpsertCardCopyInput;
   const exit = await Effect.runPromiseExit(deps.services.collection.upsertCardCopy(userId, input));
   if (Exit.isSuccess(exit)) {
     return json(exit.value, 201, "no-store", cookies);

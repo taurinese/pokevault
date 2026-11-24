@@ -1,4 +1,5 @@
 import {
+  CARD_COPY_NOTES_MAX_LENGTH,
   CardAspectRatio,
   type CardCondition,
   type CardLanguage,
@@ -29,6 +30,7 @@ import {
   fetchCardDetail,
   formatIsoDate,
   formatPriceCents,
+  isSafeHttpsUrl,
   parsePurchasePriceEuros,
   setCardInBinder,
 } from "../lib/card-detail-client.ts";
@@ -65,6 +67,7 @@ export interface CardDetailViewState {
   readonly pendingBinderId: string | null;
   readonly submittingAdd: boolean;
   readonly actionError: boolean;
+  readonly statusMessage?: string | undefined;
   readonly form: AddCopyFormState;
   readonly formError: AddCopyFormError;
 }
@@ -146,7 +149,7 @@ const actionButtonClass = (active: boolean): string =>
 
 const stepperButtonClass = `grid min-h-[44px] min-w-[44px] place-items-center rounded-pill border border-line bg-surface-2 text-secondary transition-colors hover:text-primary disabled:opacity-40 ${focusRing}`;
 
-const selectClass = `h-10 w-full rounded-card border border-line bg-surface-2 px-2 text-sm text-primary ${focusRing}`;
+const selectClass = `min-h-11 w-full rounded-card border border-line bg-surface-2 px-2 text-sm text-primary ${focusRing}`;
 
 // ---------------------------------------------------------------------------
 // Briques
@@ -420,7 +423,7 @@ const CardDetailContent = ({
       >
         <h3 className={sectionHeadingClass}>{t("cardDetail.price.heading")}</h3>
         <p className="text-sm text-secondary">{t("cardDetail.price.soon")}</p>
-        {card.cardmarketUrl === null ? null : (
+        {isSafeHttpsUrl(card.cardmarketUrl) ? (
           <a
             data-testid="card-detail-cardmarket-link"
             href={card.cardmarketUrl}
@@ -431,11 +434,14 @@ const CardDetailContent = ({
             {t("cardDetail.price.link")}
             <ExternalLink size={14} aria-hidden="true" />
           </a>
-        )}
+        ) : null}
       </section>
 
       {/* Mes exemplaires */}
       <section className="flex flex-col gap-2" aria-label={t("cardDetail.copies.heading")}>
+        <output aria-live="polite" data-testid="card-detail-live-status" className="sr-only">
+          {state.statusMessage ?? ""}
+        </output>
         <h3 className={sectionHeadingClass} data-testid="card-detail-copies-heading">
           {t("cardDetail.copies.heading")}
           <span className="ml-1 font-mono tabular-nums">
@@ -621,10 +627,11 @@ const CardDetailContent = ({
                 id="card-detail-form-notes"
                 data-testid="card-detail-form-notes"
                 rows={2}
+                maxLength={CARD_COPY_NOTES_MAX_LENGTH}
                 placeholder={t("cardDetail.add.notes.placeholder")}
                 value={state.form.notes}
                 onChange={(event) => actions.onFormChange({ notes: event.target.value })}
-                className="w-full rounded-card border border-line bg-surface-2 px-2 py-1.5 text-sm text-primary"
+                className={`w-full rounded-card border border-line bg-surface-2 px-2 py-1.5 text-sm text-primary ${focusRing}`}
               />
             </label>
             {state.formError === "generic" ? (
@@ -743,6 +750,32 @@ const emptyForm = (availableVariants: ReadonlyArray<CardVariant>): AddCopyFormSt
 });
 
 /**
+ * Un rechargement silencieux n'est autorisé que lorsque la fiche actuellement
+ * chargée correspond au même `cardId` (jamais après fermeture ou changement de carte).
+ */
+export const isSilentCardReload = (
+  loadedCardId: string | null,
+  nextCardId: string | null,
+): boolean => nextCardId !== null && loadedCardId === nextCardId;
+
+/** Applique immédiatement le résultat d'un stepper à la liste locale avant rechargement silencieux. */
+export const applyStepperResultToPayload = (
+  payload: CardDetailPayload,
+  copyId: string,
+  result: { readonly copy: UserCardCopy | null; readonly deleted: boolean },
+): CardDetailPayload => {
+  if (result.deleted) {
+    return { ...payload, copies: payload.copies.filter((item) => item.id !== copyId) };
+  }
+  const updated = result.copy;
+  if (updated === null) return payload;
+  return {
+    ...payload,
+    copies: payload.copies.map((item) => (item.id === copyId ? updated : item)),
+  };
+};
+
+/**
  * Bottom Sheet `04 · Fiche Carte` (conteneur) : charge la fiche via
  * `GET /api/cards/$cardId`, applique les mutations (`POST/PATCH/DELETE`) puis
  * recharge la fiche silencieusement et notifie le parent (`onCopiesChanged`)
@@ -766,14 +799,27 @@ export const CardDetailSheet = ({
   const [pendingBinderId, setPendingBinderId] = useState<string | null>(null);
   const [submittingAdd, setSubmittingAdd] = useState(false);
   const [actionError, setActionError] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | undefined>(undefined);
   const [form, setForm] = useState<AddCopyFormState>(() => emptyForm(["normal"]));
   const [formError, setFormError] = useState<AddCopyFormError>(null);
-  // `true` once a payload is loaded for the current card → silent reloads after mutations.
-  const readyRef = useRef(false);
+  // Identifiant de la carte actuellement chargée : évite d'afficher les données
+  // d'une carte A pendant le chargement de la carte B.
+  const loadedCardIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    // Reset de l'état visuel local quand on ouvre une autre carte.
-    if (cardId === null) return;
+    // Reset de l'état visuel local quand on ferme ou ouvre une autre carte.
+    if (cardId === null) {
+      loadedCardIdRef.current = null;
+      setLoad({ status: "loading" });
+      setBindersOpen(false);
+      setAddFormOpen(false);
+      setPendingCopyId(null);
+      setPendingBinderId(null);
+      setActionError(false);
+      setFormError(null);
+      setStatusMessage(undefined);
+      return;
+    }
     setWishlisted(initialWishlisted);
     setActionError(false);
   }, [cardId, initialWishlisted]);
@@ -782,21 +828,36 @@ export const CardDetailSheet = ({
   useEffect(() => {
     if (cardId === null) return;
     const controller = new AbortController();
-    const silent = readyRef.current;
-    readyRef.current = false;
-    if (!silent) setLoad({ status: "loading" });
+    const silent = isSilentCardReload(loadedCardIdRef.current, cardId);
+    if (!silent) {
+      loadedCardIdRef.current = null;
+      setLoad({ status: "loading" });
+      setBindersOpen(false);
+      setAddFormOpen(false);
+      setActionError(false);
+      setFormError(null);
+      setStatusMessage(undefined);
+    }
     fetchCardDetail(cardId, controller.signal)
       .then((result) => {
         if (result.kind === "ok") {
-          readyRef.current = true;
+          const isFirstLoadForCard = loadedCardIdRef.current !== cardId;
+          loadedCardIdRef.current = cardId;
           setLoad({ status: "ready", payload: result.payload });
-          setForm(emptyForm(result.payload.card.availableVariants));
+          // N'écrase pas une saisie en cours lors d'un rechargement silencieux.
+          if (isFirstLoadForCard) {
+            setForm(emptyForm(result.payload.card.availableVariants));
+          }
         } else {
+          loadedCardIdRef.current = null;
           setLoad({ status: "error" });
         }
       })
       .catch((error: unknown) => {
-        if (!isAbort(error)) setLoad({ status: "error" });
+        if (!isAbort(error)) {
+          loadedCardIdRef.current = null;
+          setLoad({ status: "error" });
+        }
       });
     return () => controller.abort();
   }, [cardId, reloadToken]);
@@ -811,6 +872,18 @@ export const CardDetailSheet = ({
     const result = await adjustCardCopyQuantity(copy.id, delta);
     setPendingCopyId(null);
     if (result.kind === "ok") {
+      const nextCount = result.body.deleted
+        ? 0
+        : (result.body.copy?.quantity ?? Math.max(0, copy.quantity + delta));
+      setLoad((current) =>
+        current.status === "ready"
+          ? {
+              status: "ready",
+              payload: applyStepperResultToPayload(current.payload, copy.id, result.body),
+            }
+          : current,
+      );
+      setStatusMessage(t("cardDetail.stepper.quantity", { count: nextCount }));
       refresh();
       onCopiesChanged?.();
     } else {
@@ -823,8 +896,12 @@ export const CardDetailSheet = ({
     setPendingBinderId(binder.id);
     const result = await setCardInBinder(cardId, binder.id, !binder.containsCard);
     setPendingBinderId(null);
-    if (result.kind === "ok") refresh();
-    else setActionError(true);
+    if (result.kind === "ok") {
+      refresh();
+      onCopiesChanged?.();
+    } else {
+      setActionError(true);
+    }
   };
 
   const handleSubmitAdd = async () => {
@@ -851,6 +928,7 @@ export const CardDetailSheet = ({
     if (result.kind === "ok") {
       setAddFormOpen(false);
       setForm(emptyForm(readyPayload?.card.availableVariants ?? ["normal"]));
+      setStatusMessage(t("cardDetail.stepper.quantity", { count: result.body.quantity }));
       refresh();
       onCopiesChanged?.();
     } else {
@@ -870,7 +948,10 @@ export const CardDetailSheet = ({
 
   const actions: CardDetailViewActions = {
     onClose,
-    onRetry: () => setReloadToken((token) => token + 1),
+    onRetry: () => {
+      loadedCardIdRef.current = null;
+      setReloadToken((token) => token + 1);
+    },
     onToggleWishlist: handleToggleWishlist,
     ...(cardId === null || onOpenViewer3D === undefined
       ? {}
@@ -899,6 +980,7 @@ export const CardDetailSheet = ({
         pendingBinderId,
         submittingAdd,
         actionError,
+        statusMessage,
         form,
         formError,
       }}

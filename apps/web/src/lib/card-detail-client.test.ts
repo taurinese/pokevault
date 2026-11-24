@@ -12,6 +12,7 @@ import {
   fetchCardDetail,
   formatIsoDate,
   formatPriceCents,
+  isSafeHttpsUrl,
   parsePurchasePriceEuros,
   purchasePriceEurosToCents,
   setCardInBinder,
@@ -69,6 +70,16 @@ describe("formatPriceCents / formatIsoDate", () => {
     expect(formatIsoDate("not-a-date")).toBeNull();
     const formatted = formatIsoDate("2026-01-15T10:00:00.000Z");
     expect(formatted).toMatch(/2026/);
+    // Date SQL sans heure (YYYY-MM-DD) : jamais décalée d'un jour quel que soit le fuseau.
+    expect(formatIsoDate("2025-12-31")).toMatch(/31.*2025/);
+  });
+
+  it("only allows https: URLs in isSafeHttpsUrl", () => {
+    expect(isSafeHttpsUrl("https://www.cardmarket.com/fr/Pokemon/Products/123")).toBe(true);
+    expect(isSafeHttpsUrl("http://www.cardmarket.com/fr/Pokemon/Products/123")).toBe(false);
+    expect(isSafeHttpsUrl("javascript:alert(1)")).toBe(false);
+    expect(isSafeHttpsUrl("not-a-url")).toBe(false);
+    expect(isSafeHttpsUrl(null)).toBe(false);
   });
 });
 

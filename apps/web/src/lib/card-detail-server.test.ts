@@ -484,6 +484,80 @@ describe("PATCH /api/cards/copies/$copyId", () => {
     expect(response.status).toBe(413);
   });
 
+  it("aborts a chunked stream > 8 KiB without Content-Length and returns 413", async () => {
+    const h = makeHarness();
+    let cancelled = false;
+    let chunksEmitted = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunksEmitted += 1;
+        controller.enqueue(new Uint8Array(2048).fill(97));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const request = new Request(`http://localhost:3000${path}`, {
+      method: "PATCH",
+      headers: {
+        cookie: signedIn,
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+    const response = await handlePatchCardCopy(request, COPY_ID, h.deps);
+    expect(response.status).toBe(413);
+    expect(cancelled).toBe(true);
+    expect(chunksEmitted).toBeLessThanOrEqual(6);
+  });
+
+  it("returns 400 (never 500) when reading a broken request stream fails", async () => {
+    const h = makeHarness();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("connection reset"));
+      },
+    });
+    const request = new Request(`http://localhost:3000${path}`, {
+      method: "PATCH",
+      headers: {
+        cookie: signedIn,
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+    const response = await handlePatchCardCopy(request, COPY_ID, h.deps);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid_input" });
+  });
+
+  it("ignores a spoofed cardId in the POST body and always uses the URL cardId", async () => {
+    const h = makeHarness();
+    const response = await handleAddCardCopy(
+      req("POST", `/api/cards/${CARD_ID}/copies`, {
+        cookie: signedIn,
+        body: {
+          cardId: "other-set-001",
+          language: "FR",
+          variant: "normal",
+          condition: "NM",
+          quantity: 1,
+        },
+      }),
+      CARD_ID,
+      h.deps,
+    );
+    expect(response.status).toBe(201);
+    expect(h.collection.upsertCardCopy).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ cardId: CARD_ID }),
+    );
+  });
+
   it("stepper: { delta } → 200 { copy, deleted: false }", async () => {
     const h = makeHarness();
     const response = await handlePatchCardCopy(

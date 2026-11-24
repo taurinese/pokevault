@@ -7,9 +7,11 @@ import { fr } from "../i18n/fr.ts";
 import type { CardDetailPayload } from "../lib/card-detail-client.ts";
 import {
   type AddCopyFormState,
+  applyStepperResultToPayload,
   CardDetailView,
   type CardDetailViewActions,
   type CardDetailViewState,
+  isSilentCardReload,
 } from "./CardDetailSheet.tsx";
 
 // ---------------------------------------------------------------------------
@@ -263,6 +265,57 @@ describe("CardDetailView — fiche prête", () => {
     expect(html).not.toContain("high.webp");
     expect(html).toContain("Visuel indisponible");
     expect(html).not.toContain('data-testid="card-detail-cardmarket-link"');
+  });
+
+  it("refuse les URLs non-https pour le lien Cardmarket et expose aria-live + maxLength + 44px", () => {
+    const html = renderReady(
+      makeState({
+        statusMessage: "Quantité : 3",
+        load: {
+          status: "ready",
+          payload: {
+            ...payload,
+            card: { ...payload.card, cardmarketUrl: "javascript:alert(1)" },
+          },
+        },
+      }),
+    );
+    expect(html).not.toContain('data-testid="card-detail-cardmarket-link"');
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain('data-testid="card-detail-live-status"');
+    expect(html).toContain("Quantité : 3");
+    expect(html).toContain('maxLength="1000"');
+    expect(html).toContain("min-h-11");
+  });
+});
+
+describe("CardDetailSheet — isolation par carte et mise à jour locale du stepper", () => {
+  it("n'autorise un rechargement silencieux que pour la même carte chargée", () => {
+    expect(isSilentCardReload(null, "sv03.5-199")).toBe(false);
+    expect(isSilentCardReload("sv03.5-199", null)).toBe(false);
+    expect(isSilentCardReload("sv03.5-199", "sv03.5-001")).toBe(false);
+    expect(isSilentCardReload("sv03.5-199", "sv03.5-199")).toBe(true);
+  });
+
+  it("retire immédiatement un exemplaire supprimé à 0 et met à jour une quantité ajustée", () => {
+    const afterDelete = applyStepperResultToPayload(payload, COPY_ID, {
+      copy: null,
+      deleted: true,
+    });
+    expect(afterDelete.copies.map((item) => item.id)).not.toContain(COPY_ID);
+    expect(afterDelete.copies).toHaveLength(1);
+
+    const updatedCopy = copyFixture({ quantity: 5 });
+    const afterIncrement = applyStepperResultToPayload(payload, COPY_ID, {
+      copy: updatedCopy,
+      deleted: false,
+    });
+    expect(afterIncrement.copies.find((item) => item.id === COPY_ID)?.quantity).toBe(5);
+  });
+
+  it("monte CardDetailSheet avec une key par carte dans routes/binder/$id.tsx", () => {
+    const routeSource = readFileSync(new URL("../routes/binder/$id.tsx", import.meta.url), "utf8");
+    expect(routeSource).toContain('key={selectedCard?.id ?? "none"}');
   });
 });
 

@@ -131,9 +131,32 @@ export const formatPriceCents = (cents: number | null, locale = "fr-FR"): string
 /** Formate une date ISO (`acquiredAt` / `createdAt`) en `fr-FR` (`31 déc. 2025`). */
 export const formatIsoDate = (iso: string | null, locale = "fr-FR"): string | null => {
   if (iso === null) return null;
+  // Date SQL sans heure (`YYYY-MM-DD`) : formatée en UTC pour éviter tout
+  // décalage d'un jour dans les fuseaux à l'ouest d'UTC.
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (dateOnly !== null) {
+    const year = Number(dateOnly[1]);
+    const month = Number(dateOnly[2]);
+    const day = Number(dateOnly[3]);
+    const utcDate = new Date(Date.UTC(year, month - 1, day));
+    if (Number.isNaN(utcDate.getTime())) return null;
+    return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone: "UTC" }).format(
+      utcDate,
+    );
+  }
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return null;
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(date);
+};
+
+/** Vérifie qu'une URL externe utilise strictement `https:` avant injection dans `href`. */
+export const isSafeHttpsUrl = (url: string | null): url is string => {
+  if (url === null) return false;
+  try {
+    return new URL(url).protocol === "https:";
+  } catch {
+    return false;
+  }
 };
 
 // ---------------------------------------------------------------------------

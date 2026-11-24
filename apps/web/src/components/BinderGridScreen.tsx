@@ -792,37 +792,43 @@ export const BinderGridScreen = ({
   const [advanced, setAdvanced] = useState<BinderGridAdvancedFilters>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
-  // `true` tant que le classeur courant est chargé : les rechargements suivants
-  // (`reloadToken`, mutations de la Fiche Carte T4.2) sont silencieux.
-  const readyRef = useRef(false);
+  // Identifiant du classeur actuellement chargé : les rechargements suivants
+  // sur le MÊME classeur (`reloadToken`, mutations Fiche Carte T4.2) sont
+  // silencieux ; un changement de `binderId` repasse proprement en `loading`.
+  const loadedBinderIdRef = useRef<string | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `retryToken`/`reloadToken` relancent volontairement le chargement
   useEffect(() => {
     const controller = new AbortController();
-    // Changement de classeur ou retry explicite → état `loading` ; rechargement
-    // silencieux (T4.2) → le payload courant reste affiché pendant le fetch.
-    const silent = readyRef.current;
-    readyRef.current = false;
-    if (!silent) setLoad({ status: "loading" });
+    const silent = loadedBinderIdRef.current === binderId;
+    if (!silent) {
+      loadedBinderIdRef.current = null;
+      setLoad({ status: "loading" });
+    }
     fetchBinderGrid(binderId, controller.signal)
       .then((result) => {
         if (result.kind === "ok") {
-          readyRef.current = true;
+          loadedBinderIdRef.current = result.payload.binder === null ? null : binderId;
           setLoad(
             result.payload.binder === null
               ? { status: "not-found" }
               : { status: "ready", payload: result.payload },
           );
         } else if (result.kind === "not-found") {
+          loadedBinderIdRef.current = null;
           setLoad({ status: "not-found" });
         } else if (result.kind === "unauthorized") {
           window.location.assign(loginRedirectTo(`/binder/${encodeURIComponent(binderId)}`));
         } else {
+          loadedBinderIdRef.current = null;
           setLoad({ status: "error" });
         }
       })
       .catch((error: unknown) => {
-        if (!isAbort(error)) setLoad({ status: "error" });
+        if (!isAbort(error)) {
+          loadedBinderIdRef.current = null;
+          setLoad({ status: "error" });
+        }
       });
     return () => controller.abort();
   }, [binderId, retryToken, reloadToken]);
@@ -837,7 +843,7 @@ export const BinderGridScreen = ({
     onToggleAdvanced: () => setAdvancedOpen((open) => !open),
     onSelectCard: (card) => onSelectCard?.(card),
     onRetry: () => {
-      readyRef.current = false;
+      loadedBinderIdRef.current = null;
       setRetryToken((token) => token + 1);
     },
     ...(onOpenSettings === undefined ? {} : { onOpenSettings }),

@@ -21,6 +21,7 @@ const BinderPage = () => {
         onSelectCard={setSelectedCard}
       />
       <CardDetailSheet
+        key={selectedCard?.id ?? "none"}
         cardId={selectedCard?.id ?? null}
         cardName={selectedCard?.nameFr}
         initialWishlisted={selectedCard?.inWishlist ?? false}
