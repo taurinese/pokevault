@@ -12,6 +12,7 @@ export interface CatalogSyncConfig {
   readonly defaultLanguage: CardLanguage;
 }
 
+export * from "./burst-import.ts";
 export * from "./catalog-repo.ts";
 export * from "./catalog-search.ts";
 export * from "./catalog-sync.ts";
