@@ -77,18 +77,59 @@ describe("CollectionService (Memory) — upsertCardCopy", () => {
       }),
     ));
 
-  it("plafonne à 999 : refuse au lieu de tronquer", () =>
+  it("plafonne à 999 : refuse au lieu de tronquer (insert direct, incrément et mode set)", () =>
     runMemoryScenario(({ collection }) =>
       Effect.gen(function* () {
         const base = { cardId: "t32-a-001", variant: "normal" } as const;
+        expect(
+          yield* failureOf(collection.upsertCardCopy(ALICE, { ...base, quantity: 5000 })),
+        ).toMatchObject({ _tag: "ValidationError" });
+        expect(
+          yield* failureOf(collection.upsertCardCopy(ALICE, { ...base, quantity: 0 })),
+        ).toMatchObject({ _tag: "ValidationError" });
         yield* collection.upsertCardCopy(ALICE, { ...base, quantity: 998 });
         const full = yield* collection.upsertCardCopy(ALICE, base);
         expect(full.quantity).toBe(MAX_CARD_COPY_QUANTITY);
         expect(yield* failureOf(collection.upsertCardCopy(ALICE, base))).toMatchObject({
           _tag: "ValidationError",
         });
+        expect(
+          yield* failureOf(
+            collection.upsertCardCopy(ALICE, { ...base, quantity: 5000, mode: "set" }),
+          ),
+        ).toMatchObject({ _tag: "ValidationError" });
         const set = yield* collection.upsertCardCopy(ALICE, { ...base, quantity: 10, mode: "set" });
         expect(set.quantity).toBe(10);
+      }),
+    ));
+
+  it("valide les entrées par Effect.Schema (grading partiel, prix négatif, UUID casse)", () =>
+    runMemoryScenario(({ collection }) =>
+      Effect.gen(function* () {
+        expect(
+          yield* failureOf(
+            collection.upsertCardCopy(ALICE, {
+              cardId: "t32-a-001",
+              variant: "normal",
+              purchasePriceCents: -1,
+            }),
+          ),
+        ).toMatchObject({ _tag: "ValidationError" });
+        expect(
+          yield* failureOf(
+            collection.upsertCardCopy(ALICE, {
+              cardId: "t32-a-001",
+              variant: "normal",
+              gradingCompany: "PSA",
+            }),
+          ),
+        ).toMatchObject({ _tag: "ValidationError" });
+        const created = yield* collection.upsertCardCopy(ALICE.toUpperCase(), {
+          cardId: "t32-a-001",
+          variant: "normal",
+        });
+        expect(created.userId).toBe(ALICE);
+        expect((yield* collection.listCardCopies(ALICE)).length).toBe(1);
       }),
     ));
 

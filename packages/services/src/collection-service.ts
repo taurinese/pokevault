@@ -9,6 +9,8 @@ import {
   type CollectionOverview,
   type CompletionOptions,
   copySlotKey,
+  decodeUpdateCardCopyInput,
+  decodeUpsertCardCopyInput,
   type GradingCompany,
   isUuid,
   type ListCardCopiesFilter,
@@ -211,48 +213,52 @@ export const CollectionServiceLive: Layer.Layer<CollectionService, never, Databa
         }),
 
       upsertCardCopy: (userId, input) =>
-        rls(userId, async (tx) => {
-          const mode = input.mode ?? "increment";
-          const quantity = input.quantity ?? 1;
-          const exists = await tx<Array<{ ok: number }>>`
-            select 1 as ok from public.catalog_cards where id = ${input.cardId}`;
-          if (exists.length === 0) throw cardNotFound(input.cardId);
+        decodeUpsertCardCopyInput(input).pipe(
+          Effect.flatMap((validated) =>
+            rls(userId, async (tx) => {
+              const mode = validated.mode ?? "increment";
+              const quantity = validated.quantity ?? 1;
+              const exists = await tx<Array<{ ok: number }>>`
+                select 1 as ok from public.catalog_cards where id = ${validated.cardId}`;
+              if (exists.length === 0) throw cardNotFound(validated.cardId);
 
-          // L'index unique d'expression est la cible de l'ON CONFLICT (slot atomique, sans
-          // course entre deux ajouts simultanés). En mode incrément, la clause WHERE refuse
-          // de dépasser le plafond : aucune ligne n'est alors renvoyée.
-          const total =
-            mode === "set"
-              ? tx`excluded.quantity`
-              : tx`public.user_card_copies.quantity + excluded.quantity`;
-          const guard =
-            mode === "set"
-              ? tx`true`
-              : tx`public.user_card_copies.quantity + excluded.quantity <= ${MAX_CARD_COPY_QUANTITY}`;
-          const rows = await tx<CopyRow[]>`
-            insert into public.user_card_copies
-              (user_id, card_id, language, variant, condition, quantity, purchase_price_cents,
-               grading_company, grading_score, notes, acquired_at)
-            values
-              (${userId}, ${input.cardId}, ${input.language ?? DEFAULT_LANGUAGE}, ${input.variant},
-               ${input.condition ?? DEFAULT_CONDITION}, ${quantity}, ${input.purchasePriceCents ?? null},
-               ${input.gradingCompany ?? null}, ${input.gradingScore ?? null}, ${input.notes ?? null},
-               case when ${input.acquiredAt !== undefined}::boolean
-                    then ${input.acquiredAt ?? null}::date else current_date end)
-            on conflict (user_id, card_id, language, variant, condition,
-                         (coalesce(grading_company, '')), (coalesce(grading_score, '')))
-            do update set
-              quantity = ${total},
-              purchase_price_cents = coalesce(excluded.purchase_price_cents, public.user_card_copies.purchase_price_cents),
-              notes = coalesce(excluded.notes, public.user_card_copies.notes)
-            where ${guard}
-            returning id, user_id, card_id, language, variant, condition, quantity,
-                      purchase_price_cents, grading_company, grading_score, notes,
-                      acquired_at::text as acquired_at, created_at, updated_at`;
-          const row = rows[0];
-          if (row === undefined) throw quantityLimit();
-          return toCopy(row);
-        }),
+              // L'index unique d'expression est la cible de l'ON CONFLICT (slot atomique, sans
+              // course entre deux ajouts simultanés). En mode incrément, la clause WHERE refuse
+              // de dépasser le plafond : aucune ligne n'est alors renvoyée.
+              const total =
+                mode === "set"
+                  ? tx`excluded.quantity`
+                  : tx`public.user_card_copies.quantity + excluded.quantity`;
+              const guard =
+                mode === "set"
+                  ? tx`excluded.quantity between 1 and ${MAX_CARD_COPY_QUANTITY}`
+                  : tx`public.user_card_copies.quantity + excluded.quantity <= ${MAX_CARD_COPY_QUANTITY}`;
+              const rows = await tx<CopyRow[]>`
+                insert into public.user_card_copies
+                  (user_id, card_id, language, variant, condition, quantity, purchase_price_cents,
+                   grading_company, grading_score, notes, acquired_at)
+                values
+                  (${userId}, ${validated.cardId}, ${validated.language ?? DEFAULT_LANGUAGE}, ${validated.variant},
+                   ${validated.condition ?? DEFAULT_CONDITION}, ${quantity}, ${validated.purchasePriceCents ?? null},
+                   ${validated.gradingCompany ?? null}, ${validated.gradingScore ?? null}, ${validated.notes ?? null},
+                   case when ${validated.acquiredAt !== undefined}::boolean
+                        then ${validated.acquiredAt ?? null}::date else current_date end)
+                on conflict (user_id, card_id, language, variant, condition,
+                             (coalesce(grading_company, '')), (coalesce(grading_score, '')))
+                do update set
+                  quantity = ${total},
+                  purchase_price_cents = coalesce(excluded.purchase_price_cents, public.user_card_copies.purchase_price_cents),
+                  notes = coalesce(excluded.notes, public.user_card_copies.notes)
+                where ${guard}
+                returning id, user_id, card_id, language, variant, condition, quantity,
+                          purchase_price_cents, grading_company, grading_score, notes,
+                          acquired_at::text as acquired_at, created_at, updated_at`;
+              const row = rows[0];
+              if (row === undefined) throw quantityLimit();
+              return toCopy(row);
+            }),
+          ),
+        ),
 
       adjustCardCopyQuantity: (userId, copyId, delta) =>
         rls(userId, async (tx) => {
@@ -286,33 +292,39 @@ export const CollectionServiceLive: Layer.Layer<CollectionService, never, Databa
         }),
 
       updateCardCopy: (userId, copyId, patch) =>
-        rls(userId, async (tx) => {
-          if (!isUuid(copyId)) throw copyNotFound(copyId);
-          const entries: Array<[string, string | number | null]> = [];
-          if (patch.condition !== undefined) entries.push(["condition", patch.condition]);
-          if (patch.purchasePriceCents !== undefined) {
-            entries.push(["purchase_price_cents", patch.purchasePriceCents]);
-          }
-          if (patch.gradingCompany !== undefined) {
-            entries.push(["grading_company", patch.gradingCompany]);
-          }
-          if (patch.gradingScore !== undefined) entries.push(["grading_score", patch.gradingScore]);
-          if (patch.notes !== undefined) entries.push(["notes", patch.notes]);
-          if (patch.acquiredAt !== undefined) entries.push(["acquired_at", patch.acquiredAt]);
-          if (entries.length === 0) {
-            throw new ValidationError({ message: "patch must contain at least one field" });
-          }
-          const columns = Object.fromEntries(entries);
-          const rows = await tx<CopyRow[]>`
-            update public.user_card_copies set ${tx(columns)}
-             where id = ${copyId} and user_id = ${userId}
-            returning id, user_id, card_id, language, variant, condition, quantity,
-                      purchase_price_cents, grading_company, grading_score, notes,
-                      acquired_at::text as acquired_at, created_at, updated_at`;
-          const row = rows[0];
-          if (row === undefined) throw copyNotFound(copyId);
-          return toCopy(row);
-        }),
+        decodeUpdateCardCopyInput(patch).pipe(
+          Effect.flatMap((validated) =>
+            rls(userId, async (tx) => {
+              if (!isUuid(copyId)) throw copyNotFound(copyId);
+              const entries: Array<[string, string | number | null]> = [];
+              if (validated.condition !== undefined)
+                entries.push(["condition", validated.condition]);
+              if (validated.purchasePriceCents !== undefined) {
+                entries.push(["purchase_price_cents", validated.purchasePriceCents]);
+              }
+              if (validated.gradingCompany !== undefined) {
+                entries.push(["grading_company", validated.gradingCompany]);
+              }
+              if (validated.gradingScore !== undefined) {
+                entries.push(["grading_score", validated.gradingScore]);
+              }
+              if (validated.notes !== undefined) entries.push(["notes", validated.notes]);
+              if (validated.acquiredAt !== undefined) {
+                entries.push(["acquired_at", validated.acquiredAt]);
+              }
+              const columns = Object.fromEntries(entries);
+              const rows = await tx<CopyRow[]>`
+                update public.user_card_copies set ${tx(columns)}
+                 where id = ${copyId} and user_id = ${userId}
+                returning id, user_id, card_id, language, variant, condition, quantity,
+                          purchase_price_cents, grading_company, grading_score, notes,
+                          acquired_at::text as acquired_at, created_at, updated_at`;
+              const row = rows[0];
+              if (row === undefined) throw copyNotFound(copyId);
+              return toCopy(row);
+            }),
+          ),
+        ),
 
       deleteCardCopy: (userId, copyId) =>
         rls(userId, async (tx) => {
@@ -406,35 +418,35 @@ export const CollectionServiceMemory: Layer.Layer<CollectionService, never, Coll
       const { catalog, state } = yield* CollectionMemoryStore;
       const nowIso = Effect.map(Clock.currentTimeMillis, (ms) => new Date(ms).toISOString());
 
-      const requireUser = (userId: string): Effect.Effect<void, ValidationError> =>
+      const requireUser = (userId: string): Effect.Effect<string, ValidationError> =>
         isUuid(userId)
-          ? Effect.void
+          ? Effect.succeed(userId.toLowerCase())
           : Effect.fail(new ValidationError({ message: "userId must be a valid UUID" }));
 
       const ownCopy = (
-        userId: string,
+        uid: string,
         copyId: string,
       ): Effect.Effect<UserCardCopy, CardCopyNotFoundError> => {
         const copy = state.copies.get(copyId);
-        return copy !== undefined && copy.userId === userId
+        return copy !== undefined && copy.userId.toLowerCase() === uid
           ? Effect.succeed(copy)
           : Effect.fail(copyNotFound(copyId));
       };
 
       const findSlot = (
-        userId: string,
+        uid: string,
         slot: Parameters<typeof copySlotKey>[0],
       ): UserCardCopy | undefined => {
         const key = copySlotKey(slot);
         return [...state.copies.values()].find(
-          (copy) => copy.userId === userId && copySlotKey(copy) === key,
+          (copy) => copy.userId.toLowerCase() === uid && copySlotKey(copy) === key,
         );
       };
 
       const service: CollectionServiceShape = {
         listCardCopies: (userId, filter = {}) =>
           Effect.gen(function* () {
-            yield* requireUser(userId);
+            const uid = yield* requireUser(userId);
             const cardsOfSet =
               filter.setId === undefined
                 ? undefined
@@ -442,7 +454,7 @@ export const CollectionServiceMemory: Layer.Layer<CollectionService, never, Coll
                     catalog.cards.filter((card) => card.setId === filter.setId).map((c) => c.id),
                   );
             return [...state.copies.values()]
-              .filter((copy) => copy.userId === userId)
+              .filter((copy) => copy.userId.toLowerCase() === uid)
               .filter((copy) => filter.cardId === undefined || copy.cardId === filter.cardId)
               .filter((copy) => cardsOfSet === undefined || cardsOfSet.has(copy.cardId))
               .sort(
@@ -455,30 +467,31 @@ export const CollectionServiceMemory: Layer.Layer<CollectionService, never, Coll
 
         upsertCardCopy: (userId, input) =>
           Effect.gen(function* () {
-            yield* requireUser(userId);
-            if (!catalog.cards.some((card) => card.id === input.cardId)) {
-              return yield* Effect.fail(cardNotFound(input.cardId));
+            const uid = yield* requireUser(userId);
+            const validated = yield* decodeUpsertCardCopyInput(input);
+            if (!catalog.cards.some((card) => card.id === validated.cardId)) {
+              return yield* Effect.fail(cardNotFound(validated.cardId));
             }
-            const mode = input.mode ?? "increment";
-            const quantity = input.quantity ?? 1;
+            const mode = validated.mode ?? "increment";
+            const quantity = validated.quantity ?? 1;
             const now = yield* nowIso;
             const slot = {
-              cardId: input.cardId,
-              language: input.language ?? DEFAULT_LANGUAGE,
-              variant: input.variant,
-              condition: input.condition ?? DEFAULT_CONDITION,
-              gradingCompany: input.gradingCompany ?? null,
-              gradingScore: input.gradingScore ?? null,
+              cardId: validated.cardId,
+              language: validated.language ?? DEFAULT_LANGUAGE,
+              variant: validated.variant,
+              condition: validated.condition ?? DEFAULT_CONDITION,
+              gradingCompany: validated.gradingCompany ?? null,
+              gradingScore: validated.gradingScore ?? null,
             };
-            const existing = findSlot(userId, slot);
+            const existing = findSlot(uid, slot);
             if (existing !== undefined) {
               const total = mode === "set" ? quantity : existing.quantity + quantity;
               if (total > MAX_CARD_COPY_QUANTITY) return yield* Effect.fail(quantityLimit());
               const next: UserCardCopy = {
                 ...existing,
                 quantity: total,
-                purchasePriceCents: input.purchasePriceCents ?? existing.purchasePriceCents,
-                notes: input.notes ?? existing.notes,
+                purchasePriceCents: validated.purchasePriceCents ?? existing.purchasePriceCents,
+                notes: validated.notes ?? existing.notes,
                 updatedAt: now,
               };
               state.copies.set(next.id, next);
@@ -486,12 +499,13 @@ export const CollectionServiceMemory: Layer.Layer<CollectionService, never, Coll
             }
             const created: UserCardCopy = {
               id: crypto.randomUUID(),
-              userId,
+              userId: uid,
               ...slot,
               quantity,
-              purchasePriceCents: input.purchasePriceCents ?? null,
-              notes: input.notes ?? null,
-              acquiredAt: input.acquiredAt === undefined ? now.slice(0, 10) : input.acquiredAt,
+              purchasePriceCents: validated.purchasePriceCents ?? null,
+              notes: validated.notes ?? null,
+              acquiredAt:
+                validated.acquiredAt === undefined ? now.slice(0, 10) : validated.acquiredAt,
               createdAt: now,
               updatedAt: now,
             };
@@ -501,13 +515,13 @@ export const CollectionServiceMemory: Layer.Layer<CollectionService, never, Coll
 
         adjustCardCopyQuantity: (userId, copyId, delta) =>
           Effect.gen(function* () {
-            yield* requireUser(userId);
+            const uid = yield* requireUser(userId);
             if (!Number.isInteger(delta)) {
               return yield* Effect.fail(
                 new ValidationError({ message: "delta must be an integer" }),
               );
             }
-            const copy = yield* ownCopy(userId, isUuid(copyId) ? copyId : "");
+            const copy = yield* ownCopy(uid, isUuid(copyId) ? copyId : "");
             const next = copy.quantity + delta;
             if (next > MAX_CARD_COPY_QUANTITY) return yield* Effect.fail(quantityLimit());
             if (next <= 0) {
@@ -523,22 +537,25 @@ export const CollectionServiceMemory: Layer.Layer<CollectionService, never, Coll
 
         updateCardCopy: (userId, copyId, patch) =>
           Effect.gen(function* () {
-            yield* requireUser(userId);
-            const copy = yield* ownCopy(userId, isUuid(copyId) ? copyId : "");
+            const uid = yield* requireUser(userId);
+            const validated = yield* decodeUpdateCardCopyInput(patch);
+            const copy = yield* ownCopy(uid, isUuid(copyId) ? copyId : "");
             const candidate: UserCardCopy = {
               ...copy,
-              ...(patch.condition === undefined ? {} : { condition: patch.condition }),
-              ...(patch.purchasePriceCents === undefined
+              ...(validated.condition === undefined ? {} : { condition: validated.condition }),
+              ...(validated.purchasePriceCents === undefined
                 ? {}
-                : { purchasePriceCents: patch.purchasePriceCents }),
-              ...(patch.gradingCompany === undefined
+                : { purchasePriceCents: validated.purchasePriceCents }),
+              ...(validated.gradingCompany === undefined
                 ? {}
-                : { gradingCompany: patch.gradingCompany }),
-              ...(patch.gradingScore === undefined ? {} : { gradingScore: patch.gradingScore }),
-              ...(patch.notes === undefined ? {} : { notes: patch.notes }),
-              ...(patch.acquiredAt === undefined ? {} : { acquiredAt: patch.acquiredAt }),
+                : { gradingCompany: validated.gradingCompany }),
+              ...(validated.gradingScore === undefined
+                ? {}
+                : { gradingScore: validated.gradingScore }),
+              ...(validated.notes === undefined ? {} : { notes: validated.notes }),
+              ...(validated.acquiredAt === undefined ? {} : { acquiredAt: validated.acquiredAt }),
             };
-            const clash = findSlot(userId, candidate);
+            const clash = findSlot(uid, candidate);
             if (clash !== undefined && clash.id !== copy.id) {
               return yield* Effect.fail(
                 new CardCopyConflictError({ message: "a copy with the same slot already exists" }),
@@ -552,19 +569,19 @@ export const CollectionServiceMemory: Layer.Layer<CollectionService, never, Coll
 
         deleteCardCopy: (userId, copyId) =>
           Effect.gen(function* () {
-            yield* requireUser(userId);
-            const copy = yield* ownCopy(userId, isUuid(copyId) ? copyId : "");
+            const uid = yield* requireUser(userId);
+            const copy = yield* ownCopy(uid, isUuid(copyId) ? copyId : "");
             state.copies.delete(copy.id);
           }),
 
         getCollectionOverview: (userId, options = {}) =>
           Effect.gen(function* () {
-            yield* requireUser(userId);
+            const uid = yield* requireUser(userId);
             const cardById = new Map(catalog.cards.map((card) => [card.id, card]));
             const copies: Array<OverviewCopy> = [];
             for (const copy of state.copies.values()) {
               const card = cardById.get(copy.cardId);
-              if (copy.userId === userId && card !== undefined) {
+              if (copy.userId.toLowerCase() === uid && card !== undefined) {
                 copies.push({
                   setId: card.setId,
                   cardId: copy.cardId,
@@ -576,7 +593,11 @@ export const CollectionServiceMemory: Layer.Layer<CollectionService, never, Coll
             }
             const trackedSetIds = new Set<string>();
             for (const binder of state.binders.values()) {
-              if (binder.userId === userId && binder.kind === "set" && binder.setId !== null) {
+              if (
+                binder.userId.toLowerCase() === uid &&
+                binder.kind === "set" &&
+                binder.setId !== null
+              ) {
                 trackedSetIds.add(binder.setId);
               }
             }

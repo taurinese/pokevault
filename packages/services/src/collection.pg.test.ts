@@ -361,16 +361,24 @@ describe.skipIf(PGTEST_URL === undefined)(
         }),
       ));
 
-    it("plafond 999 : refus, jamais de troncature", () =>
+    it("plafond 999 : refus, jamais de troncature (insert direct, incrément et mode set)", () =>
       run(({ collection }) =>
         Effect.gen(function* () {
           const base = { cardId: "t32-a-001", variant: "normal" } as const;
+          expect(
+            yield* failureOf(collection.upsertCardCopy(ALICE, { ...base, quantity: 5000 })),
+          ).toMatchObject({ _tag: "ValidationError" });
           yield* collection.upsertCardCopy(ALICE, { ...base, quantity: 998 });
           const full = yield* collection.upsertCardCopy(ALICE, base);
           expect(full.quantity).toBe(MAX_CARD_COPY_QUANTITY);
           expect(yield* failureOf(collection.upsertCardCopy(ALICE, base))).toMatchObject({
             _tag: "ValidationError",
           });
+          expect(
+            yield* failureOf(
+              collection.upsertCardCopy(ALICE, { ...base, quantity: 5000, mode: "set" }),
+            ),
+          ).toMatchObject({ _tag: "ValidationError" });
           expect(
             yield* failureOf(collection.adjustCardCopyQuantity(ALICE, full.id, 1)),
           ).toMatchObject({

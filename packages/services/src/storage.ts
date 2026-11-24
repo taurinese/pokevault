@@ -85,7 +85,7 @@ export const BinderCoverStorageLive = (
     body?: Uint8Array,
   ): Effect.Effect<Response, StorageServiceError> =>
     Effect.tryPromise({
-      try: () =>
+      try: (signal) =>
         doFetch(objectUrl(options.supabaseUrl, path), {
           method,
           headers: {
@@ -100,7 +100,7 @@ export const BinderCoverStorageLive = (
                 }),
           },
           ...(body === undefined ? {} : { body: new Uint8Array(body) }),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
         }),
       catch: (cause) => new StorageServiceError({ message: `storage ${method} failed`, cause }),
     });
@@ -117,9 +117,10 @@ export const BinderCoverStorageLive = (
       if (invalid !== undefined) return Effect.fail(invalid);
       const path = binderCoverStoragePath(params.userId, params.binderId);
       return request("POST", path, params.accessToken, params.bytes).pipe(
-        Effect.flatMap((response) =>
-          response.ok ? Effect.void : Effect.fail(failure("POST", response)),
-        ),
+        Effect.flatMap((response) => {
+          void response.body?.cancel().catch(() => {});
+          return response.ok ? Effect.void : Effect.fail(failure("POST", response));
+        }),
       );
     },
     remove: (params) => {
@@ -127,11 +128,12 @@ export const BinderCoverStorageLive = (
       if (invalid !== undefined) return Effect.fail(invalid);
       const path = binderCoverStoragePath(params.userId, params.binderId);
       return request("DELETE", path, params.accessToken).pipe(
-        Effect.flatMap((response) =>
-          response.ok || response.status === 404
+        Effect.flatMap((response) => {
+          void response.body?.cancel().catch(() => {});
+          return response.ok || response.status === 404
             ? Effect.void
-            : Effect.fail(failure("DELETE", response)),
-        ),
+            : Effect.fail(failure("DELETE", response));
+        }),
       );
     },
   });

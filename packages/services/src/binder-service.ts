@@ -13,6 +13,10 @@ import {
   type CreateCustomBinderInput,
   type CreateSetBinderInput,
   computeSetCompletion,
+  decodeCreateCustomBinderInput,
+  decodeCreateSetBinderInput,
+  decodeSetBinderCoverInput,
+  decodeUpdateBinderInput,
   type InvalidCoverImageError,
   isUuid,
   type ListBindersFilter,
@@ -167,6 +171,9 @@ const completionOptionsOf = (filter: CompletionOptions | undefined): CompletionO
   includeSecrets: filter?.includeSecrets,
   includePromos: filter?.includePromos,
 });
+
+const normalizeTitleInput = <T extends { readonly title?: string | undefined }>(input: T): T =>
+  typeof input.title === "string" ? { ...input, title: normalizeBinderTitle(input.title) } : input;
 
 /** Journalise (sans jamais échouer) la suppression best-effort d'un ancien objet Storage. */
 const cleanupCoverObject = (
@@ -389,17 +396,32 @@ interface BinderHeadRow {
   readonly cover_storage_path: string | null;
 }
 
-const loadHead = async (tx: Sql, userId: string, binderId: string): Promise<BinderHeadRow> => {
+const loadHead = async (
+  tx: Sql,
+  userId: string,
+  binderId: string,
+  options: { readonly forUpdate?: boolean } = {},
+): Promise<BinderHeadRow> => {
   if (!isUuid(binderId)) throw notFound(binderId);
-  const [head] = await tx<BinderHeadRow[]>`
-    select id, kind, cover_type, cover_storage_path
-      from public.binders where id = ${binderId} and user_id = ${userId}`;
+  const [head] = options.forUpdate
+    ? await tx<BinderHeadRow[]>`
+        select id, kind, cover_type, cover_storage_path
+          from public.binders where id = ${binderId} and user_id = ${userId}
+           for update`
+    : await tx<BinderHeadRow[]>`
+        select id, kind, cover_type, cover_storage_path
+          from public.binders where id = ${binderId} and user_id = ${userId}`;
   if (head === undefined) throw notFound(binderId);
   return head;
 };
 
-const loadCustomHead = async (tx: Sql, userId: string, binderId: string): Promise<void> => {
-  const head = await loadHead(tx, userId, binderId);
+const loadCustomHead = async (
+  tx: Sql,
+  userId: string,
+  binderId: string,
+  options: { readonly forUpdate?: boolean } = {},
+): Promise<void> => {
+  const head = await loadHead(tx, userId, binderId, options);
   if (head.kind !== "custom") throw NOT_A_CUSTOM(binderId);
 };
 
@@ -438,65 +460,80 @@ export const BinderServiceLive: Layer.Layer<
           : Effect.fail(notFound(binderId)),
 
       createSetBinder: (userId, input) =>
-        rls(userId, async (tx) => {
-          const title = input.title === undefined ? null : normalizeBinderTitle(input.title);
-          const inserted = await tx<Array<{ id: string }>>`
-            insert into public.binders (user_id, kind, set_id, title)
-            select ${userId}, 'set', s.id, left(coalesce(${title}::text, s.name_fr), 80)
-              from public.catalog_sets s
-             where s.id = ${input.setId}
-            on conflict (user_id, set_id) do nothing
-            returning id`;
-          const created = inserted[0];
-          if (created !== undefined) return summaryOrThrow(tx, userId, created.id);
+        decodeCreateSetBinderInput(normalizeTitleInput(input)).pipe(
+          Effect.flatMap((validated) =>
+            rls(userId, async (tx) => {
+              const title = validated.title ?? null;
+              const inserted = await tx<Array<{ id: string }>>`
+                insert into public.binders (user_id, kind, set_id, title)
+                select ${userId}, 'set', s.id, left(coalesce(${title}::text, s.name_fr), 80)
+                  from public.catalog_sets s
+                 where s.id = ${validated.setId}
+                on conflict (user_id, set_id) do nothing
+                returning id`;
+              const created = inserted[0];
+              if (created !== undefined) return summaryOrThrow(tx, userId, created.id);
 
-          const [existing] = await tx<Array<{ id: string }>>`
-            select id from public.binders where user_id = ${userId} and set_id = ${input.setId}`;
-          if (existing === undefined) {
-            throw new CatalogItemNotFoundError({
-              entity: "set",
-              id: input.setId,
-              message: `set ${input.setId} not found in the catalog`,
-            });
-          }
-          if (input.ifExists === "fail") {
-            throw new BinderConflictError({
-              message: `set ${input.setId} is already tracked`,
-              setId: input.setId,
-            });
-          }
-          return summaryOrThrow(tx, userId, existing.id);
-        }),
+              const [existing] = await tx<Array<{ id: string }>>`
+                select id from public.binders where user_id = ${userId} and set_id = ${validated.setId}`;
+              if (existing === undefined) {
+                throw new CatalogItemNotFoundError({
+                  entity: "set",
+                  id: validated.setId,
+                  message: `set ${validated.setId} not found in the catalog`,
+                });
+              }
+              if (validated.ifExists === "fail") {
+                throw new BinderConflictError({
+                  message: `set ${validated.setId} is already tracked`,
+                  setId: validated.setId,
+                });
+              }
+              return summaryOrThrow(tx, userId, existing.id);
+            }),
+          ),
+        ),
 
       createCustomBinder: (userId, input) =>
-        rls(userId, async (tx) => {
-          const [created] = await tx<Array<{ id: string }>>`
-            insert into public.binders (user_id, kind, title, is_pinned)
-            values (${userId}, 'custom', ${normalizeBinderTitle(input.title)},
-                    ${input.isPinned ?? false})
-            returning id`;
-          if (created === undefined) throw new DatabaseError({ message: "insert returned no row" });
-          return summaryOrThrow(tx, userId, created.id);
-        }),
+        decodeCreateCustomBinderInput(normalizeTitleInput(input)).pipe(
+          Effect.flatMap((validated) =>
+            rls(userId, async (tx) => {
+              const [created] = await tx<Array<{ id: string }>>`
+                insert into public.binders (user_id, kind, title, is_pinned)
+                values (${userId}, 'custom', ${validated.title},
+                        ${validated.isPinned ?? false})
+                returning id`;
+              if (created === undefined) {
+                throw new DatabaseError({ message: "insert returned no row" });
+              }
+              return summaryOrThrow(tx, userId, created.id);
+            }),
+          ),
+        ),
 
       updateBinder: (userId, binderId, patch) =>
-        rls(userId, async (tx) => {
-          await loadHead(tx, userId, binderId);
-          await tx`
-            update public.binders
-               set title = coalesce(${patch.title === undefined ? null : normalizeBinderTitle(patch.title)}::text, title),
-                   is_pinned = coalesce(${patch.isPinned ?? null}::boolean, is_pinned),
-                   sort_order = coalesce(${patch.sortOrder ?? null}::integer, sort_order)
-             where id = ${binderId} and user_id = ${userId}`;
-          return summaryOrThrow(tx, userId, binderId);
-        }),
+        decodeUpdateBinderInput(normalizeTitleInput(patch)).pipe(
+          Effect.flatMap((validated) =>
+            rls(userId, async (tx) => {
+              await loadHead(tx, userId, binderId);
+              await tx`
+                update public.binders
+                   set title = coalesce(${validated.title ?? null}::text, title),
+                       is_pinned = coalesce(${validated.isPinned ?? null}::boolean, is_pinned),
+                       sort_order = coalesce(${validated.sortOrder ?? null}::integer, sort_order)
+                 where id = ${binderId} and user_id = ${userId}`;
+              return summaryOrThrow(tx, userId, binderId);
+            }),
+          ),
+        ),
 
       setBinderCover: (userId, binderId, input, authToken) =>
         Effect.gen(function* () {
+          const validated = yield* decodeSetBinderCoverInput(input);
           const head = yield* rls(userId, (tx) => loadHead(tx, userId, binderId));
           const previousUpload = head.cover_type === "upload" && head.cover_storage_path !== null;
 
-          if (input.type === "upload") {
+          if (validated.type === "upload") {
             if (authToken === undefined || authToken.trim() === "") {
               return yield* Effect.fail(
                 new UnauthorizedBinderAccess({
@@ -505,7 +542,7 @@ export const BinderServiceLive: Layer.Layer<
                 }),
               );
             }
-            const webp = yield* processor.process(input.image);
+            const webp = yield* processor.process(validated.image);
             yield* storage.upload({ userId, binderId, accessToken: authToken, bytes: webp });
             const path = binderCoverStoragePath(userId, binderId);
             return yield* rls(userId, async (tx) => {
@@ -529,17 +566,17 @@ export const BinderServiceLive: Layer.Layer<
           }
 
           const summary = yield* rls(userId, async (tx) => {
-            if (input.type === "card") {
-              if (!(await cardExists(tx, input.cardId))) {
+            if (validated.type === "card") {
+              if (!(await cardExists(tx, validated.cardId))) {
                 throw new CatalogItemNotFoundError({
                   entity: "card",
-                  id: input.cardId,
-                  message: `card ${input.cardId} not found in the catalog`,
+                  id: validated.cardId,
+                  message: `card ${validated.cardId} not found in the catalog`,
                 });
               }
               await tx`
                 update public.binders
-                   set cover_type = 'card', cover_card_id = ${input.cardId}, cover_storage_path = null
+                   set cover_type = 'card', cover_card_id = ${validated.cardId}, cover_storage_path = null
                  where id = ${binderId} and user_id = ${userId}`;
             } else {
               await tx`
@@ -588,7 +625,8 @@ export const BinderServiceLive: Layer.Layer<
           if (position !== undefined && (!Number.isInteger(position) || position < 0)) {
             throw new ValidationError({ message: "position must be an integer >= 0" });
           }
-          await loadCustomHead(tx, userId, binderId);
+          // Verrouille la ligne `binders` pour sérialiser `max(position) + 1` et `reorder`.
+          await loadCustomHead(tx, userId, binderId, { forUpdate: true });
           if (!(await cardExists(tx, cardId))) {
             throw new CatalogItemNotFoundError({
               entity: "card",
@@ -612,7 +650,8 @@ export const BinderServiceLive: Layer.Layer<
 
       reorderCustomBinderCards: (userId, binderId, orderedCardIds) =>
         rls(userId, async (tx) => {
-          await loadCustomHead(tx, userId, binderId);
+          // Verrouille la ligne `binders` pour empêcher un ajout concurrent pendant la permutation.
+          await loadCustomHead(tx, userId, binderId, { forUpdate: true });
           const current = await tx<Array<{ card_id: string }>>`
             select card_id from public.binder_cards where binder_id = ${binderId} for update`;
           const wanted = new Set(orderedCardIds);
@@ -672,20 +711,20 @@ export const BinderServiceMemory: Layer.Layer<
 
     const nowIso = Effect.map(Clock.currentTimeMillis, (ms) => new Date(ms).toISOString());
 
-    const own = (userId: string, binderId: string): Binder | undefined => {
+    const own = (uid: string, binderId: string): Binder | undefined => {
       const binder = state.binders.get(binderId);
-      return binder !== undefined && binder.userId === userId ? binder : undefined;
+      return binder !== undefined && binder.userId.toLowerCase() === uid ? binder : undefined;
     };
     const requireBinder = (
-      userId: string,
+      uid: string,
       binderId: string,
     ): Effect.Effect<Binder, BinderServiceError> => {
-      const binder = isUuid(binderId) ? own(userId, binderId) : undefined;
+      const binder = isUuid(binderId) ? own(uid, binderId) : undefined;
       return binder === undefined ? Effect.fail(notFound(binderId)) : Effect.succeed(binder);
     };
-    const requireUser = (userId: string): Effect.Effect<void, ValidationError> =>
+    const requireUser = (userId: string): Effect.Effect<string, ValidationError> =>
       isUuid(userId)
-        ? Effect.void
+        ? Effect.succeed(userId.toLowerCase())
         : Effect.fail(new ValidationError({ message: "userId must be a valid UUID" }));
 
     const summarize = (binder: Binder, options: CompletionOptions = {}): BinderSummary => {
@@ -781,12 +820,12 @@ export const BinderServiceMemory: Layer.Layer<
     const service: BinderServiceShape = {
       listBinders: (userId, filter = {}) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
+          const uid = yield* requireUser(userId);
           const setsOfSeries = new Set(
             catalog.sets.filter((set) => set.seriesId === filter.seriesId).map((set) => set.id),
           );
           return [...state.binders.values()]
-            .filter((binder) => binder.userId === userId)
+            .filter((binder) => binder.userId.toLowerCase() === uid)
             .filter((binder) => filter.kind === undefined || binder.kind === filter.kind)
             .filter(
               (binder) =>
@@ -798,30 +837,31 @@ export const BinderServiceMemory: Layer.Layer<
         }),
 
       getBinder: (userId, binderId) =>
-        requireUser(userId).pipe(Effect.flatMap(() => summaryOf(userId, binderId))),
+        requireUser(userId).pipe(Effect.flatMap((uid) => summaryOf(uid, binderId))),
 
       createSetBinder: (userId, input) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
-          const set = catalog.sets.find((entry) => entry.id === input.setId);
+          const uid = yield* requireUser(userId);
+          const validated = yield* decodeCreateSetBinderInput(normalizeTitleInput(input));
+          const set = catalog.sets.find((entry) => entry.id === validated.setId);
           if (set === undefined) {
             return yield* Effect.fail(
               new CatalogItemNotFoundError({
                 entity: "set",
-                id: input.setId,
-                message: `set ${input.setId} not found in the catalog`,
+                id: validated.setId,
+                message: `set ${validated.setId} not found in the catalog`,
               }),
             );
           }
           const existing = [...state.binders.values()].find(
-            (binder) => binder.userId === userId && binder.setId === input.setId,
+            (binder) => binder.userId.toLowerCase() === uid && binder.setId === validated.setId,
           );
           if (existing !== undefined) {
-            if (input.ifExists === "fail") {
+            if (validated.ifExists === "fail") {
               return yield* Effect.fail(
                 new BinderConflictError({
-                  message: `set ${input.setId} is already tracked`,
-                  setId: input.setId,
+                  message: `set ${validated.setId} is already tracked`,
+                  setId: validated.setId,
                 }),
               );
             }
@@ -830,13 +870,10 @@ export const BinderServiceMemory: Layer.Layer<
           const now = yield* nowIso;
           const binder: Binder = {
             id: crypto.randomUUID(),
-            userId,
+            userId: uid,
             kind: "set",
             setId: set.id,
-            title: (input.title === undefined
-              ? set.nameFr
-              : normalizeBinderTitle(input.title)
-            ).slice(0, 80),
+            title: (validated.title ?? set.nameFr).slice(0, 80),
             coverType: "set_logo",
             coverCardId: null,
             coverStoragePath: null,
@@ -851,18 +888,19 @@ export const BinderServiceMemory: Layer.Layer<
 
       createCustomBinder: (userId, input) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
+          const uid = yield* requireUser(userId);
+          const validated = yield* decodeCreateCustomBinderInput(normalizeTitleInput(input));
           const now = yield* nowIso;
           const binder: Binder = {
             id: crypto.randomUUID(),
-            userId,
+            userId: uid,
             kind: "custom",
             setId: null,
-            title: normalizeBinderTitle(input.title),
+            title: validated.title,
             coverType: "set_logo",
             coverCardId: null,
             coverStoragePath: null,
-            isPinned: input.isPinned ?? false,
+            isPinned: validated.isPinned ?? false,
             sortOrder: 0,
             createdAt: now,
             updatedAt: now,
@@ -873,16 +911,17 @@ export const BinderServiceMemory: Layer.Layer<
 
       updateBinder: (userId, binderId, patch) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
-          const binder = yield* requireBinder(userId, binderId);
+          const uid = yield* requireUser(userId);
+          const validated = yield* decodeUpdateBinderInput(normalizeTitleInput(patch));
+          const binder = yield* requireBinder(uid, binderId);
           const now = yield* nowIso;
           return summarize(
             patchBinder(
               binder,
               {
-                ...(patch.title === undefined ? {} : { title: normalizeBinderTitle(patch.title) }),
-                ...(patch.isPinned === undefined ? {} : { isPinned: patch.isPinned }),
-                ...(patch.sortOrder === undefined ? {} : { sortOrder: patch.sortOrder }),
+                ...(validated.title === undefined ? {} : { title: validated.title }),
+                ...(validated.isPinned === undefined ? {} : { isPinned: validated.isPinned }),
+                ...(validated.sortOrder === undefined ? {} : { sortOrder: validated.sortOrder }),
               },
               now,
             ),
@@ -891,12 +930,13 @@ export const BinderServiceMemory: Layer.Layer<
 
       setBinderCover: (userId, binderId, input, authToken) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
-          const binder = yield* requireBinder(userId, binderId);
+          const uid = yield* requireUser(userId);
+          const validated = yield* decodeSetBinderCoverInput(input);
+          const binder = yield* requireBinder(uid, binderId);
           const previousUpload = binder.coverType === "upload" && binder.coverStoragePath !== null;
           const now = yield* nowIso;
 
-          if (input.type === "upload") {
+          if (validated.type === "upload") {
             if (authToken === undefined || authToken.trim() === "") {
               return yield* Effect.fail(
                 new UnauthorizedBinderAccess({
@@ -905,32 +945,36 @@ export const BinderServiceMemory: Layer.Layer<
                 }),
               );
             }
-            const webp = yield* processor.process(input.image);
-            yield* storage.upload({ userId, binderId, accessToken: authToken, bytes: webp });
+            const webp = yield* processor.process(validated.image);
+            yield* storage.upload({ userId: uid, binderId, accessToken: authToken, bytes: webp });
             return summarize(
               patchBinder(
                 binder,
                 {
                   coverType: "upload",
                   coverCardId: null,
-                  coverStoragePath: binderCoverStoragePath(userId, binderId),
+                  coverStoragePath: binderCoverStoragePath(uid, binderId),
                 },
                 now,
               ),
             );
           }
 
-          if (input.type === "card") {
-            if (!cardExistsInCatalog(input.cardId)) {
-              return yield* Effect.fail(cardNotFound(input.cardId));
+          if (validated.type === "card") {
+            if (!cardExistsInCatalog(validated.cardId)) {
+              return yield* Effect.fail(cardNotFound(validated.cardId));
             }
             const next = patchBinder(
               binder,
-              { coverType: "card", coverCardId: input.cardId, coverStoragePath: null },
+              { coverType: "card", coverCardId: validated.cardId, coverStoragePath: null },
               now,
             );
             if (previousUpload) {
-              yield* cleanupCoverObject(storage, { userId, binderId, authToken }, "cover_replaced");
+              yield* cleanupCoverObject(
+                storage,
+                { userId: uid, binderId, authToken },
+                "cover_replaced",
+              );
             }
             return summarize(next);
           }
@@ -941,26 +985,34 @@ export const BinderServiceMemory: Layer.Layer<
             now,
           );
           if (previousUpload) {
-            yield* cleanupCoverObject(storage, { userId, binderId, authToken }, "cover_replaced");
+            yield* cleanupCoverObject(
+              storage,
+              { userId: uid, binderId, authToken },
+              "cover_replaced",
+            );
           }
           return summarize(next);
         }),
 
       deleteBinder: (userId, binderId, authToken) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
-          const binder = yield* requireBinder(userId, binderId);
+          const uid = yield* requireUser(userId);
+          const binder = yield* requireBinder(uid, binderId);
           state.binders.delete(binder.id);
           state.binderCards = state.binderCards.filter((entry) => entry.binderId !== binder.id);
           if (binder.coverStoragePath !== null) {
-            yield* cleanupCoverObject(storage, { userId, binderId, authToken }, "binder_deleted");
+            yield* cleanupCoverObject(
+              storage,
+              { userId: uid, binderId, authToken },
+              "binder_deleted",
+            );
           }
         }),
 
       listBinderCards: (userId, binderId) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
-          yield* requireBinder(userId, binderId);
+          const uid = yield* requireUser(userId);
+          yield* requireBinder(uid, binderId);
           return state.binderCards
             .filter((entry) => entry.binderId === binderId)
             .sort(
@@ -973,13 +1025,13 @@ export const BinderServiceMemory: Layer.Layer<
 
       addCardToCustomBinder: (userId, binderId, cardId, position) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
+          const uid = yield* requireUser(userId);
           if (position !== undefined && (!Number.isInteger(position) || position < 0)) {
             return yield* Effect.fail(
               new ValidationError({ message: "position must be an integer >= 0" }),
             );
           }
-          yield* requireCustom(userId, binderId);
+          yield* requireCustom(uid, binderId);
           if (!cardExistsInCatalog(cardId)) return yield* Effect.fail(cardNotFound(cardId));
           const now = yield* nowIso;
           const inBinder = state.binderCards.filter((entry) => entry.binderId === binderId);
@@ -1008,8 +1060,8 @@ export const BinderServiceMemory: Layer.Layer<
 
       reorderCustomBinderCards: (userId, binderId, orderedCardIds) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
-          yield* requireCustom(userId, binderId);
+          const uid = yield* requireUser(userId);
+          yield* requireCustom(uid, binderId);
           const current = state.binderCards.filter((entry) => entry.binderId === binderId);
           const wanted = new Set(orderedCardIds);
           if (
@@ -1036,8 +1088,8 @@ export const BinderServiceMemory: Layer.Layer<
 
       removeCardFromCustomBinder: (userId, binderId, cardId) =>
         Effect.gen(function* () {
-          yield* requireUser(userId);
-          yield* requireCustom(userId, binderId);
+          const uid = yield* requireUser(userId);
+          yield* requireCustom(uid, binderId);
           state.binderCards = state.binderCards.filter(
             (entry) => !(entry.binderId === binderId && entry.cardId === cardId),
           );

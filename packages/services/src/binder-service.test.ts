@@ -172,6 +172,29 @@ describe("BinderService (Memory) — listing, accès, mise à jour", () => {
         expect(updated.binder.createdAt).toBe(binder.createdAt);
       }),
     ));
+
+  it("valide les entrées par Effect.Schema (titre vide / > 80 car., patch vide, casse UUID)", () =>
+    runMemoryScenario(({ binders }) =>
+      Effect.gen(function* () {
+        expect(yield* failureOf(binders.createCustomBinder(ALICE, { title: "   " }))).toMatchObject(
+          { _tag: "ValidationError" },
+        );
+        expect(
+          yield* failureOf(binders.createCustomBinder(ALICE, { title: "x".repeat(81) })),
+        ).toMatchObject({ _tag: "ValidationError" });
+        const { binder } = yield* binders.createCustomBinder(ALICE.toUpperCase(), {
+          title: "  Valide  ",
+        });
+        expect(binder.userId).toBe(ALICE);
+        expect(binder.title).toBe("Valide");
+        expect(yield* failureOf(binders.updateBinder(ALICE, binder.id, {}))).toMatchObject({
+          _tag: "ValidationError",
+        });
+        expect(
+          yield* failureOf(binders.updateBinder(ALICE, binder.id, { title: "   " })),
+        ).toMatchObject({ _tag: "ValidationError" });
+      }),
+    ));
 });
 
 describe("BinderService (Memory) — covers", () => {

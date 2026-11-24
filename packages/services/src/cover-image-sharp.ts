@@ -18,11 +18,19 @@ import {
  */
 
 /** Pixels décodés max (anti « decompression bomb » : un PNG de 2 Mio peut valoir des Gpx). */
-const MAX_INPUT_PIXELS = 40_000_000;
+const MAX_INPUT_PIXELS = 25_000_000;
 
 const WEBP_QUALITY = 82;
 
-const loadSharp = async () => (await import("sharp")).default;
+let sharpCacheConfigured = false;
+const loadSharp = async () => {
+  const sharp = (await import("sharp")).default;
+  if (!sharpCacheConfigured) {
+    sharp.cache(false);
+    sharpCacheConfigured = true;
+  }
+  return sharp;
+};
 
 const recompress = async (bytes: Uint8Array): Promise<Uint8Array> => {
   const sharp = await loadSharp();
