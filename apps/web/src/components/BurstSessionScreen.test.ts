@@ -192,11 +192,12 @@ describe("BurstSessionScreen · Grille (08B/08D) : 1 tap = +1", () => {
     expect(loading.session.lines).toEqual([]);
   });
 
-  it("ajuste automatiquement la variante absente de la carte (même résolution que le serveur)", () => {
+  it("ajuste automatiquement la variante absente de la carte et préserve la variante demandée pour le commit serveur", () => {
     const state = reduce(loaded(), { type: "card_added", cardId: "sv03.5-100" });
     expect(state.session.lines[0]).toMatchObject({
       key: "sv03.5-100 FR holo NM",
       variant: "holo",
+      requestedVariant: "normal",
       explicit: false,
     });
   });
@@ -422,9 +423,10 @@ describe("BurstSessionScreen · Pavé # (08C)", () => {
   const keypad = (overrides: Partial<BurstScreenState> = {}) =>
     loaded({ mode: "keypad", ...overrides });
 
-  it("affiche l'afficheur (#025, aria-live) et le pavé 1–9, Effacer, 0, ⌫", () => {
+  it("affiche l'afficheur (#025) et le pavé 1–9, Effacer, 0, ⌫", () => {
     const html = render(typed(keypad(), "025"));
-    expect(html).toMatch(/<output[^>]*aria-live="polite"[^>]*>#025<\/output>/);
+    expect(html).toMatch(/<output[^>]*data-testid="burst-keypad-display"[^>]*>#025<\/output>/);
+    expect(html).toContain('data-testid="burst-keypad-preview" aria-live="polite"');
     expect(html).toContain("tabular-nums");
     for (const digit of "0123456789") expect(html).toContain(`data-testid="burst-key-${digit}"`);
     expect(html).toContain(fr["burst.keypad.key.clear"]);
@@ -474,11 +476,11 @@ describe("BurstSessionScreen · Pavé # (08C)", () => {
     expect(render(typed(keypad(), "#25"))).toContain("Pikachu");
   });
 
-  it("plafonne la saisie à 6 caractères, ⌫ et Effacer remettent à zéro", () => {
-    let state = typed(keypad(), "1234567890");
-    expect(state.keypadInput).toBe("123456");
+  it("plafonne la saisie à 10 caractères, ⌫ et Effacer remettent à zéro", () => {
+    let state = typed(keypad(), "123456789012");
+    expect(state.keypadInput).toBe("1234567890");
     state = reduce(state, { type: "keypad_backspace" });
-    expect(state.keypadInput).toBe("12345");
+    expect(state.keypadInput).toBe("123456789");
     state = reduce(state, { type: "keypad_clear" });
     expect(state.keypadInput).toBe("");
   });

@@ -342,15 +342,20 @@ export const MAX_BURST_UNDO = 200;
 
 /**
  * Une ligne du lot, indexée par `(cardId, language, variant, condition)`.
- * `explicit` : la variante a été choisie à la main (override pavé `#`) et ne
- * doit pas être réajustée par le serveur. `seq` : ordre de dernière
- * modification (ruban des ajouts récents).
+ * - `variant` : variante **résolue** (affichée dans le ruban et utilisée comme clé de slot) ;
+ * - `requestedVariant` : variante **demandée** avant résolution automatique (envoyée au serveur
+ *   lorsque `explicit === false` afin que `BurstImportService` signale `variantAdjusted: true`
+ *   dans le récapitulatif) ;
+ * - `explicit` : la variante a été choisie à la main (override pavé `#`) et ne
+ *   doit pas être réajustée par le serveur ;
+ * - `seq` : ordre de dernière modification (ruban des ajouts récents).
  */
 export interface BurstLine {
   readonly key: string;
   readonly cardId: string;
   readonly language: CardLanguage;
   readonly variant: CardVariant;
+  readonly requestedVariant?: CardVariant | undefined;
   readonly condition: CardCondition;
   readonly quantity: number;
   readonly explicit: boolean;
@@ -382,6 +387,8 @@ export interface BurstAddInput {
   readonly ownedQuantity: number;
   readonly language: CardLanguage;
   readonly variant: CardVariant;
+  /** Variante demandée avant résolution auto (défaut : `variant`). */
+  readonly requestedVariant?: CardVariant | undefined;
   readonly condition: CardCondition;
   readonly quantity?: number | undefined;
   readonly explicit?: boolean | undefined;
@@ -416,6 +423,7 @@ export const addToBurstSession = (
   if (existing === undefined && state.lines.length >= MAX_BURST_BATCH_ITEMS) return state;
   const seq = state.seq + 1;
   const explicit = input.explicit ?? false;
+  const requestedVariant = explicit ? input.variant : (input.requestedVariant ?? input.variant);
   const lines =
     existing === undefined
       ? [
@@ -425,17 +433,30 @@ export const addToBurstSession = (
             cardId: input.cardId,
             language: input.language,
             variant: input.variant,
+            ...(requestedVariant === input.variant ? {} : { requestedVariant }),
             condition: input.condition,
             quantity: added,
             explicit,
             seq,
           },
         ]
-      : state.lines.map((line) =>
-          line.key === key
-            ? { ...line, quantity: line.quantity + added, explicit: line.explicit || explicit, seq }
-            : line,
-        );
+      : state.lines.map((line) => {
+          if (line.key !== key) return line;
+          const nextExplicit = line.explicit || explicit;
+          const nextRequested = nextExplicit
+            ? undefined
+            : (line.requestedVariant ??
+              (requestedVariant === line.variant ? undefined : requestedVariant));
+          return {
+            ...line,
+            quantity: line.quantity + added,
+            explicit: nextExplicit,
+            ...(nextRequested === undefined
+              ? { requestedVariant: undefined }
+              : { requestedVariant: nextRequested }),
+            seq,
+          };
+        });
   return { lines, seq, history: pushHistory(state) };
 };
 
@@ -549,7 +570,9 @@ export const buildBurstCommitPayload = (
       cardId: line.cardId,
       quantity: line.quantity,
       language: line.language,
-      variant: line.variant,
+      // Envoie la variante demandée avant ajustement auto quand `!explicit` :
+      // le serveur la résout sur le même slot et remonte `variantAdjusted: true`.
+      variant: line.explicit ? line.variant : (line.requestedVariant ?? line.variant),
       condition: line.condition,
       variantExplicit: line.explicit,
     }));
@@ -570,8 +593,8 @@ export const buildBurstCommitPayload = (
 // Pavé numéros `#` : saisie et appariement tolérant
 // ---------------------------------------------------------------------------
 
-/** Longueur maximale du numéro saisi (`SV001`, `TG01`, `GG01`… ≤ 6). */
-export const MAX_BURST_NUMBER_LENGTH = 6;
+/** Longueur maximale du numéro saisi (`SWSH001`, `SVP001`, `SV001`, `GG01`… ≤ 10). */
+export const MAX_BURST_NUMBER_LENGTH = 10;
 
 /** Caractères acceptés au pavé / clavier : chiffres et lettres (promos, secrètes). */
 export const isBurstNumberChar = (char: string): boolean => /^[0-9A-Za-z]$/.test(char);

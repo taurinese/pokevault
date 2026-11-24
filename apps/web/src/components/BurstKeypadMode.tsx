@@ -78,7 +78,6 @@ export const BurstKeypadMode = ({
     >
       <output
         data-testid="burst-keypad-display"
-        aria-live="polite"
         aria-label={t("burst.keypad.display.label")}
         className="block rounded-sheet border border-line bg-surface-1 px-4 py-2 text-center font-mono text-3xl font-bold tabular-nums text-primary"
       >

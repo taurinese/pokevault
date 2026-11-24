@@ -247,6 +247,7 @@ export const BurstGridMode = ({
         ) : (
           <div
             data-testid="burst-grid"
+            className="mb-4"
             style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}
           >
             {virtualRows.map((virtualRow) => (

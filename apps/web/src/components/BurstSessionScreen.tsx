@@ -13,11 +13,12 @@
  * Réf. : docs/01 §6, docs/05, docs/06, ADR-006.
  */
 
-import type {
-  BurstImportReport,
-  CardCondition,
-  CardLanguage,
-  CardVariant,
+import {
+  type BurstImportReport,
+  type CardCondition,
+  type CardLanguage,
+  type CardVariant,
+  MAX_CARD_COPY_QUANTITY,
 } from "@pokevault/domain";
 import {
   ArrowLeft,
@@ -36,6 +37,7 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   useState,
 } from "react";
 import { t, tPlural } from "../i18n/index.ts";
@@ -185,6 +187,7 @@ const applyAdd = (
     ownedQuantity: card.ownedQuantity,
     language: state.language,
     variant,
+    requestedVariant,
     condition: state.condition,
     quantity,
     explicit,
@@ -212,7 +215,10 @@ const withReportApplied = (load: BurstCardsLoad, report: BurstImportReport): Bur
         const delta = added.get(card.id);
         return delta === undefined
           ? card
-          : { ...card, ownedQuantity: Math.min(999, card.ownedQuantity + delta) };
+          : {
+              ...card,
+              ownedQuantity: Math.min(MAX_CARD_COPY_QUANTITY, card.ownedQuantity + delta),
+            };
       }),
     },
   };
@@ -1017,6 +1023,8 @@ export const BurstSessionScreen = ({
 }: BurstSessionScreenProps) => {
   const [state, dispatch] = useReducer(burstScreenReducer, config, initialBurstScreenState);
   const [retryNonce, setRetryNonce] = useState(0);
+  // Verrou synchrone contre un double-clic sur « Valider » avant re-rendu.
+  const committingRef = useRef(false);
   const loadCards = fetchCards ?? fetchBurstSetCards;
   const sendCommit = commit ?? commitBurstImport;
 
@@ -1116,7 +1124,11 @@ export const BurstSessionScreen = ({
         onKeypadVariant: (variant) => dispatch({ type: "keypad_variant", variant }),
         onKeypadAdd: (quantity) => dispatch({ type: "keypad_added", quantity }),
         onValidate: () => {
-          void submitBurstLot(state, sendCommit, dispatch);
+          if (committingRef.current) return;
+          committingRef.current = true;
+          void submitBurstLot(state, sendCommit, dispatch).finally(() => {
+            committingRef.current = false;
+          });
         },
         onRetryLoad: () => {
           dispatch({ type: "cards_loading" });

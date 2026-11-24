@@ -547,6 +547,72 @@ describe("résolution de variante et corps de validation", () => {
       ),
     ).toBeNull();
   });
+
+  it("envoie la variante demandée avant ajustement auto afin que le serveur remonte adjusted: true", () => {
+    const holoOnly = card({
+      id: "sv03.5-100",
+      availableVariants: ["holo"],
+      holoEffect: "holo",
+    });
+    // Simulation exacte de `applyAdd` : variante résolue = "holo", demandée = "normal", explicit = false.
+    const resolved = resolveBurstVariantForCard(holoOnly, "normal", false);
+    expect(resolved).toEqual({ variant: "holo", adjusted: true });
+    const state = add(emptyBurstSession, {
+      cardId: holoOnly.id,
+      variant: resolved.variant,
+      requestedVariant: "normal",
+      explicit: false,
+    });
+    expect(state.lines[0]?.variant).toBe("holo");
+    const payload = buildBurstCommitPayload(
+      {
+        setId: "sv03.5",
+        language: "FR",
+        variant: "normal",
+        condition: "NM",
+        removeFromWishlist: true,
+      },
+      state.lines,
+    );
+    expect(payload?.items[0]).toMatchObject({
+      cardId: "sv03.5-100",
+      variant: "normal",
+      variantExplicit: false,
+    });
+    // En repassant exactement ce que le serveur reçoit dans la résolution domaine, `adjusted` vaut `true`.
+    const serverItem = payload?.items[0];
+    expect(serverItem).toBeDefined();
+    if (serverItem !== undefined) {
+      const serverResolution = resolveBurstVariantForCard(
+        holoOnly,
+        serverItem.variant ?? "normal",
+        serverItem.variantExplicit ?? false,
+      );
+      expect(serverResolution).toEqual({ variant: "holo", adjusted: true });
+    }
+
+    // Avec un choix explicite (`explicit: true`), la variante reste explicite → `adjusted: false`.
+    const explicitState = add(emptyBurstSession, {
+      cardId: holoOnly.id,
+      variant: "holo",
+      requestedVariant: "holo",
+      explicit: true,
+    });
+    const explicitPayload = buildBurstCommitPayload(
+      {
+        setId: "sv03.5",
+        language: "FR",
+        variant: "normal",
+        condition: "NM",
+        removeFromWishlist: true,
+      },
+      explicitState.lines,
+    );
+    expect(explicitPayload?.items[0]).toMatchObject({
+      variant: "holo",
+      variantExplicit: true,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -600,6 +666,10 @@ describe("saisie du numéro (pavé et clavier)", () => {
     expect(input).toHaveLength(MAX_BURST_NUMBER_LENGTH);
     expect(appendBurstNumberChar("", " ")).toBe("");
     expect(appendBurstNumberChar("", "Enter")).toBe("");
+    // Les promos à 7+ caractères comme SWSH001 ne sont pas tronquées.
+    let promo = "";
+    for (const char of "swsh001") promo = appendBurstNumberChar(promo, char);
+    expect(promo).toBe("SWSH001");
   });
 
   it("efface le dernier caractère", () => {
