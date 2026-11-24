@@ -25,6 +25,7 @@ import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
 import { Route as ApiBinderGridIdRouteImport } from './routes/api/binder-grid/$id'
 import { Route as ApiBindersIndexRouteImport } from './routes/api/binders/index'
+import { Route as ApiBurstCardsRouteImport } from './routes/api/burst/cards'
 import { Route as ApiBurstCommitRouteImport } from './routes/api/burst/commit'
 import { Route as ApiBurstPreviewRouteImport } from './routes/api/burst/preview'
 import { Route as ApiBurstSetsRouteImport } from './routes/api/burst/sets'
@@ -118,6 +119,11 @@ const ApiBindersIndexRoute = ApiBindersIndexRouteImport.update({
   path: '/api/binders/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiBurstCardsRoute = ApiBurstCardsRouteImport.update({
+  id: '/api/burst/cards',
+  path: '/api/burst/cards',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiBurstCommitRoute = ApiBurstCommitRouteImport.update({
   id: '/api/burst/commit',
   path: '/api/burst/commit',
@@ -195,6 +201,7 @@ export interface FileRoutesByFullPath {
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/api/binder-grid/$id': typeof ApiBinderGridIdRoute
+  '/api/burst/cards': typeof ApiBurstCardsRoute
   '/api/burst/commit': typeof ApiBurstCommitRoute
   '/api/burst/preview': typeof ApiBurstPreviewRoute
   '/api/burst/sets': typeof ApiBurstSetsRoute
@@ -225,6 +232,7 @@ export interface FileRoutesByTo {
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/api/binder-grid/$id': typeof ApiBinderGridIdRoute
+  '/api/burst/cards': typeof ApiBurstCardsRoute
   '/api/burst/commit': typeof ApiBurstCommitRoute
   '/api/burst/preview': typeof ApiBurstPreviewRoute
   '/api/burst/sets': typeof ApiBurstSetsRoute
@@ -256,6 +264,7 @@ export interface FileRoutesById {
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/api/binder-grid/$id': typeof ApiBinderGridIdRoute
+  '/api/burst/cards': typeof ApiBurstCardsRoute
   '/api/burst/commit': typeof ApiBurstCommitRoute
   '/api/burst/preview': typeof ApiBurstPreviewRoute
   '/api/burst/sets': typeof ApiBurstSetsRoute
@@ -288,6 +297,7 @@ export interface FileRouteTypes {
     | '/api/auth/login'
     | '/api/auth/logout'
     | '/api/binder-grid/$id'
+    | '/api/burst/cards'
     | '/api/burst/commit'
     | '/api/burst/preview'
     | '/api/burst/sets'
@@ -318,6 +328,7 @@ export interface FileRouteTypes {
     | '/api/auth/login'
     | '/api/auth/logout'
     | '/api/binder-grid/$id'
+    | '/api/burst/cards'
     | '/api/burst/commit'
     | '/api/burst/preview'
     | '/api/burst/sets'
@@ -348,6 +359,7 @@ export interface FileRouteTypes {
     | '/api/auth/login'
     | '/api/auth/logout'
     | '/api/binder-grid/$id'
+    | '/api/burst/cards'
     | '/api/burst/commit'
     | '/api/burst/preview'
     | '/api/burst/sets'
@@ -379,6 +391,7 @@ export interface RootRouteChildren {
   ApiAuthLoginRoute: typeof ApiAuthLoginRoute
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
   ApiBinderGridIdRoute: typeof ApiBinderGridIdRoute
+  ApiBurstCardsRoute: typeof ApiBurstCardsRoute
   ApiBurstCommitRoute: typeof ApiBurstCommitRoute
   ApiBurstPreviewRoute: typeof ApiBurstPreviewRoute
   ApiBurstSetsRoute: typeof ApiBurstSetsRoute
@@ -508,6 +521,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBindersIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/burst/cards': {
+      id: '/api/burst/cards'
+      path: '/api/burst/cards'
+      fullPath: '/api/burst/cards'
+      preLoaderRoute: typeof ApiBurstCardsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/burst/commit': {
       id: '/api/burst/commit'
       path: '/api/burst/commit'
@@ -611,6 +631,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthLoginRoute: ApiAuthLoginRoute,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
   ApiBinderGridIdRoute: ApiBinderGridIdRoute,
+  ApiBurstCardsRoute: ApiBurstCardsRoute,
   ApiBurstCommitRoute: ApiBurstCommitRoute,
   ApiBurstPreviewRoute: ApiBurstPreviewRoute,
   ApiBurstSetsRoute: ApiBurstSetsRoute,

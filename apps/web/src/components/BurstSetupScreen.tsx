@@ -45,22 +45,35 @@ export interface BurstSetupState {
   readonly condition: BurstSetupCondition;
   readonly removeFromWishlist: boolean;
   readonly mode: BurstInputMode;
-  /** `config` = étape 1 (08A) · `confirm` = étape 2 (08B/08C à venir, issue #20). */
-  readonly step: "config" | "confirm";
-  readonly startedConfig: BurstSetupConfig | null;
 }
 
-/** État initial de l'étape 1 ; `initialSetId` pré-sélectionne l'extension. */
+/**
+ * État initial de l'étape 1 ; `initialSetId` pré-sélectionne l'extension.
+ * `initialConfig` (retour depuis l'étape 2) reprend tous les réglages du lot.
+ */
 export const initialBurstSetupState = (
   initialSetId: string | undefined = undefined,
+  initialConfig: BurstSetupConfig | undefined = undefined,
 ): BurstSetupState => ({
   status: "loading",
   sets: [],
   filter: "",
-  selectedSetId: initialSetId?.trim() === "" || initialSetId === undefined ? null : initialSetId,
+  selectedSetId:
+    initialConfig !== undefined
+      ? initialConfig.setId
+      : initialSetId?.trim() === "" || initialSetId === undefined
+        ? null
+        : initialSetId,
   ...DEFAULT_BURST_SETUP,
-  step: "config",
-  startedConfig: null,
+  ...(initialConfig === undefined
+    ? {}
+    : {
+        language: initialConfig.language,
+        variant: initialConfig.variant,
+        condition: initialConfig.condition,
+        removeFromWishlist: initialConfig.removeFromWishlist,
+        mode: initialConfig.mode,
+      }),
 });
 
 export type BurstSetupAction =
@@ -73,9 +86,7 @@ export type BurstSetupAction =
   | { readonly type: "variant_changed"; readonly variant: BurstSetupVariant }
   | { readonly type: "condition_changed"; readonly condition: BurstSetupCondition }
   | { readonly type: "wishlist_toggled" }
-  | { readonly type: "mode_changed"; readonly mode: BurstInputMode }
-  | { readonly type: "started" }
-  | { readonly type: "back_to_config" };
+  | { readonly type: "mode_changed"; readonly mode: BurstInputMode };
 
 export const burstSetupReducer = (
   state: BurstSetupState,
@@ -110,12 +121,6 @@ export const burstSetupReducer = (
       return { ...state, removeFromWishlist: !state.removeFromWishlist };
     case "mode_changed":
       return { ...state, mode: action.mode };
-    case "started": {
-      const config = burstSetupConfig(state);
-      return config === null ? state : { ...state, step: "confirm", startedConfig: config };
-    }
-    case "back_to_config":
-      return { ...state, step: "config", startedConfig: null };
   }
 };
 
@@ -309,7 +314,6 @@ export interface BurstSetupViewActions {
   readonly onToggleWishlist: () => void;
   readonly onModeChange: (mode: BurstInputMode) => void;
   readonly onStart: () => void;
-  readonly onEditLot: () => void;
   readonly onRetry: () => void;
   readonly onBack: () => void;
 }
@@ -323,68 +327,6 @@ export const BurstSetupView = ({
 }) => {
   const visibleSets = useMemo(() => visibleBurstSets(state), [state]);
   const config = burstSetupConfig(state);
-  const selectedSet = state.sets.find((set) => set.id === state.selectedSetId) ?? null;
-
-  if (state.step === "confirm" && state.startedConfig !== null) {
-    return (
-      <div
-        data-testid="burst-step2"
-        className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-4 px-5 pt-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]"
-      >
-        <header className="flex items-center gap-2">
-          <button
-            type="button"
-            data-testid="burst-back"
-            aria-label={t("burst.back")}
-            onClick={actions.onBack}
-            className={`flex min-h-[44px] min-w-[44px] items-center justify-center rounded-pill border border-line bg-surface-1 text-primary ${focusRing}`}
-          >
-            <ArrowLeft size={20} aria-hidden="true" />
-          </button>
-          <h1 className="text-lg font-bold text-primary">{t("burst.title")}</h1>
-          <span className="ml-auto rounded-pill bg-surface-2 px-3 py-1 font-mono text-xs tabular-nums text-secondary">
-            {t("burst.step", { current: 2, total: 2 })}
-          </span>
-        </header>
-
-        <section
-          aria-labelledby="burst-step2-recap"
-          className="flex flex-col gap-3 rounded-sheet border border-line bg-surface-1 p-5 shadow-card"
-        >
-          <h2
-            id="burst-step2-recap"
-            className="text-xs font-semibold tracking-wide text-muted uppercase"
-          >
-            {t("burst.step2.recap.heading")}
-          </h2>
-          <p className="text-lg font-bold text-primary">
-            {selectedSet?.nameFr ?? state.startedConfig.setId}
-          </p>
-          <ul className="flex flex-col gap-1 text-sm text-secondary">
-            <li>{`${t(LANGUAGE_LABEL_KEY[state.startedConfig.language])} · ${t(VARIANT_LABEL_KEY[state.startedConfig.variant])} · ${t(CONDITION_LABEL_KEY[state.startedConfig.condition])}`}</li>
-            <li>
-              {t(
-                state.startedConfig.removeFromWishlist ? "burst.wishlist.on" : "burst.wishlist.off",
-              )}
-            </li>
-            <li>{t(MODE_TITLE_KEY[state.startedConfig.mode])}</li>
-          </ul>
-          <button
-            type="button"
-            data-testid="burst-edit"
-            onClick={actions.onEditLot}
-            className={`min-h-11 rounded-pill border border-gold bg-gold-soft px-5 text-sm font-semibold text-gold ${focusRing}`}
-          >
-            {t("burst.step2.edit")}
-          </button>
-        </section>
-
-        <p className="rounded-sheet border border-line bg-surface-1 p-4 text-sm text-muted">
-          {t("burst.step2.placeholder")}
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -631,6 +573,8 @@ export const BurstSetupView = ({
 export interface BurstSetupScreenProps {
   /** `?setId=` : extension pré-sélectionnée à l'ouverture. */
   readonly initialSetId?: string | undefined;
+  /** Retour depuis l'étape 2 : reprend les réglages du lot en cours. */
+  readonly initialConfig?: BurstSetupConfig | undefined;
   readonly onBack: () => void;
   /** Appelé par le CTA avec la configuration validée du lot. */
   readonly onStart: (config: BurstSetupConfig) => void;
@@ -640,11 +584,16 @@ export interface BurstSetupScreenProps {
 
 export const BurstSetupScreen = ({
   initialSetId,
+  initialConfig,
   onBack,
   onStart,
   fetchSets,
 }: BurstSetupScreenProps) => {
-  const [state, dispatch] = useReducer(burstSetupReducer, initialSetId, initialBurstSetupState);
+  const [state, dispatch] = useReducer(
+    burstSetupReducer,
+    { initialSetId, initialConfig },
+    ({ initialSetId: setId, initialConfig: config }) => initialBurstSetupState(setId, config),
+  );
   const [retryNonce, setRetryNonce] = useState(0);
   const loadSets = fetchSets ?? fetchBurstSets;
 
@@ -672,12 +621,7 @@ export const BurstSetupScreen = ({
         onConditionChange: (condition) => dispatch({ type: "condition_changed", condition }),
         onToggleWishlist: () => dispatch({ type: "wishlist_toggled" }),
         onModeChange: (mode) => dispatch({ type: "mode_changed", mode }),
-        onStart: () => {
-          dispatch({ type: "started" });
-          const config = burstSetupConfig(state);
-          if (config !== null) onStart(config);
-        },
-        onEditLot: () => dispatch({ type: "back_to_config" }),
+        onStart: () => startBurstSetup(state, onStart),
         onRetry: () => {
           dispatch({ type: "sets_loading" });
           setRetryNonce((nonce) => nonce + 1);
