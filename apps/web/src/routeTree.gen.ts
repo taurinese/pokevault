@@ -17,6 +17,7 @@ import { Route as CollectionRouteImport } from './routes/collection'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SearchRouteImport } from './routes/search'
 import { Route as WishlistRouteImport } from './routes/wishlist'
+import { Route as ApiDashboardRouteImport } from './routes/api/dashboard'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as BinderIdRouteImport } from './routes/binder/$id'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
@@ -80,6 +81,11 @@ const SearchRoute = SearchRouteImport.update({
 const WishlistRoute = WishlistRouteImport.update({
   id: '/wishlist',
   path: '/wishlist',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDashboardRoute = ApiDashboardRouteImport.update({
+  id: '/api/dashboard',
+  path: '/api/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiHealthRoute = ApiHealthRouteImport.update({
@@ -212,6 +218,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
+  '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
   '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
@@ -246,6 +253,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
+  '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
   '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
@@ -281,6 +289,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/search': typeof SearchRoute
   '/wishlist': typeof WishlistRoute
+  '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
   '/binder/$id': typeof BinderIdRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
@@ -317,6 +326,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/search'
     | '/wishlist'
+    | '/api/dashboard'
     | '/api/health'
     | '/binder/$id'
     | '/api/auth/callback'
@@ -351,6 +361,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/search'
     | '/wishlist'
+    | '/api/dashboard'
     | '/api/health'
     | '/binder/$id'
     | '/api/auth/callback'
@@ -385,6 +396,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/search'
     | '/wishlist'
+    | '/api/dashboard'
     | '/api/health'
     | '/binder/$id'
     | '/api/auth/callback'
@@ -420,6 +432,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   SearchRoute: typeof SearchRoute
   WishlistRoute: typeof WishlistRoute
+  ApiDashboardRoute: typeof ApiDashboardRoute
   ApiHealthRoute: typeof ApiHealthRoute
   BinderIdRoute: typeof BinderIdRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
@@ -502,6 +515,13 @@ declare module '@tanstack/react-router' {
       path: '/wishlist'
       fullPath: '/wishlist'
       preLoaderRoute: typeof WishlistRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/dashboard': {
+      id: '/api/dashboard'
+      path: '/api/dashboard'
+      fullPath: '/api/dashboard'
+      preLoaderRoute: typeof ApiDashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/health': {
@@ -684,6 +704,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   SearchRoute: SearchRoute,
   WishlistRoute: WishlistRoute,
+  ApiDashboardRoute: ApiDashboardRoute,
   ApiHealthRoute: ApiHealthRoute,
   BinderIdRoute: BinderIdRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
