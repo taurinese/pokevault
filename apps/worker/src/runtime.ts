@@ -1,4 +1,5 @@
-import { Effect, Ref } from "effect";
+import type { CatalogSyncReport } from "@pokevault/services";
+import { Cause, Effect, Ref } from "effect";
 
 /** Signals that trigger a graceful shutdown. */
 export const SHUTDOWN_SIGNALS = [
@@ -53,14 +54,60 @@ export const heartbeatLoop = (intervalMs: number): Effect.Effect<never> =>
     );
   }).pipe(Effect.onInterrupt(() => Effect.logInfo("worker.heartbeat.interrupted")));
 
-export interface RunWorkerOptions {
-  readonly heartbeatIntervalMs: number;
-  readonly signals: SignalSource;
+/** Configuration of the daily catalog sync cron. */
+export interface CatalogSyncCron {
+  /** Delay between two sync runs, in milliseconds (strictly positive, default 24 h). */
+  readonly intervalMs: number;
+  /**
+   * One catalog sync run. Its typed errors are logged (`worker.catalog_sync.failed`)
+   * and never crash the worker; interruption is always propagated.
+   */
+  readonly run: Effect.Effect<CatalogSyncReport, unknown>;
 }
 
 /**
- * Worker main program. Runs the heartbeat until SIGTERM/SIGINT is received, then
- * interrupts the loop and runs the scope finalizer before completing.
+ * Catalog sync cron: runs `run` immediately, then every `intervalMs`. Failures are
+ * logged as warnings and the loop keeps going; interrupting the loop (SIGTERM/SIGINT
+ * shutdown) stops it and logs `worker.catalog_sync.interrupted`.
+ */
+export const catalogSyncLoop = (cron: CatalogSyncCron): Effect.Effect<never, unknown> =>
+  Effect.forever(
+    Effect.gen(function* () {
+      yield* Effect.logInfo("worker.catalog_sync.started");
+      yield* cron.run.pipe(
+        Effect.tap((report) =>
+          Effect.logInfo("worker.catalog_sync.completed").pipe(
+            Effect.annotateLogs({
+              seriesCount: report.seriesCount,
+              setsCount: report.setsCount,
+              cardsCount: report.cardsCount,
+              failedCards: report.failedCards,
+              failedSets: report.failedSets.length,
+              durationMs: report.durationMs,
+            }),
+          ),
+        ),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("worker.catalog_sync.failed", cause),
+        ),
+      );
+      yield* Effect.sleep(cron.intervalMs);
+    }),
+  ).pipe(Effect.onInterrupt(() => Effect.logInfo("worker.catalog_sync.interrupted")));
+
+export interface RunWorkerOptions {
+  readonly heartbeatIntervalMs: number;
+  readonly signals: SignalSource;
+  /** Optional catalog sync cron, forked in a supervised fiber of the worker scope. */
+  readonly catalogSync?: CatalogSyncCron | undefined;
+}
+
+/**
+ * Worker main program. Runs the heartbeat (and the optional catalog sync cron, in its
+ * own supervised fiber) until SIGTERM/SIGINT is received, then interrupts the loops and
+ * runs the scope finalizer before completing.
  */
 export const runWorker = (options: RunWorkerOptions): Effect.Effect<ShutdownSignal> =>
   Effect.scoped(
@@ -69,6 +116,9 @@ export const runWorker = (options: RunWorkerOptions): Effect.Effect<ShutdownSign
       yield* Effect.logInfo("worker.started").pipe(
         Effect.annotateLogs({ heartbeatIntervalMs: options.heartbeatIntervalMs }),
       );
+      if (options.catalogSync !== undefined) {
+        yield* Effect.forkScoped(catalogSyncLoop(options.catalogSync));
+      }
       const signal = yield* Effect.raceFirst(
         awaitShutdownSignal(options.signals),
         heartbeatLoop(options.heartbeatIntervalMs),
