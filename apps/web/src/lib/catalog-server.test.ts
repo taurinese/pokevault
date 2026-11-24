@@ -103,13 +103,14 @@ describe("GET /api/catalog/discover", () => {
     expect(body.popularSets[0]?.id).toBe("sv08");
   });
 
-  it("propagates refreshed session cookies via Set-Cookie", async () => {
+  it("propagates refreshed session cookies via Set-Cookie with Cache-Control: no-store", async () => {
     const { deps } = makeDeps(emptyService());
     const response = await handleDiscover(
       request("/api/catalog/discover", `${REFRESH_TOKEN_COOKIE}=old-refresh`),
       deps,
     );
     expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     const cookies = response.headers.getSetCookie();
     expect(cookies).toHaveLength(2);
     expect(cookies[0]).toContain(`${ACCESS_TOKEN_COOKIE}=fresh`);
@@ -138,7 +139,10 @@ describe("GET /api/catalog/discover", () => {
     expect(response.status).toBe(503);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(await response.text()).not.toContain("secret");
-    expect(log).toHaveBeenCalledWith("catalog.query_failed", { operation: "discover" });
+    expect(log).toHaveBeenCalledWith("catalog.query_failed", {
+      operation: "discover",
+      errorTag: "DatabaseError",
+    });
   });
 });
 

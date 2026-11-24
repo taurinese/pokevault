@@ -192,9 +192,11 @@ services:
       # Never give the web app the service_role key (docs/06-securite.md §2).
       SUPABASE_ANON_KEY: ${ANON_KEY:?set ANON_KEY in .env}
       # Catalogue reads only (/api/catalog/*: SELECT on catalog_sets / catalog_cards,
-      # server-side behind the SSR session check). Never exposed to the browser.
+      # server-side behind the SSR session check). Uses the least-privilege NOINHERIT
+      # `authenticator` role + `role=authenticated` at connection startup so Postgres
+      # RLS and read-only grants (002_catalog.sql) are enforced (docs/06-securite.md §2).
       # Unset in dev/test without a database: the routes then answer an empty payload.
-      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable
+      DATABASE_URL: postgres://authenticator:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable
     depends_on:
       auth:
         condition: service_healthy

@@ -27,7 +27,7 @@ import {
   type CatalogSearchServiceShape,
   DatabaseLive,
 } from "@pokevault/services";
-import { Effect, Exit, Layer, ManagedRuntime, Schema } from "effect";
+import { Cause, Effect, Exit, Layer, ManagedRuntime, Schema } from "effect";
 import { type AuthDeps, defaultAuthDeps, getServerSession } from "./auth-server.ts";
 
 // ---------------------------------------------------------------------------
@@ -52,26 +52,59 @@ export const logWarning: CatalogLogger = (event, fields = {}) => {
   process.stderr.write(`${JSON.stringify({ level: "warn", event, ...fields })}\n`);
 };
 
-let liveService: Promise<CatalogSearchServiceShape> | undefined;
-let liveServiceUrl: string | undefined;
+interface LiveRuntimeEntry {
+  readonly url: string;
+  readonly runtime: ManagedRuntime.ManagedRuntime<CatalogSearchService, never>;
+  readonly service: Promise<CatalogSearchServiceShape>;
+}
+
+const GLOBAL_RUNTIME_KEY = "__pokevaultCatalogRuntime" as const;
+
+const readCachedRuntime = (): LiveRuntimeEntry | undefined =>
+  (globalThis as Record<string, unknown>)[GLOBAL_RUNTIME_KEY] as LiveRuntimeEntry | undefined;
+
+const writeCachedRuntime = (entry: LiveRuntimeEntry | undefined): void => {
+  (globalThis as Record<string, unknown>)[GLOBAL_RUNTIME_KEY] = entry;
+};
 
 /**
- * Service Postgres (pool `postgres.js` paresseux : aucune connexion avant la
- * première requête), construit une seule fois par processus et par URL.
+ * Service Postgres (pool `postgres.js` paresseux, rôle `authenticated` à
+ * moindre privilège : RLS + `SELECT` uniquement sur le catalogue). Mis en cache
+ * sur `globalThis` pour survivre au HMR Vite sans fuiter de pools ; une promesse
+ * rejetée est immédiatement purgée du cache.
  */
 const getLiveService = (databaseUrl: string): Promise<CatalogSearchServiceShape> => {
-  if (liveService === undefined || liveServiceUrl !== databaseUrl) {
-    const layer = CatalogSearchServiceLive.pipe(
-      Layer.provide(DatabaseLive({ connectionString: databaseUrl, maxConnections: 5 })),
-    );
-    liveServiceUrl = databaseUrl;
-    liveService = ManagedRuntime.make(layer).runPromise(
+  const existing = readCachedRuntime();
+  if (existing !== undefined && existing.url === databaseUrl) {
+    return existing.service;
+  }
+  if (existing !== undefined) {
+    void existing.runtime.dispose();
+    writeCachedRuntime(undefined);
+  }
+  const layer = CatalogSearchServiceLive.pipe(
+    Layer.provide(
+      DatabaseLive({
+        connectionString: databaseUrl,
+        maxConnections: 5,
+        role: "authenticated",
+      }),
+    ),
+  );
+  const runtime = ManagedRuntime.make(layer);
+  const service = runtime
+    .runPromise(
       Effect.gen(function* () {
         return yield* CatalogSearchService;
       }),
-    );
-  }
-  return liveService;
+    )
+    .catch((error: unknown) => {
+      if (readCachedRuntime()?.runtime === runtime) writeCachedRuntime(undefined);
+      void runtime.dispose();
+      throw error;
+    });
+  writeCachedRuntime({ url: databaseUrl, runtime, service });
+  return service;
 };
 
 /** Dépendances de production : session GoTrue + Postgres (`DATABASE_URL`). */
@@ -102,6 +135,27 @@ const json = (
 
 const unauthorized = (): Response => json({ error: "unauthorized" }, 401, "no-store");
 
+const extractErrorMeta = (cause: Cause.Cause<unknown>): Readonly<Record<string, unknown>> => {
+  const failure = Cause.squash(cause);
+  if (typeof failure !== "object" || failure === null) return {};
+  const record = failure as Record<string, unknown>;
+  const inner =
+    typeof record["cause"] === "object" && record["cause"] !== null
+      ? (record["cause"] as Record<string, unknown>)
+      : null;
+  const tag = typeof record["_tag"] === "string" ? record["_tag"] : undefined;
+  const code =
+    typeof inner?.["code"] === "string"
+      ? inner["code"]
+      : typeof record["code"] === "string"
+        ? record["code"]
+        : undefined;
+  return {
+    ...(tag === undefined ? {} : { errorTag: tag }),
+    ...(code === undefined ? {} : { pgCode: code }),
+  };
+};
+
 /** Exécute une opération du service ; `null` en cas d'échec (journalisé, jamais de fuite SQL). */
 const execute = async <A, E>(
   deps: CatalogServerDeps,
@@ -110,7 +164,7 @@ const execute = async <A, E>(
 ): Promise<A | null> => {
   const exit = await Effect.runPromiseExit(effect);
   if (Exit.isSuccess(exit)) return exit.value;
-  deps.log("catalog.query_failed", { operation });
+  deps.log("catalog.query_failed", { operation, ...extractErrorMeta(exit.cause) });
   return null;
 };
 
@@ -146,7 +200,7 @@ export const handleDiscover = async (
   );
   return payload === null
     ? unavailable(cookies)
-    : json(payload, 200, "private, max-age=60", cookies);
+    : json(payload, 200, cookies.length > 0 ? "no-store" : "private, max-age=60", cookies);
 };
 
 // ---------------------------------------------------------------------------

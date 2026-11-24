@@ -28,10 +28,16 @@ export class Database extends Context.Service<Database, DatabaseShape>()(
 ) {}
 
 export interface DatabaseLiveOptions {
-  /** e.g. `postgres://postgres:pass@postgres:5432/postgres?sslmode=disable`. */
+  /** e.g. `postgres://authenticator:pass@postgres:5432/postgres?sslmode=disable`. */
   readonly connectionString: string;
   /** Pool size (default 10). */
   readonly maxConnections?: number | undefined;
+  /**
+   * Optional Postgres session role set at connection startup (e.g. `"authenticated"`
+   * when connecting via the `NOINHERIT` `authenticator` role so RLS & read-only
+   * grants apply automatically on every query).
+   */
+  readonly role?: string | undefined;
 }
 
 /**
@@ -48,6 +54,7 @@ export const DatabaseLive = (options: DatabaseLiveOptions): Layer.Layer<Database
           max: options.maxConnections ?? 10,
           idle_timeout: 20,
           connect_timeout: 10,
+          ...(options.role === undefined ? {} : { connection: { role: options.role } }),
         }),
       ),
       (sql) => Effect.tryPromise(() => sql.end({ timeout: 5 })).pipe(Effect.ignore),

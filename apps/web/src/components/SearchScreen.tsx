@@ -4,6 +4,7 @@ import {
   clearRecentSearches,
   removeRecentSearch,
   SEARCH_DEFAULT_LIMIT,
+  SEARCH_MAX_QUERY_LENGTH,
   type SearchDiscoveryPayload,
   type SearchQuery,
   type SearchQuickAccess,
@@ -448,7 +449,7 @@ const SearchHeader = ({
           autoComplete="off"
           autoCapitalize="none"
           spellCheck={false}
-          maxLength={100}
+          maxLength={SEARCH_MAX_QUERY_LENGTH}
           value={state.input}
           placeholder={t("search.input.placeholder")}
           onChange={(event) => actions.onInputChange(event.target.value)}
@@ -1200,11 +1201,16 @@ export const SearchScreen = ({ onToggleWishlist, onQuickAdd }: SearchScreenProps
     [committed, scope, sort, quickAccess, activeSet],
   );
 
+  const loadMoreControllerRef = useRef<AbortController | null>(null);
+
   // 05C / 05D : résultats (première page) dès qu'une requête ou un filtre est actif.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `retryToken` relance volontairement la recherche
   useEffect(() => {
+    loadMoreControllerRef.current?.abort();
+    loadMoreControllerRef.current = null;
     if (!hasActiveSearch) {
       setResults({ status: "idle" });
+      setLoadingMore(false);
       return;
     }
     const controller = new AbortController();
@@ -1215,7 +1221,11 @@ export const SearchScreen = ({ onToggleWishlist, onQuickAdd }: SearchScreenProps
       .catch((error: unknown) => {
         if (!isAbort(error)) setResults({ status: "error" });
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      loadMoreControllerRef.current?.abort();
+      loadMoreControllerRef.current = null;
+    };
   }, [hasActiveSearch, query, retryToken]);
 
   const commit = (raw: string, options?: { readonly remember?: boolean }): void => {
@@ -1275,9 +1285,13 @@ export const SearchScreen = ({ onToggleWishlist, onQuickAdd }: SearchScreenProps
     onLoadMore: () => {
       if (results.status !== "ready" || loadingMore) return;
       const loaded = results.data;
+      loadMoreControllerRef.current?.abort();
+      const controller = new AbortController();
+      loadMoreControllerRef.current = controller;
       setLoadingMore(true);
-      fetchResults({ ...query, offset: loaded.cards.length })
+      fetchResults({ ...query, offset: loaded.cards.length }, controller.signal)
         .then((result) => {
+          if (controller.signal.aborted) return;
           if (result.kind === "unauthorized") return redirectToLogin();
           if (result.kind === "error") return;
           setResults((current) =>
@@ -1294,7 +1308,12 @@ export const SearchScreen = ({ onToggleWishlist, onQuickAdd }: SearchScreenProps
           );
         })
         .catch(() => undefined)
-        .finally(() => setLoadingMore(false));
+        .finally(() => {
+          if (loadMoreControllerRef.current === controller) {
+            loadMoreControllerRef.current = null;
+            setLoadingMore(false);
+          }
+        });
     },
     onRetry: () => setRetryToken((token) => token + 1),
     onReset: () => {

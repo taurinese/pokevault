@@ -9,6 +9,8 @@ import type { HoloEffect } from "./card.ts";
 export const SEARCH_MAX_LIMIT = 60;
 /** Default page size of `search` (3-column grid friendly). */
 export const SEARCH_DEFAULT_LIMIT = 24;
+/** Maximum pagination offset (DoS guard against deep OFFSET scans). */
+export const SEARCH_MAX_OFFSET = 10_000;
 /** Maximum length of the free-text query (DoS guard, one-line input). */
 export const SEARCH_MAX_QUERY_LENGTH = 100;
 /** Maximum number of recent searches kept (écran 05B). */
@@ -50,7 +52,7 @@ export const SearchQuery = Schema.Struct({
   limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: SEARCH_MAX_LIMIT })).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(SEARCH_DEFAULT_LIMIT)),
   ),
-  offset: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
+  offset: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: SEARCH_MAX_OFFSET })).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(0)),
   ),
 });

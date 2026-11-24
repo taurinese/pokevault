@@ -161,13 +161,23 @@ const toSetHit = (row: SetRow): SetSearchHit => ({
 
 type Fragment = postgres.Fragment;
 
-const anyOf = (sql: Sql, parts: ReadonlyArray<Fragment>): Fragment =>
-  parts.reduce((acc, part, index) => (index === 0 ? part : sql`${acc} OR ${part}`), sql`FALSE`);
+const anyOf = (sql: Sql, parts: ReadonlyArray<Fragment>): Fragment => {
+  if (parts.length === 0) return sql`FALSE`;
+  const combined = parts.reduce(
+    (acc, part, index) => (index === 0 ? part : sql`${acc} OR ${part}`),
+    sql`FALSE`,
+  );
+  return sql`(${combined})`;
+};
 
-const allOf = (sql: Sql, parts: ReadonlyArray<Fragment>): Fragment =>
-  parts.length === 0
-    ? sql`TRUE`
-    : parts.reduce((acc, part, index) => (index === 0 ? part : sql`${acc} AND ${part}`), sql`TRUE`);
+const allOf = (sql: Sql, parts: ReadonlyArray<Fragment>): Fragment => {
+  if (parts.length === 0) return sql`TRUE`;
+  const combined = parts.reduce(
+    (acc, part, index) => (index === 0 ? part : sql`${acc} AND ${part}`),
+    sql`TRUE`,
+  );
+  return sql`(${combined})`;
+};
 
 const CARD_FROM = (sql: Sql): Fragment => sql`
   FROM catalog_cards c

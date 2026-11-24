@@ -164,15 +164,42 @@ describe.skipIf(PGTEST_URL === undefined)("CatalogSearchServiceLive (Postgres r�
       { q: "151" },
       { quickAccess: "sir", sort: "name" },
       { setId: "sv08", sort: "number" },
+      // Combinaisons texte + filtre (régression précédence OR / AND).
+      { q: "Dracaufeu", quickAccess: "sir" },
+      { q: "Dracaufeu", setId: "sv08" },
+      { q: "Pikachu", quickAccess: "tera" },
+      { q: "Dracaufeu", scope: "cards", quickAccess: "sir" },
     ];
     for (const input of inputs) {
       const real = await withService((service) => service.search(query(input)));
       const offline = await Effect.runPromise(memory.search(query(input)));
-      expect([input, ids(real.cards).sort(), ids(real.sets)]).toEqual([
+      expect([input, ids(real.cards).sort(), real.totalCards, ids(real.sets)]).toEqual([
         input,
         ids(offline.cards).sort(),
+        offline.totalCards,
         ids(offline.sets),
       ]);
     }
+  });
+
+  it("fonctionne avec le rôle moindre privilège `authenticated` (RLS lecture seule)", async () => {
+    // Seed via superuser/postgres puis lecture via `role: "authenticated"`.
+    await withService(() => Effect.void);
+    const readerDbLayer = DatabaseLive({
+      connectionString: PGTEST_URL ?? "",
+      maxConnections: 2,
+      role: "authenticated",
+    });
+    const readerLayer = CatalogSearchServiceLive.pipe(Layer.provide(readerDbLayer));
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* CatalogSearchService;
+          return yield* service.search(query({ q: "Dracaufeu", quickAccess: "sir" }));
+        }).pipe(Effect.provide(readerLayer)),
+      ),
+    );
+    expect(ids(result.cards)).toEqual(["sv03.5-199"]);
+    expect(result.totalCards).toBe(1);
   });
 });
