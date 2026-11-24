@@ -27,3 +27,4 @@ export * from "./db.ts";
 export * from "./rls.ts";
 export * from "./storage.ts";
 export * from "./tcgdex.ts";
+export * from "./wishlist-service.ts";
