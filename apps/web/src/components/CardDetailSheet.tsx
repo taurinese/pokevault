@@ -4,7 +4,9 @@ import {
   type CardCondition,
   type CardLanguage,
   type CardVariant,
+  computePriceFreshness,
   MAX_CARD_COPY_QUANTITY,
+  type PriceFreshness,
   tcgdexCardImageUrl,
   type UserCardCopy,
 } from "@pokevault/domain";
@@ -16,22 +18,27 @@ import {
   Maximize2,
   Minus,
   Plus,
+  RefreshCw,
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { type TranslationKey, t } from "../i18n/index.ts";
+import { type TranslationKey, t, tPlural } from "../i18n/index.ts";
 import {
   type AddCardCopyBody,
   addCardCopy,
   adjustCardCopyQuantity,
   type CardDetailBinder,
   type CardDetailPayload,
+  type CardDetailPrice,
+  computePriceAge,
+  cooldownMinutes,
   defaultVariantFor,
   fetchCardDetail,
   formatIsoDate,
   formatPriceCents,
   isSafeHttpsUrl,
   parsePurchasePriceEuros,
+  refreshCardPrice,
   setCardInBinder,
 } from "../lib/card-detail-client.ts";
 import { BottomSheet } from "./BottomSheet.tsx";
@@ -58,6 +65,22 @@ export interface AddCopyFormState {
 
 export type AddCopyFormError = "price" | "generic" | null;
 
+/**
+ * État du rafraîchissement manuel du prix :
+ * - `loading` : requête en cours (bouton désactivé, icône qui tourne) ;
+ * - `cooldown` : 429, prochain rafraîchissement possible à `nextAllowedAtMs` ;
+ * - `unavailable` : 503, Cardmarket indisponible (erreur non bloquante) ;
+ * - `degraded` : 200 mais Cardmarket KO, dernier prix connu servi ;
+ * - `error` : autre échec (réseau, session…).
+ */
+export type PriceRefreshState =
+  | { readonly status: "idle" }
+  | { readonly status: "loading" }
+  | { readonly status: "cooldown"; readonly nextAllowedAtMs: number }
+  | { readonly status: "unavailable" }
+  | { readonly status: "degraded" }
+  | { readonly status: "error" };
+
 export interface CardDetailViewState {
   readonly load: CardDetailLoad;
   readonly wishlisted: boolean;
@@ -70,6 +93,9 @@ export interface CardDetailViewState {
   readonly statusMessage?: string | undefined;
   readonly form: AddCopyFormState;
   readonly formError: AddCopyFormError;
+  /** Instant de référence (ms) du calcul de fraîcheur / d'âge du prix (horloge injectable). */
+  readonly nowMs: number;
+  readonly priceRefresh: PriceRefreshState;
 }
 
 export interface CardDetailViewActions {
@@ -84,6 +110,8 @@ export interface CardDetailViewActions {
   readonly onFormChange: (patch: Partial<AddCopyFormState>) => void;
   readonly onSubmitAdd: () => void;
   readonly onStepper: (copy: UserCardCopy, delta: -1 | 1) => void;
+  /** Rafraîchissement manuel du prix Cardmarket (`POST /api/cards/$cardId/price-refresh`). */
+  readonly onRefreshPrice: () => void;
 }
 
 export interface CardDetailViewProps {
@@ -266,6 +294,220 @@ const FormSelect = <T extends string>({
 );
 
 // ---------------------------------------------------------------------------
+// Bloc prix Cardmarket (fraîcheur, âge réel, indicateurs, rafraîchissement)
+// ---------------------------------------------------------------------------
+
+/**
+ * Âge relatif RÉEL d'un prix (`À l'instant`, `il y a 6 min`, `il y a 2 h`,
+ * `il y a 3 j`), suivi de `· indicatif` quand le prix est `stale` (> 6 h ou repli
+ * TCGdex). Jamais de texte figé : toujours calculé depuis `fetchedAt` et `nowMs`.
+ */
+export const formatPriceAgeLabel = (price: CardDetailPrice, nowMs: number): string => {
+  const age = computePriceAge(price.fetchedAt, nowMs);
+  const ageText =
+    age === null
+      ? t("price.age.unknown")
+      : age.kind === "just_now"
+        ? t("price.age.justNow")
+        : age.kind === "minutes"
+          ? t("price.age.minutesAgo", { count: age.count })
+          : age.kind === "hours"
+            ? t("price.age.hoursAgo", { count: age.count })
+            : tPlural("price.age.daysAgo", age.count);
+  return computePriceFreshness(price, nowMs) === "stale"
+    ? t("price.age.indicative", { age: ageText })
+    : ageText;
+};
+
+const FRESHNESS_STYLE: Readonly<
+  Record<
+    PriceFreshness,
+    { readonly tone: string; readonly dot: string; readonly hint: TranslationKey }
+  >
+> = {
+  fresh: {
+    tone: "border-success text-success-strong",
+    dot: "bg-success",
+    hint: "price.freshness.fresh.hint",
+  },
+  aging: {
+    tone: "border-warning text-warning",
+    dot: "bg-warning",
+    hint: "price.freshness.aging.hint",
+  },
+  stale: { tone: "border-line text-muted", dot: "bg-muted", hint: "price.freshness.stale.hint" },
+  missing: {
+    tone: "border-line text-muted",
+    dot: "bg-muted",
+    hint: "price.freshness.missing.hint",
+  },
+};
+
+/** Pastille de fraîcheur + âge relatif (ou « Prix indisponible » sans snapshot). */
+const FreshnessPill = ({
+  price,
+  nowMs,
+}: {
+  readonly price: CardDetailPrice | null;
+  readonly nowMs: number;
+}) => {
+  const freshness = computePriceFreshness(price, nowMs);
+  const style = FRESHNESS_STYLE[freshness];
+  return (
+    <span
+      data-testid="card-detail-price-freshness"
+      data-freshness={freshness}
+      title={t(style.hint)}
+      className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-[11px] font-semibold ${style.tone}`}
+    >
+      <span aria-hidden="true" className={`size-1.5 rounded-pill ${style.dot}`} />
+      {price === null ? t("price.freshness.missing") : formatPriceAgeLabel(price, nowMs)}
+    </span>
+  );
+};
+
+/** Message de retour du rafraîchissement manuel (cooldown, indisponible, repli, erreur). */
+const priceRefreshMessage = (
+  refresh: PriceRefreshState,
+  nowMs: number,
+): { readonly key: string; readonly text: string } | null => {
+  switch (refresh.status) {
+    case "cooldown": {
+      const remainingMs = refresh.nextAllowedAtMs - nowMs;
+      return remainingMs > 0
+        ? {
+            key: "cooldown",
+            text: t("cardDetail.price.cooldown", { minutes: cooldownMinutes(remainingMs) }),
+          }
+        : null;
+    }
+    case "unavailable":
+      return { key: "unavailable", text: t("cardDetail.price.unavailable") };
+    case "degraded":
+      return { key: "degraded", text: t("cardDetail.price.degraded") };
+    case "error":
+      return { key: "error", text: t("cardDetail.price.error") };
+    default:
+      return null;
+  }
+};
+
+const PriceBlock = ({
+  name,
+  price,
+  cardmarketUrl,
+  nowMs,
+  refresh,
+  onRefresh,
+}: {
+  readonly name: string;
+  readonly price: CardDetailPrice | null;
+  readonly cardmarketUrl: string | null;
+  readonly nowMs: number;
+  readonly refresh: PriceRefreshState;
+  readonly onRefresh: () => void;
+}) => {
+  const message = priceRefreshMessage(refresh, nowMs);
+  const loading = refresh.status === "loading";
+  const coolingDown = refresh.status === "cooldown" && refresh.nextAllowedAtMs > nowMs;
+  const indicators: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly cents: number | null;
+  }> = [
+    {
+      id: "trend",
+      label: t("cardDetail.price.trend"),
+      cents: price?.trendCents ?? null,
+    },
+    { id: "low-fr", label: t("cardDetail.price.lowFr"), cents: price?.lowFrCents ?? null },
+    { id: "avg30", label: t("cardDetail.price.avg30"), cents: price?.avg30Cents ?? null },
+  ];
+  return (
+    <section
+      data-testid="card-detail-price"
+      aria-label={t("cardDetail.price.heading")}
+      className="flex flex-col gap-2 rounded-sheet border border-line bg-surface-1 p-3 shadow-card"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className={sectionHeadingClass}>{t("cardDetail.price.heading")}</h3>
+        <FreshnessPill price={price} nowMs={nowMs} />
+      </div>
+      {price === null ? (
+        <p data-testid="card-detail-price-none" className="text-sm text-secondary">
+          {t("cardDetail.price.none")}
+        </p>
+      ) : null}
+      <dl data-testid="card-detail-price-values" className="grid grid-cols-3 gap-2">
+        {indicators.map((indicator) => (
+          <div
+            key={indicator.id}
+            className="flex min-w-0 flex-col gap-0.5 rounded-card border border-line bg-surface-2 px-2 py-1.5"
+          >
+            <dt className="truncate text-[11px] text-muted">{indicator.label}</dt>
+            <dd
+              data-testid={`card-detail-price-${indicator.id}`}
+              className="truncate font-mono text-sm font-semibold tabular-nums text-primary"
+            >
+              {formatPriceCents(indicator.cents) ?? t("cardDetail.price.empty")}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <output
+        aria-live="polite"
+        data-testid="card-detail-price-message"
+        data-state={message?.key ?? "none"}
+        className={`text-xs ${
+          message === null
+            ? "sr-only"
+            : message.key === "cooldown"
+              ? "text-secondary"
+              : message.key === "degraded"
+                ? "text-warning"
+                : "text-danger"
+        }`}
+      >
+        {message?.text ?? ""}
+      </output>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          data-testid="card-detail-price-refresh"
+          aria-label={t("cardDetail.price.refresh.aria", { name })}
+          aria-busy={loading}
+          disabled={loading || coolingDown}
+          onClick={onRefresh}
+          className={`inline-flex min-h-11 items-center gap-1.5 rounded-pill border border-gold bg-gold-soft px-3 text-sm font-semibold text-gold transition-colors disabled:opacity-40 ${focusRing}`}
+        >
+          <RefreshCw
+            size={14}
+            aria-hidden="true"
+            className={loading ? "animate-spin motion-reduce:animate-none" : ""}
+          />
+          <span aria-hidden="true">
+            {loading ? t("cardDetail.price.refreshing") : t("cardDetail.price.refresh")}
+          </span>
+        </button>
+        {isSafeHttpsUrl(cardmarketUrl) ? (
+          <a
+            data-testid="card-detail-cardmarket-link"
+            href={cardmarketUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={t("cardDetail.price.link.aria")}
+            className={`inline-flex min-h-11 items-center gap-1.5 rounded-pill border border-line bg-surface-2 px-3 text-sm font-semibold text-accent-blue hover:text-primary ${focusRing}`}
+          >
+            {t("cardDetail.price.link")}
+            <ExternalLink size={14} aria-hidden="true" />
+          </a>
+        ) : null}
+      </div>
+    </section>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Contenu de la fiche (état « ready »)
 // ---------------------------------------------------------------------------
 
@@ -415,27 +657,15 @@ const CardDetailContent = ({
         </section>
       ) : null}
 
-      {/* Bloc prix Cardmarket (placeholder sobre, lien externe sécurisé) */}
-      <section
-        data-testid="card-detail-price"
-        aria-label={t("cardDetail.price.heading")}
-        className="flex flex-col gap-1.5 rounded-sheet border border-line bg-surface-1 p-3 shadow-card"
-      >
-        <h3 className={sectionHeadingClass}>{t("cardDetail.price.heading")}</h3>
-        <p className="text-sm text-secondary">{t("cardDetail.price.soon")}</p>
-        {isSafeHttpsUrl(card.cardmarketUrl) ? (
-          <a
-            data-testid="card-detail-cardmarket-link"
-            href={card.cardmarketUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={`inline-flex min-h-11 items-center gap-1.5 self-start rounded-pill border border-line bg-surface-2 px-3 text-sm font-semibold text-accent-blue hover:text-primary ${focusRing}`}
-          >
-            {t("cardDetail.price.link")}
-            <ExternalLink size={14} aria-hidden="true" />
-          </a>
-        ) : null}
-      </section>
+      {/* Bloc prix Cardmarket : fraîcheur, âge réel, indicateurs, rafraîchissement manuel */}
+      <PriceBlock
+        name={card.nameFr}
+        price={payload.price}
+        cardmarketUrl={card.cardmarketUrl}
+        nowMs={state.nowMs}
+        refresh={state.priceRefresh}
+        onRefresh={actions.onRefreshPrice}
+      />
 
       {/* Mes exemplaires */}
       <section className="flex flex-col gap-2" aria-label={t("cardDetail.copies.heading")}>
@@ -671,7 +901,8 @@ const CardDetailContent = ({
 /**
  * Bottom Sheet `04 · Fiche Carte` (vue pure) : grand visuel `high.webp`
  * (`63/88`, coins 12px, fallback `ImageOff`), métadonnées TCGdex, actions
- * rapides (wishlist, dossier perso), bloc prix Cardmarket (lien externe
+ * rapides (wishlist, dossier perso), bloc prix Cardmarket (pastille de fraîcheur,
+ * âge réel, Tendance / Plus bas FR / Moy. 30 j, rafraîchissement manuel, lien externe
  * sécurisé), et bloc « Mes exemplaires » (stepper `- / qty / +` + formulaire
  * d'ajout). Dark & Light 100 % tokens CSS (zéro hex brut), chiffres en
  * `font-mono tabular-nums`, libellés 100 % i18n (`cardDetail.*`).
@@ -736,6 +967,9 @@ export interface CardDetailSheetProps {
   /** Hook Inspecteur 3D (M5). */
   readonly onOpenViewer3D?: ((cardId: string) => void) | undefined;
 }
+
+/** Période de mise à jour de l'horloge d'âge / fraîcheur du prix. */
+const PRICE_CLOCK_TICK_MS = 30_000;
 
 const isAbort = (error: unknown): boolean =>
   error instanceof DOMException && error.name === "AbortError";
@@ -802,14 +1036,28 @@ export const CardDetailSheet = ({
   const [statusMessage, setStatusMessage] = useState<string | undefined>(undefined);
   const [form, setForm] = useState<AddCopyFormState>(() => emptyForm(["normal"]));
   const [formError, setFormError] = useState<AddCopyFormError>(null);
+  const [priceRefresh, setPriceRefresh] = useState<PriceRefreshState>({ status: "idle" });
+  // Horloge du calcul de fraîcheur : rafraîchie toutes les 30 s tant que la fiche est ouverte.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   // Identifiant de la carte actuellement chargée : évite d'afficher les données
   // d'une carte A pendant le chargement de la carte B.
   const loadedCardIdRef = useRef<string | null>(null);
+  // Carte actuellement ouverte (résultats asynchrones obsolètes ignorés).
+  const activeCardIdRef = useRef<string | null>(cardId);
+  activeCardIdRef.current = cardId;
+
+  useEffect(() => {
+    if (cardId === null) return;
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), PRICE_CLOCK_TICK_MS);
+    return () => clearInterval(timer);
+  }, [cardId]);
 
   useEffect(() => {
     // Reset de l'état visuel local quand on ferme ou ouvre une autre carte.
     if (cardId === null) {
       loadedCardIdRef.current = null;
+      setPriceRefresh({ status: "idle" });
       setLoad({ status: "loading" });
       setBindersOpen(false);
       setAddFormOpen(false);
@@ -831,6 +1079,7 @@ export const CardDetailSheet = ({
     const silent = isSilentCardReload(loadedCardIdRef.current, cardId);
     if (!silent) {
       loadedCardIdRef.current = null;
+      setPriceRefresh({ status: "idle" });
       setLoad({ status: "loading" });
       setBindersOpen(false);
       setAddFormOpen(false);
@@ -936,6 +1185,43 @@ export const CardDetailSheet = ({
     }
   };
 
+  const handleRefreshPrice = async () => {
+    if (cardId === null || priceRefresh.status === "loading") return;
+    setPriceRefresh({ status: "loading" });
+    const result = await refreshCardPrice(cardId);
+    // La fiche a changé (ou s'est fermée) pendant la requête : résultat obsolète.
+    if (activeCardIdRef.current !== cardId) return;
+    const now = Date.now();
+    setNowMs(now);
+    switch (result.kind) {
+      case "ok":
+        setLoad((current) =>
+          current.status === "ready"
+            ? { status: "ready", payload: { ...current.payload, price: result.price } }
+            : current,
+        );
+        setPriceRefresh(
+          result.refresh === "degraded" ? { status: "degraded" } : { status: "idle" },
+        );
+        setStatusMessage(t("cardDetail.price.updated"));
+        return;
+      case "cooldown": {
+        const fromServer =
+          result.nextAllowedAt === null ? Number.NaN : Date.parse(result.nextAllowedAt);
+        setPriceRefresh({
+          status: "cooldown",
+          nextAllowedAtMs: Number.isNaN(fromServer) ? now + result.retryAfterMs : fromServer,
+        });
+        return;
+      }
+      case "unavailable":
+        setPriceRefresh({ status: "unavailable" });
+        return;
+      default:
+        setPriceRefresh({ status: "error" });
+    }
+  };
+
   const handleToggleWishlist = () => {
     if (cardId === null) return;
     const next = !wishlisted;
@@ -965,6 +1251,7 @@ export const CardDetailSheet = ({
     onFormChange: (patch) => setForm((current) => ({ ...current, ...patch })),
     onSubmitAdd: () => void handleSubmitAdd(),
     onStepper: (copy, delta) => void handleStepper(copy, delta),
+    onRefreshPrice: () => void handleRefreshPrice(),
   };
 
   return (
@@ -983,6 +1270,8 @@ export const CardDetailSheet = ({
         statusMessage,
         form,
         formError,
+        nowMs,
+        priceRefresh,
       }}
       actions={actions}
     />

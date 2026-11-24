@@ -10,7 +10,7 @@
  * Sécurité : toutes les routes exigent une session SSR valide (`getServerSession`,
  * 401 sinon, cookies rafraîchis propagés via `Set-Cookie` + `Cache-Control: no-store`) ;
  * les mutations (POST/PATCH/DELETE) vérifient en plus l'origine (CSRF,
- * `isRequestSameOrigin`, 403) et plafonnent le corps JSON (8 KiB → 413).
+ * `isRequestSameOrigin`, 403) et plafonnent le corps JSON (8 KiB → 413 ; 4 KiB pour `price-refresh`).
  * Lecture/écriture dans la transaction `withUserRls` (rôle `authenticated`,
  * `auth.uid() = userId`) avec filtre explicite `user_id` partout. Erreur SQL →
  * 503 sans aucun détail. Réf. : docs/01 §5.2, docs/02, docs/06 §1–§2.
@@ -21,9 +21,15 @@ import {
   BinderNotFoundError,
   CardCopyConflictError,
   CardCopyNotFoundError,
+  CardLanguage,
+  CardVariant,
   CatalogItemNotFoundError,
   InvalidCoverImageError,
   isUuid,
+  PriceCircuitOpenError,
+  PriceRefreshCooldownError,
+  type PriceRefreshTarget,
+  type PriceSnapshot,
   UnauthorizedBinderAccess,
   type UpsertCardCopyInput,
   ValidationError,
@@ -33,19 +39,30 @@ import {
   BinderService,
   BinderServiceLive,
   type BinderServiceShape,
+  CardmarketFetcherLive,
+  CardmarketPriceService,
+  CardmarketPriceServiceLive,
+  type CardmarketPriceServiceShape,
   CollectionService,
   CollectionServiceLive,
   type CollectionServiceShape,
   CoverImageProcessor,
   Database,
   DatabaseLive,
+  PriceSnapshotStoreLive,
   type Sql,
+  TcgdexPriceFallbackLive,
   withUserRls,
 } from "@pokevault/services";
-import { Cause, Effect, Exit, Layer, ManagedRuntime } from "effect";
+import { Cause, Effect, Exit, Layer, ManagedRuntime, Schema } from "effect";
 import { isRequestSameOrigin, resolveAppOrigin } from "./auth.ts";
 import { type AuthDeps, defaultAuthDeps, getServerSession } from "./auth-server.ts";
-import type { CardDetailBinder, CardDetailCard, CardDetailPayload } from "./card-detail-client.ts";
+import type {
+  CardDetailBinder,
+  CardDetailCard,
+  CardDetailPayload,
+  CardDetailPrice,
+} from "./card-detail-client.ts";
 
 // ---------------------------------------------------------------------------
 // Dépendances injectables
@@ -227,6 +244,13 @@ export type ParsedBody =
   | { readonly ok: true; readonly body: unknown }
   | { readonly ok: false; readonly status: 400 | 413 };
 
+export interface ReadJsonBodyOptions {
+  /** Plafond du corps en octets (défaut : {@link MAX_BODY_BYTES}). */
+  readonly maxBytes?: number | undefined;
+  /** Un corps totalement vide est accepté (`body: undefined`) au lieu de 400. */
+  readonly allowEmpty?: boolean | undefined;
+}
+
 /**
  * Lit un corps JSON borné en octets réels :
  * - vérifie d'abord `content-length` déclaré (> plafond → 413) ;
@@ -235,9 +259,13 @@ export type ParsedBody =
  *   sans `content-length`) ;
  * - erreur de lecture du flux ou JSON illisible → 400 (jamais 500).
  */
-export const readJsonBody = async (request: Request): Promise<ParsedBody> => {
+export const readJsonBody = async (
+  request: Request,
+  options: ReadJsonBodyOptions = {},
+): Promise<ParsedBody> => {
+  const maxBytes = options.maxBytes ?? MAX_BODY_BYTES;
   const declared = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+  if (Number.isFinite(declared) && declared > maxBytes) {
     return { ok: false, status: 413 };
   }
   let bytes: Uint8Array;
@@ -252,7 +280,7 @@ export const readJsonBody = async (request: Request): Promise<ParsedBody> => {
         const { done, value } = await reader.read();
         if (done) break;
         total += value.byteLength;
-        if (total > MAX_BODY_BYTES) {
+        if (total > maxBytes) {
           void reader.cancel().catch(() => {});
           return { ok: false, status: 413 };
         }
@@ -268,8 +296,10 @@ export const readJsonBody = async (request: Request): Promise<ParsedBody> => {
       offset += chunk.byteLength;
     }
   }
+  const text = new TextDecoder().decode(bytes);
+  if (options.allowEmpty === true && text.trim() === "") return { ok: true, body: undefined };
   try {
-    return { ok: true, body: JSON.parse(new TextDecoder().decode(bytes)) };
+    return { ok: true, body: JSON.parse(text) };
   } catch {
     return { ok: false, status: 400 };
   }
@@ -346,6 +376,14 @@ interface CatalogCardRow {
   readonly set_code: string | null;
   readonly set_official_count: number;
   readonly set_total_count: number;
+  /** Colonnes de la jointure latérale `card_latest_prices` (absentes / `null` sans snapshot). */
+  readonly price_source?: string | null;
+  readonly price_trend_cents?: number | null;
+  readonly price_low_fr_cents?: number | null;
+  readonly price_avg30_cents?: number | null;
+  readonly price_fetched_at?: Date | string | null;
+  readonly price_expires_at?: Date | string | null;
+  readonly price_is_fresh?: boolean | null;
 }
 
 interface CustomBinderRow {
@@ -354,38 +392,103 @@ interface CustomBinderRow {
   readonly contains_card: boolean;
 }
 
-/** Carte du catalogue + extension, ou `null` si inconnue. */
-const loadCard = async (tx: Sql, cardId: string): Promise<CardDetailCard | null> => {
+const isoOf = (value: Date | string): string =>
+  value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+
+/** Convertit un snapshot de `card_latest_prices` en prix du payload (`null` sans snapshot). */
+export const toCardDetailPrice = (
+  row: Pick<
+    CatalogCardRow,
+    | "price_source"
+    | "price_trend_cents"
+    | "price_low_fr_cents"
+    | "price_avg30_cents"
+    | "price_fetched_at"
+    | "price_expires_at"
+    | "price_is_fresh"
+  >,
+): CardDetailPrice | null => {
+  const source = row.price_source;
+  const fetchedAt = row.price_fetched_at;
+  const expiresAt = row.price_expires_at;
+  if (
+    (source !== "cardmarket" && source !== "tcgdex_fallback") ||
+    fetchedAt === null ||
+    fetchedAt === undefined ||
+    expiresAt === null ||
+    expiresAt === undefined
+  ) {
+    return null;
+  }
+  return {
+    trendCents: row.price_trend_cents ?? null,
+    lowFrCents: row.price_low_fr_cents ?? null,
+    avg30Cents: row.price_avg30_cents ?? null,
+    source,
+    fetchedAt: isoOf(fetchedAt),
+    expiresAt: isoOf(expiresAt),
+    isFresh: row.price_is_fresh ?? false,
+  };
+};
+
+/**
+ * Carte du catalogue + extension + dernier prix, ou `null` si inconnue.
+ *
+ * `card_latest_prices` est jointe en `LEFT JOIN LATERAL (… LIMIT 1)` : le `LIMIT 1`
+ * pousse `card_id` dans la vue `DISTINCT ON` (Index Scan sur
+ * `idx_price_snapshots_lookup`, jamais un balayage de `price_snapshots`). Le
+ * snapshot `(FR, normal)` est préféré, sinon le plus récent de la carte.
+ */
+const loadCard = async (
+  tx: Sql,
+  cardId: string,
+): Promise<Pick<CardDetailPayload, "card" | "price"> | null> => {
   const rows = await tx<CatalogCardRow[]>`
     select c.id, c.set_id, c.local_id, c.name_fr, c.name_en, c.rarity, c.holo_effect,
            c.category, c.types, c.hp, c.illustrator, c.image_base_url,
            c.available_variants, c.cardmarket_url,
            s.name_fr as set_name_fr, s.code as set_code,
-           s.official_count as set_official_count, s.total_count as set_total_count
+           s.official_count as set_official_count, s.total_count as set_total_count,
+           p.source as price_source, p.trend_cents as price_trend_cents,
+           p.low_fr_cents as price_low_fr_cents, p.avg30_cents as price_avg30_cents,
+           p.fetched_at as price_fetched_at, p.expires_at as price_expires_at,
+           p.is_fresh as price_is_fresh
       from public.catalog_cards c
       join public.catalog_sets s on s.id = c.set_id
+      left join lateral (
+        select lp.source, lp.trend_cents, lp.low_fr_cents, lp.avg30_cents,
+               lp.fetched_at, lp.expires_at, lp.is_fresh
+          from public.card_latest_prices lp
+         where lp.card_id = c.id
+         order by (lp.language = 'FR' and lp.variant = 'normal') desc,
+                  lp.fetched_at desc, lp.id desc
+         limit 1
+      ) p on true
      where c.id = ${cardId}`;
   const row = rows[0];
   if (row === undefined) return null;
   return {
-    id: row.id,
-    setId: row.set_id,
-    setNameFr: row.set_name_fr,
-    setCode: row.set_code,
-    officialCount: row.set_official_count,
-    totalCount: row.set_total_count,
-    localId: row.local_id,
-    nameFr: row.name_fr,
-    nameEn: row.name_en,
-    rarity: row.rarity,
-    holoEffect: row.holo_effect,
-    category: row.category,
-    types: row.types,
-    hp: row.hp,
-    illustrator: row.illustrator,
-    imageBaseUrl: row.image_base_url,
-    availableVariants: row.available_variants as CardDetailCard["availableVariants"],
-    cardmarketUrl: row.cardmarket_url,
+    card: {
+      id: row.id,
+      setId: row.set_id,
+      setNameFr: row.set_name_fr,
+      setCode: row.set_code,
+      officialCount: row.set_official_count,
+      totalCount: row.set_total_count,
+      localId: row.local_id,
+      nameFr: row.name_fr,
+      nameEn: row.name_en,
+      rarity: row.rarity,
+      holoEffect: row.holo_effect,
+      category: row.category,
+      types: row.types,
+      hp: row.hp,
+      illustrator: row.illustrator,
+      imageBaseUrl: row.image_base_url,
+      availableVariants: row.available_variants as CardDetailCard["availableVariants"],
+      cardmarketUrl: row.cardmarket_url,
+    },
+    price: toCardDetailPrice(row),
   };
 };
 
@@ -443,12 +546,12 @@ export const handleCardDetail = async (
     Effect.all(
       [
         withUserRls(sql, userId, async (tx) => {
-          const card = await loadCard(tx, cardId);
-          if (card === null) return null;
+          const loadedCard = await loadCard(tx, cardId);
+          if (loadedCard === null) return null;
           const customBinders = await loadCustomBinders(tx, userId, cardId);
-          return { card, customBinders } satisfies Pick<
+          return { ...loadedCard, customBinders } satisfies Pick<
             CardDetailPayload,
-            "card" | "customBinders"
+            "card" | "customBinders" | "price"
           >;
         }),
         collection.listCardCopies(userId, { cardId }),
@@ -662,4 +765,245 @@ export const handleCardBinder = async (
     cardId,
     binderId,
   });
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/cards/$cardId/price-refresh
+// ---------------------------------------------------------------------------
+
+/** Plafond du corps JSON du rafraîchissement manuel (4 KiB → 413 au-delà). */
+export const PRICE_REFRESH_MAX_BODY_BYTES = 4096;
+
+export interface CardPriceRefreshDeps {
+  readonly auth: AuthDeps;
+  /** Pool `authenticated` (lecture du catalogue uniquement), ou `null` sans `DATABASE_URL`. */
+  readonly sql: Sql | null;
+  /**
+   * `CardmarketPriceService` adossé à un pool `service_role` DÉDIÉ (l'`INSERT` dans
+   * `price_snapshots` lui est réservé, RLS 005), ou `null` sans `DATABASE_URL`.
+   */
+  readonly prices: CardmarketPriceServiceShape | null;
+  readonly log: CardDetailLogger;
+}
+
+interface LivePriceEntry {
+  readonly url: string;
+  readonly runtime: ManagedRuntime.ManagedRuntime<CardmarketPriceService, never>;
+  readonly service: Promise<CardmarketPriceServiceShape>;
+}
+
+const GLOBAL_PRICE_RUNTIME_KEY = "__pokevaultCardPriceRuntime" as const;
+
+const readCachedPriceRuntime = (): LivePriceEntry | undefined =>
+  (globalThis as Record<string, unknown>)[GLOBAL_PRICE_RUNTIME_KEY] as LivePriceEntry | undefined;
+
+const writeCachedPriceRuntime = (entry: LivePriceEntry | undefined): void => {
+  (globalThis as Record<string, unknown>)[GLOBAL_PRICE_RUNTIME_KEY] = entry;
+};
+
+/**
+ * `CardmarketPriceService` live (store Postgres `service_role` + fetcher Cardmarket
+ * SSRF-gardé + repli TCGdex), mis en cache sur `globalThis` : le runtime préserve
+ * ainsi le `Semaphore` (concurrence Cardmarket 1) et le circuit breaker (`Ref`)
+ * entre les requêtes ET les rechargements HMR. Ce pool `service_role` (2
+ * connexions) n'est utilisé QUE par ce service : jamais pour les tables utilisateur.
+ */
+const getLivePriceService = (databaseUrl: string): Promise<CardmarketPriceServiceShape> => {
+  const existing = readCachedPriceRuntime();
+  if (existing !== undefined && existing.url === databaseUrl) return existing.service;
+  if (existing !== undefined) {
+    void existing.runtime.dispose();
+    writeCachedPriceRuntime(undefined);
+  }
+  const layer = CardmarketPriceServiceLive().pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        PriceSnapshotStoreLive.pipe(
+          Layer.provide(
+            DatabaseLive({
+              connectionString: databaseUrl,
+              maxConnections: 2,
+              role: "service_role",
+            }),
+          ),
+        ),
+        CardmarketFetcherLive(),
+        TcgdexPriceFallbackLive(),
+      ),
+    ),
+  );
+  const runtime = ManagedRuntime.make(layer);
+  const service = runtime
+    .runPromise(
+      Effect.gen(function* () {
+        return yield* CardmarketPriceService;
+      }),
+    )
+    .catch((error: unknown) => {
+      if (readCachedPriceRuntime()?.runtime === runtime) writeCachedPriceRuntime(undefined);
+      void runtime.dispose();
+      throw error;
+    });
+  writeCachedPriceRuntime({ url: databaseUrl, runtime, service });
+  return service;
+};
+
+/** Dépendances de production du rafraîchissement : session GoTrue + 2 pools Postgres. */
+export const defaultCardPriceRefreshDeps = async (): Promise<CardPriceRefreshDeps> => {
+  const auth = defaultAuthDeps();
+  const databaseUrl = process.env["DATABASE_URL"]?.trim();
+  if (databaseUrl === undefined || databaseUrl === "") {
+    return { auth, sql: null, prices: null, log: logWarning };
+  }
+  const [live, prices] = await Promise.all([
+    getLiveServices(databaseUrl, auth),
+    getLivePriceService(databaseUrl),
+  ]);
+  return { auth, sql: live.sql, prices, log: logWarning };
+};
+
+const isLanguage = Schema.is(CardLanguage);
+const isVariant = Schema.is(CardVariant);
+
+type RefreshInput =
+  | { readonly ok: true; readonly language: CardLanguage; readonly variant: CardVariant }
+  | { readonly ok: false };
+
+/**
+ * Corps optionnel `{ language?, variant? }` (défaut `FR` / `normal`) : toute clé
+ * inconnue, valeur hors énumération ou corps non-objet est rejeté (400).
+ */
+const parseRefreshInput = (body: unknown): RefreshInput => {
+  if (body === undefined) return { ok: true, language: "FR", variant: "normal" };
+  if (!isRecord(body)) return { ok: false };
+  for (const key of Object.keys(body)) {
+    if (key !== "language" && key !== "variant") return { ok: false };
+  }
+  const language = body["language"] ?? "FR";
+  const variant = body["variant"] ?? "normal";
+  if (!isLanguage(language) || !isVariant(variant)) return { ok: false };
+  return { ok: true, language, variant };
+};
+
+const toPricePayload = (snapshot: PriceSnapshot): CardDetailPrice => ({
+  trendCents: snapshot.trendCents,
+  lowFrCents: snapshot.lowFrCents,
+  avg30Cents: snapshot.avg30Cents,
+  source: snapshot.source,
+  fetchedAt: snapshot.fetchedAt,
+  expiresAt: snapshot.expiresAt,
+  isFresh: snapshot.isFresh,
+});
+
+const priceUnavailable = (cookies: ReadonlyArray<string>): Response =>
+  json({ error: "price_unavailable" }, 503, "no-store", cookies);
+
+/**
+ * Handler `POST /api/cards/$cardId/price-refresh` (rafraîchissement manuel) :
+ * 403 CSRF, 401, 413 (> 4 KiB), 400 (corps invalide), 404 (carte inconnue du
+ * catalogue), puis `CardmarketPriceService.refreshCardPrice({ manual, force })` :
+ * - 200 `{ kind, price }` (`refreshed_cardmarket` | `refreshed_fallback` |
+ *   `fresh_cache` | `degraded`) ;
+ * - 429 `{ error: "cooldown", retryAfterMs, nextAllowedAt }` + `Retry-After` (s,
+ *   arrondi au supérieur) quand le cooldown de 5 min/carte est actif ;
+ * - 503 `{ error: "price_unavailable" }` (circuit ouvert sans repli, échec,
+ *   base absente) — jamais de détail interne.
+ */
+export const handleCardPriceRefresh = async (
+  request: Request,
+  cardId: string,
+  deps: CardPriceRefreshDeps,
+): Promise<Response> => {
+  if (!isRequestSameOrigin(request, resolveAppOrigin(deps.auth.config, request.url))) {
+    return forbiddenOrigin();
+  }
+  const session = await getServerSession(request, deps.auth);
+  if (session === null) return unauthorized();
+  const cookies = session.refreshedCookies ?? [];
+
+  const parsed = await readJsonBody(request, {
+    maxBytes: PRICE_REFRESH_MAX_BODY_BYTES,
+    allowEmpty: true,
+  });
+  if (!parsed.ok) {
+    return json(
+      { error: parsed.status === 413 ? "payload_too_large" : "invalid_input" },
+      parsed.status,
+      "no-store",
+      cookies,
+    );
+  }
+  const input = parseRefreshInput(parsed.body);
+  if (!input.ok) return json({ error: "invalid_input" }, 400, "no-store", cookies);
+
+  if (cardId.trim() === "" || /\s/.test(cardId)) {
+    return json({ error: "not_found" }, 404, "no-store", cookies);
+  }
+  if (deps.sql === null || deps.prices === null) {
+    deps.log("cardDetail.database_url_missing", { operation: "price-refresh", cardId });
+    return priceUnavailable(cookies);
+  }
+  const sql = deps.sql;
+  const prices = deps.prices;
+
+  const lookup = await Effect.runPromiseExit(
+    Effect.tryPromise(async () => {
+      const rows = await sql<Array<{ id: string; cardmarket_url: string | null }>>`
+        select c.id, c.cardmarket_url from public.catalog_cards c where c.id = ${cardId}`;
+      return rows[0] ?? null;
+    }),
+  );
+  if (Exit.isFailure(lookup)) {
+    deps.log("cardDetail.query_failed", {
+      operation: "price-refresh-lookup",
+      cardId,
+      ...extractErrorMeta(lookup.cause),
+    });
+    return priceUnavailable(cookies);
+  }
+  const card = lookup.value;
+  if (card === null) return json({ error: "not_found" }, 404, "no-store", cookies);
+
+  const target: PriceRefreshTarget = {
+    cardId: card.id,
+    language: input.language,
+    variant: input.variant,
+    cardmarketUrl: card.cardmarket_url,
+    priority: "featured",
+  };
+  const exit = await Effect.runPromiseExit(
+    prices.refreshCardPrice(target, { manual: true, force: true }),
+  );
+  if (Exit.isSuccess(exit)) {
+    return json(
+      { kind: exit.value.kind, price: toPricePayload(exit.value.snapshot) },
+      200,
+      "no-store",
+      cookies,
+    );
+  }
+
+  const failure = Cause.squash(exit.cause);
+  if (failure instanceof PriceRefreshCooldownError) {
+    const headers = new Headers({
+      "Cache-Control": "no-store",
+      "Retry-After": String(Math.max(1, Math.ceil(failure.retryAfterMs / 1000))),
+    });
+    for (const cookie of cookies) headers.append("Set-Cookie", cookie);
+    return Response.json(
+      {
+        error: "cooldown",
+        retryAfterMs: failure.retryAfterMs,
+        nextAllowedAt: failure.nextAllowedAt,
+      },
+      { status: 429, headers },
+    );
+  }
+  deps.log(
+    failure instanceof PriceCircuitOpenError
+      ? "cardDetail.price_circuit_open"
+      : "cardDetail.price_refresh_failed",
+    { operation: "price-refresh", cardId, ...extractErrorMeta(exit.cause) },
+  );
+  return priceUnavailable(cookies);
 };

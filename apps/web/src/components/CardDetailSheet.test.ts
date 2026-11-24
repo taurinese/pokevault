@@ -4,13 +4,14 @@ import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { fr } from "../i18n/fr.ts";
-import type { CardDetailPayload } from "../lib/card-detail-client.ts";
+import type { CardDetailPayload, CardDetailPrice } from "../lib/card-detail-client.ts";
 import {
   type AddCopyFormState,
   applyStepperResultToPayload,
   CardDetailView,
   type CardDetailViewActions,
   type CardDetailViewState,
+  formatPriceAgeLabel,
   isSilentCardReload,
 } from "./CardDetailSheet.tsx";
 
@@ -37,6 +38,27 @@ const copyFixture = (overrides: Partial<UserCardCopy> = {}): UserCardCopy => ({
   acquiredAt: "2026-01-01",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
+  ...overrides,
+});
+
+/** Instant de référence figé : tous les âges de prix sont déterministes. */
+const NOW_MS = Date.parse("2026-06-01T12:00:00.000Z");
+
+const isoMinutesAgo = (minutes: number): string =>
+  new Date(NOW_MS - minutes * 60_000).toISOString();
+
+/** Prix Cardmarket collecté il y a `minutes` minutes (TTL 15 min). */
+const priceFixture = (
+  minutes: number,
+  overrides: Partial<CardDetailPrice> = {},
+): CardDetailPrice => ({
+  trendCents: 1234,
+  lowFrCents: 950,
+  avg30Cents: 1180,
+  source: "cardmarket",
+  fetchedAt: isoMinutesAgo(minutes),
+  expiresAt: new Date(NOW_MS - minutes * 60_000 + 15 * 60_000).toISOString(),
+  isFresh: minutes < 15,
   ...overrides,
 });
 
@@ -77,6 +99,7 @@ const payload: CardDetailPayload = {
     { id: BINDER_ID, title: "Évolutions Favs", containsCard: true },
     { id: "66666666-6666-4666-8666-666666666666", title: "Doublons", containsCard: false },
   ],
+  price: priceFixture(6),
 };
 
 const formFixture: AddCopyFormState = {
@@ -99,6 +122,8 @@ const makeState = (overrides: Partial<CardDetailViewState> = {}): CardDetailView
   actionError: false,
   form: formFixture,
   formError: null,
+  nowMs: NOW_MS,
+  priceRefresh: { status: "idle" },
   ...overrides,
 });
 
@@ -113,6 +138,7 @@ const makeActions = (overrides: Partial<CardDetailViewActions> = {}): CardDetail
   onFormChange: vi.fn(),
   onSubmitAdd: vi.fn(),
   onStepper: vi.fn(),
+  onRefreshPrice: vi.fn(),
   ...overrides,
 });
 
@@ -204,7 +230,23 @@ describe("CardDetailView — fiche prête", () => {
     expect(html).toContain('href="https://www.cardmarket.com/fr/Pokemon/Products/123"');
     expect(html).toContain('rel="noopener noreferrer"');
     expect(html).toContain('target="_blank"');
-    expect(html).toContain("prix en temps réel arrivent bientôt");
+    expect(html).toContain("Cardmarket");
+    expect(html).not.toContain("arrivent bientôt");
+  });
+
+  it("n'affiche aucun lien Cardmarket quand l'URL n'est pas https", () => {
+    const html = renderReady(
+      makeState({
+        load: {
+          status: "ready",
+          payload: {
+            ...payload,
+            card: { ...payload.card, cardmarketUrl: "http://www.cardmarket.com/x" },
+          },
+        },
+      }),
+    );
+    expect(html).not.toContain('data-testid="card-detail-cardmarket-link"');
   });
 
   it("rend le formulaire d'ajout déplié (langue, variante, état, quantité, prix, notes)", () => {
@@ -360,5 +402,173 @@ describe("CardDetailSheet — tokens uniquement", () => {
       return true;
     });
     expect(offenders).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bloc prix Cardmarket : fraîcheur, âge réel, indicateurs, rafraîchissement
+// ---------------------------------------------------------------------------
+
+const renderWithPrice = (
+  price: CardDetailPrice | null,
+  overrides: Partial<CardDetailViewState> = {},
+): string =>
+  renderReady(
+    makeState({ load: { status: "ready", payload: { ...payload, price } }, ...overrides }),
+  );
+
+/** `disabled` attribut réel (et non la variante Tailwind `disabled:opacity-40`). */
+const isDisabled = (tag: string): boolean => /\sdisabled=""/.test(tag);
+
+const freshnessOf = (html: string): string | undefined =>
+  /data-testid="card-detail-price-freshness" data-freshness="(\w+)"/.exec(html)?.[1];
+
+describe("CardDetailView — bloc prix Cardmarket", () => {
+  it("affiche les 3 indicateurs en font-mono tabular-nums (Tendance, Plus bas FR, Moy. 30 j)", () => {
+    const html = renderWithPrice(priceFixture(2));
+    expect(html).toContain("Tendance");
+    expect(html).toContain("Plus bas FR");
+    expect(html).toContain("Moy. 30 j");
+    const trend = html.match(/data-testid="card-detail-price-trend"[^>]*>([^<]*)</);
+    expect(trend?.[0]).toContain("font-mono");
+    expect(trend?.[0]).toContain("tabular-nums");
+    expect(trend?.[1]?.replace(/\s/g, " ")).toBe("12,34 €");
+    expect(html).toContain("9,50");
+    expect(html).toContain("11,80");
+  });
+
+  it("affiche « — » pour un indicateur null", () => {
+    const html = renderWithPrice(priceFixture(2, { lowFrCents: null, avg30Cents: null }));
+    const low = html.match(/data-testid="card-detail-price-low-fr"[^>]*>([^<]*)</);
+    const avg = html.match(/data-testid="card-detail-price-avg30"[^>]*>([^<]*)</);
+    expect(low?.[1]).toBe("—");
+    expect(avg?.[1]).toBe("—");
+  });
+
+  it("pastille verte (fresh) et « À l'instant » pour un prix de moins d'une minute", () => {
+    const html = renderWithPrice(priceFixture(0));
+    expect(freshnessOf(html)).toBe("fresh");
+    expect(html).toContain("À l&#x27;instant");
+    expect(html).toContain("bg-success");
+  });
+
+  it("pastille verte (fresh) et « il y a 6 min » pour un prix de 6 minutes", () => {
+    const html = renderWithPrice(priceFixture(6));
+    expect(freshnessOf(html)).toBe("fresh");
+    expect(html).toContain("il y a 6 min");
+    expect(html).not.toContain("· indicatif");
+  });
+
+  it("pastille ambre (aging) et âge réel « il y a 2 h » pour un prix de 2 heures (jamais un texte figé)", () => {
+    const html = renderWithPrice(priceFixture(120));
+    expect(freshnessOf(html)).toBe("aging");
+    expect(html).toContain("il y a 2 h");
+    expect(html).toContain("bg-warning");
+    expect(html).not.toContain("quelques minutes");
+  });
+
+  it("pastille neutre (stale) « il y a 3 j · indicatif » pour un prix de plus de 6 h", () => {
+    const html = renderWithPrice(priceFixture(3 * 24 * 60));
+    expect(freshnessOf(html)).toBe("stale");
+    expect(html).toContain("il y a 3 j · indicatif");
+    expect(html).toContain("bg-muted");
+  });
+
+  it("repli TCGdex : toujours neutre + indicatif, même récent", () => {
+    const html = renderWithPrice(priceFixture(3, { source: "tcgdex_fallback" }));
+    expect(freshnessOf(html)).toBe("stale");
+    expect(html).toContain("il y a 3 min · indicatif");
+  });
+
+  it("sans prix : état « Prix indisponible », indicateurs « — » et bouton de rafraîchissement actif", () => {
+    const html = renderWithPrice(null);
+    expect(freshnessOf(html)).toBe("missing");
+    expect(html).toContain("Prix indisponible");
+    expect(html).toContain('data-testid="card-detail-price-none"');
+    const trend = html.match(/data-testid="card-detail-price-trend"[^>]*>([^<]*)</);
+    expect(trend?.[1]).toBe("—");
+    const refresh = html.match(/data-testid="card-detail-price-refresh"[^>]*/)?.[0] ?? "";
+    expect(isDisabled(refresh)).toBe(false);
+  });
+
+  it("bouton de rafraîchissement : aria-label précis, cible 44 px, déclenche onRefreshPrice", () => {
+    const html = renderWithPrice(priceFixture(6));
+    const button = html.match(/data-testid="card-detail-price-refresh"[^>]*/)?.[0] ?? "";
+    expect(button).toContain("min-h-11");
+    expect(button).toContain('aria-label="Rafraîchir le prix Cardmarket de Dracaufeu ex"');
+    expect(isDisabled(button)).toBe(false);
+  });
+
+  it("état chargement : bouton désactivé, aria-busy et icône qui tourne (motion-reduce respecté)", () => {
+    const html = renderWithPrice(priceFixture(6), { priceRefresh: { status: "loading" } });
+    const button = html.match(/data-testid="card-detail-price-refresh"[^>]*/)?.[0] ?? "";
+    expect(isDisabled(button)).toBe(true);
+    expect(button).toContain('aria-busy="true"');
+    expect(html).toContain("Actualisation…");
+    expect(html).toContain("animate-spin motion-reduce:animate-none");
+    // L'ancien prix reste affiché pendant la requête.
+    expect(html).toContain("12,34");
+  });
+
+  it("cooldown 429 : message « disponible dans X min » (arrondi au supérieur) et bouton désactivé", () => {
+    const html = renderWithPrice(priceFixture(1), {
+      priceRefresh: { status: "cooldown", nextAllowedAtMs: NOW_MS + 4 * 60_000 + 1_000 },
+    });
+    expect(html).toContain("Rafraîchissement disponible dans 5 min");
+    const button = html.match(/data-testid="card-detail-price-refresh"[^>]*/)?.[0] ?? "";
+    expect(isDisabled(button)).toBe(true);
+  });
+
+  it("cooldown écoulé : plus de message, bouton de nouveau actif", () => {
+    const html = renderWithPrice(priceFixture(1), {
+      priceRefresh: { status: "cooldown", nextAllowedAtMs: NOW_MS - 1 },
+    });
+    expect(html).not.toContain("Rafraîchissement disponible dans");
+    const button = html.match(/data-testid="card-detail-price-refresh"[^>]*/)?.[0] ?? "";
+    expect(isDisabled(button)).toBe(false);
+  });
+
+  it("503 : erreur non bloquante, bouton actif pour réessayer", () => {
+    const html = renderWithPrice(priceFixture(60), { priceRefresh: { status: "unavailable" } });
+    expect(html).toContain("Cardmarket est indisponible pour le moment");
+    expect(html).toContain('data-state="unavailable"');
+    const button = html.match(/data-testid="card-detail-price-refresh"[^>]*/)?.[0] ?? "";
+    expect(isDisabled(button)).toBe(false);
+    // Les indicateurs du dernier prix connu restent lisibles.
+    expect(html).toContain("12,34");
+  });
+
+  it("mode dégradé : dernier prix connu servi avec avertissement", () => {
+    const html = renderWithPrice(priceFixture(60), { priceRefresh: { status: "degraded" } });
+    expect(html).toContain("dernier prix connu affiché");
+    expect(html).toContain("text-warning");
+  });
+
+  it("n'utilise aucune couleur hex brute dans le bloc prix (tokens CSS uniquement)", () => {
+    const html = renderWithPrice(priceFixture(120));
+    const block = html.slice(html.indexOf('data-testid="card-detail-price"'));
+    expect(block.slice(0, block.indexOf('aria-label="Mes exemplaires"'))).not.toMatch(
+      /#[0-9a-fA-F]{3,8}\b/,
+    );
+  });
+});
+
+describe("formatPriceAgeLabel", () => {
+  it.each([
+    [0, "À l'instant"],
+    [1, "il y a 1 min"],
+    [59, "il y a 59 min"],
+    [14, "il y a 14 min"],
+    [180, "il y a 3 h"],
+    [24 * 60, "il y a 1 j · indicatif"],
+    [24 * 60 * 5, "il y a 5 j · indicatif"],
+  ])("âge de %d min → %s", (minutes, label) => {
+    expect(formatPriceAgeLabel(priceFixture(minutes), NOW_MS)).toBe(label);
+  });
+
+  it("date illisible → libellé neutre indicatif", () => {
+    expect(formatPriceAgeLabel(priceFixture(1, { fetchedAt: "n'importe quoi" }), NOW_MS)).toBe(
+      "Date inconnue · indicatif",
+    );
   });
 });
