@@ -11,6 +11,7 @@ import {
   type UserCardCopy,
 } from "@pokevault/domain";
 import {
+  BellPlus,
   ExternalLink,
   FolderPlus,
   Heart,
@@ -41,6 +42,12 @@ import {
   refreshCardPrice,
   setCardInBinder,
 } from "../lib/card-detail-client.ts";
+import {
+  AlertFormSheet,
+  type AlertFormTarget,
+  alertCardSubtitle,
+  createAlertTarget,
+} from "./AlertFormSheet.tsx";
 import { BottomSheet } from "./BottomSheet.tsx";
 
 // ---------------------------------------------------------------------------
@@ -112,6 +119,8 @@ export interface CardDetailViewActions {
   readonly onStepper: (copy: UserCardCopy, delta: -1 | 1) => void;
   /** Rafraîchissement manuel du prix Cardmarket (`POST /api/cards/$cardId/price-refresh`). */
   readonly onRefreshPrice: () => void;
+  /** Ouvre la Bottom Sheet `07C` (alerte de prix pré-remplie avec la carte et son prix courant). */
+  readonly onOpenAlert?: (() => void) | undefined;
 }
 
 export interface CardDetailViewProps {
@@ -399,6 +408,7 @@ const PriceBlock = ({
   nowMs,
   refresh,
   onRefresh,
+  onOpenAlert,
 }: {
   readonly name: string;
   readonly price: CardDetailPrice | null;
@@ -406,6 +416,7 @@ const PriceBlock = ({
   readonly nowMs: number;
   readonly refresh: PriceRefreshState;
   readonly onRefresh: () => void;
+  readonly onOpenAlert?: (() => void) | undefined;
 }) => {
   const message = priceRefreshMessage(refresh, nowMs);
   const loading = refresh.status === "loading";
@@ -489,6 +500,18 @@ const PriceBlock = ({
             {loading ? t("cardDetail.price.refreshing") : t("cardDetail.price.refresh")}
           </span>
         </button>
+        {onOpenAlert === undefined ? null : (
+          <button
+            type="button"
+            data-testid="card-detail-price-alert"
+            aria-label={t("cardDetail.price.alert.aria", { name })}
+            onClick={onOpenAlert}
+            className={`inline-flex min-h-11 items-center gap-1.5 rounded-pill border border-success/40 bg-success/10 px-3 text-sm font-semibold text-success-strong transition-colors ${focusRing}`}
+          >
+            <BellPlus size={14} aria-hidden="true" />
+            <span aria-hidden="true">{t("cardDetail.price.alert")}</span>
+          </button>
+        )}
         {isSafeHttpsUrl(cardmarketUrl) ? (
           <a
             data-testid="card-detail-cardmarket-link"
@@ -665,6 +688,7 @@ const CardDetailContent = ({
         nowMs={state.nowMs}
         refresh={state.priceRefresh}
         onRefresh={actions.onRefreshPrice}
+        onOpenAlert={actions.onOpenAlert}
       />
 
       {/* Mes exemplaires */}
@@ -1037,6 +1061,7 @@ export const CardDetailSheet = ({
   const [form, setForm] = useState<AddCopyFormState>(() => emptyForm(["normal"]));
   const [formError, setFormError] = useState<AddCopyFormError>(null);
   const [priceRefresh, setPriceRefresh] = useState<PriceRefreshState>({ status: "idle" });
+  const [alertTarget, setAlertTarget] = useState<AlertFormTarget | null>(null);
   // Horloge du calcul de fraîcheur : rafraîchie toutes les 30 s tant que la fiche est ouverte.
   const [nowMs, setNowMs] = useState(() => Date.now());
   // Identifiant de la carte actuellement chargée : évite d'afficher les données
@@ -1057,6 +1082,7 @@ export const CardDetailSheet = ({
     // Reset de l'état visuel local quand on ferme ou ouvre une autre carte.
     if (cardId === null) {
       loadedCardIdRef.current = null;
+      setAlertTarget(null);
       setPriceRefresh({ status: "idle" });
       setLoad({ status: "loading" });
       setBindersOpen(false);
@@ -1079,6 +1105,7 @@ export const CardDetailSheet = ({
     const silent = isSilentCardReload(loadedCardIdRef.current, cardId);
     if (!silent) {
       loadedCardIdRef.current = null;
+      setAlertTarget(null);
       setPriceRefresh({ status: "idle" });
       setLoad({ status: "loading" });
       setBindersOpen(false);
@@ -1230,6 +1257,24 @@ export const CardDetailSheet = ({
   };
 
   const readyPayload = load.status === "ready" ? load.payload : null;
+
+  /** Ouvre `07C` pré-rempli : carte, variante par défaut et prix Cardmarket courant (si coté). */
+  const handleOpenAlert = () => {
+    if (readyPayload === null) return;
+    const { card, price } = readyPayload;
+    setAlertTarget(
+      createAlertTarget({
+        cardId: card.id,
+        cardName: card.nameFr,
+        subtitle: alertCardSubtitle(card.localId, card.setNameFr),
+        imageUrl: tcgdexCardImageUrl(card.imageBaseUrl, "low") ?? null,
+        availableVariants: card.availableVariants,
+        // Un prix indicatif TCGdex n'alerte jamais : pas de référence pour les raccourcis.
+        price: price !== null && price.source === "cardmarket" ? price : null,
+      }),
+    );
+  };
+
   const title = readyPayload?.card.nameFr ?? cardName ?? t("cardDetail.title");
 
   const actions: CardDetailViewActions = {
@@ -1252,28 +1297,39 @@ export const CardDetailSheet = ({
     onSubmitAdd: () => void handleSubmitAdd(),
     onStepper: (copy, delta) => void handleStepper(copy, delta),
     onRefreshPrice: () => void handleRefreshPrice(),
+    onOpenAlert: handleOpenAlert,
   };
 
   return (
-    <CardDetailView
-      open={cardId !== null}
-      title={title}
-      state={{
-        load,
-        wishlisted,
-        bindersOpen,
-        addFormOpen,
-        pendingCopyId,
-        pendingBinderId,
-        submittingAdd,
-        actionError,
-        statusMessage,
-        form,
-        formError,
-        nowMs,
-        priceRefresh,
-      }}
-      actions={actions}
-    />
+    <>
+      <CardDetailView
+        open={cardId !== null}
+        title={title}
+        state={{
+          load,
+          wishlisted,
+          bindersOpen,
+          addFormOpen,
+          pendingCopyId,
+          pendingBinderId,
+          submittingAdd,
+          actionError,
+          statusMessage,
+          form,
+          formError,
+          nowMs,
+          priceRefresh,
+        }}
+        actions={actions}
+      />
+      <AlertFormSheet
+        target={cardId === null ? null : alertTarget}
+        onClose={() => setAlertTarget(null)}
+        onSaved={() => {
+          setAlertTarget(null);
+          setStatusMessage(t("alerts.toast.created", { name: title }));
+        }}
+      />
+    </>
   );
 };

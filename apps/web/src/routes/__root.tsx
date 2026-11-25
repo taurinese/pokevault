@@ -5,10 +5,17 @@ import {
   Outlet,
   Scripts,
   useMatches,
+  useRouterState,
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { FloatingPillNavbar } from "../components/FloatingPillNavbar.tsx";
 import { HTML_LANG, t } from "../i18n/index.ts";
+import {
+  ALERTS_UNREAD_EVENT,
+  fetchUnreadAlertsCount,
+  readUnreadEventDetail,
+} from "../lib/alerts-client.ts";
 import { THEME_INIT_SCRIPT } from "../lib/theme.ts";
 import appCss from "../styles/app.css?url";
 
@@ -39,14 +46,50 @@ const RootDocument = ({ children }: { readonly children: ReactNode }) => (
   </html>
 );
 
+/**
+ * Pastille verte non lue de la Navbar B : interroge `GET /api/alerts/unread-count` au montage
+ * et à chaque navigation (silencieux sur 401 / erreur : la valeur reste inchangée), et écoute
+ * `pokevault:alerts-unread` (`CustomEvent<number>`) émis par `/alerts` pour se mettre à jour
+ * instantanément. Aucune requête sur les pages sans navbar (`/login`, `/s/$token`…).
+ */
+const useUnreadAlertsCount = (enabled: boolean): number => {
+  const [count, setCount] = useState(0);
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `pathname` relance volontairement la lecture à chaque navigation
+  useEffect(() => {
+    if (!enabled) {
+      setCount(0);
+      return;
+    }
+    const controller = new AbortController();
+    void fetchUnreadAlertsCount(controller.signal).then((next) => {
+      if (next !== null && !controller.signal.aborted) setCount(next);
+    });
+    return () => controller.abort();
+  }, [enabled, pathname]);
+
+  useEffect(() => {
+    const onUnread = (event: Event): void => {
+      const next = readUnreadEventDetail(event);
+      if (next !== null) setCount(next);
+    };
+    window.addEventListener(ALERTS_UNREAD_EVENT, onUnread);
+    return () => window.removeEventListener(ALERTS_UNREAD_EVENT, onUnread);
+  }, []);
+
+  return count;
+};
+
 const RootLayout = () => {
   const hideNavbar = useMatches({
     select: (matches) => matches.some((match) => match.staticData.hideNavbar === true),
   });
+  const unreadCount = useUnreadAlertsCount(!hideNavbar);
   return (
     <>
       <Outlet />
-      {hideNavbar ? null : <FloatingPillNavbar />}
+      {hideNavbar ? null : <FloatingPillNavbar unreadAlertsCount={unreadCount} />}
     </>
   );
 };

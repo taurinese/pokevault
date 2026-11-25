@@ -1,10 +1,20 @@
 import { EventEmitter } from "node:events";
-import { CardmarketBlockedError, type PriceBatchReport } from "@pokevault/domain";
 import {
+  type AlertEvaluationBatchReport,
+  CardmarketBlockedError,
+  type PriceBatchReport,
+} from "@pokevault/domain";
+import {
+  AlertService,
+  AlertWorkerService,
+  AlertWorkerServiceLive,
   CardmarketFetcherFake,
   CardmarketPriceService,
   CardmarketPriceServiceLive,
   type CatalogSyncReport,
+  generateVapidKeys,
+  makeAlertServiceMemory,
+  makeNotificationServiceFake,
   makePriceSnapshotStoreMemory,
   ServiceConfigError,
   TcgdexPriceFallbackFake,
@@ -14,6 +24,7 @@ import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import { loadWorkerConfig } from "./config.ts";
 import {
+  alertEvalLoop,
   awaitShutdownSignal,
   catalogSyncLoop,
   priceRefreshLoop,
@@ -426,6 +437,165 @@ describe("runWorker with priceRefresh cron", () => {
   });
 });
 
+describe("alertEvalLoop", () => {
+  const report: AlertEvaluationBatchReport = {
+    evaluated: 4,
+    triggered: 1,
+    skippedCooldown: 1,
+    skippedAboveThreshold: 1,
+    skippedNoPrice: 1,
+    pushSent: 2,
+    pushExpiredRemoved: 1,
+    discordSent: 0,
+    deliveryFailed: 0,
+    durationMs: 42,
+  };
+
+  it("runs immediately then on each interval, and stops cleanly when interrupted", async () => {
+    const capture = makeCapture();
+    const runs: Array<number> = [];
+    const run = Effect.sync(() => {
+      runs.push(runs.length + 1);
+      return report;
+    });
+
+    const program = Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(alertEvalLoop({ intervalMs: 1_000, run }));
+      yield* TestClock.adjust(2_500); // runs at t=0, 1s, 2s
+      yield* Fiber.interrupt(fiber);
+      yield* TestClock.adjust(5_000); // no further run after interruption
+    });
+
+    await Effect.runPromise(withTestRuntime(program, capture.layer));
+    expect(runs).toEqual([1, 2, 3]);
+    const messages = capture.entries.map((entry) => entry.message);
+    expect(messages.filter((message) => message === "worker.alert_eval.started")).toHaveLength(3);
+    expect(messages.filter((message) => message === "worker.alert_eval.completed")).toHaveLength(3);
+    expect(messages).toContain("worker.alert_eval.interrupted");
+  });
+
+  it("logs batch failures as worker.alert_eval.failed and keeps the cron alive", async () => {
+    const capture = makeCapture();
+    let attempts = 0;
+    const run = Effect.suspend((): Effect.Effect<AlertEvaluationBatchReport, Error> => {
+      attempts += 1;
+      return attempts === 1 ? Effect.fail(new Error("boom")) : Effect.succeed(report);
+    });
+
+    const program = Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(alertEvalLoop({ intervalMs: 1_000, run }));
+      yield* TestClock.adjust(2_100); // 3 runs: fail, ok, ok
+      yield* Fiber.interrupt(fiber);
+    });
+
+    await Effect.runPromise(withTestRuntime(program, capture.layer));
+    expect(attempts).toBe(3);
+    const messages = capture.entries.map((entry) => entry.message);
+    expect(messages).toContain("worker.alert_eval.failed");
+    expect(messages.filter((message) => message === "worker.alert_eval.completed")).toHaveLength(2);
+    expect(messages).toContain("worker.alert_eval.interrupted");
+  });
+});
+
+describe("runWorker with alertEval cron", () => {
+  it("runs the alert cron then stops gracefully on SIGTERM", async () => {
+    const emitter = new EventEmitter();
+    const capture = makeCapture();
+    const runs: Array<number> = [];
+    const run = Effect.sync((): AlertEvaluationBatchReport => {
+      runs.push(runs.length + 1);
+      return {
+        evaluated: 0,
+        triggered: 0,
+        skippedCooldown: 0,
+        skippedAboveThreshold: 0,
+        skippedNoPrice: 0,
+        pushSent: 0,
+        pushExpiredRemoved: 0,
+        discordSent: 0,
+        deliveryFailed: 0,
+        durationMs: 1,
+      };
+    });
+
+    const program = Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        runWorker({
+          heartbeatIntervalMs: 60_000,
+          signals: emitter,
+          alertEval: { intervalMs: 1_000, run },
+        }),
+      );
+      yield* TestClock.adjust(2_500);
+      emitter.emit("SIGTERM");
+      return yield* Fiber.join(fiber);
+    });
+
+    const signal = await Effect.runPromise(withTestRuntime(program, capture.layer));
+
+    expect(signal).toBe("SIGTERM");
+    expect(runs).toEqual([1, 2, 3]);
+    const messages = capture.entries.map((entry) => entry.message);
+    expect(messages).toContain("worker.alert_eval.started");
+    expect(messages).toContain("worker.alert_eval.interrupted");
+    expect(messages.at(-1)).toBe("worker.stopped");
+    expect(listenerCount(emitter)).toBe(0);
+  });
+
+  it("evaluates, notifies and applies the cooldown across ticks when the layer is built once in scope", async () => {
+    const capture = makeCapture();
+    const handle = makeAlertServiceMemory();
+    const notifier = makeNotificationServiceFake();
+    const alertsLayer = AlertWorkerServiceLive().pipe(
+      Layer.provideMerge(Layer.mergeAll(handle.layer, notifier.layer)),
+    );
+    const userId = "aaaaaaaa-0000-4000-8000-0000000000a1";
+    const reports: Array<AlertEvaluationBatchReport> = [];
+
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const env = yield* Layer.build(alertsLayer);
+        const service = yield* AlertService.pipe(Effect.provide(env));
+        const alert = yield* service.createAlert(userId, {
+          cardId: "sv03.5-198",
+          thresholdCents: 5_000,
+        });
+        yield* service.upsertPushSubscription(userId, {
+          endpoint: "https://fcm.googleapis.com/fcm/send/abc",
+          p256dh: "B".repeat(87),
+          auth: "a".repeat(22),
+        });
+        handle.contexts.set(alert.id, {
+          card: {
+            name: "Florizarre-ex",
+            setName: "151",
+            number: "198",
+            imageUrl: null,
+            cardmarketUrl: null,
+          },
+          owner: { discordUserId: null, discordWebhookUrl: null },
+          snapshot: { source: "cardmarket", lowFrCents: 4_690, trendCents: 5_100 },
+        });
+        const run = Effect.flatMap(AlertWorkerService, (worker) => worker.evaluateAndNotify()).pipe(
+          Effect.provide(env),
+          Effect.tap((batch) => Effect.sync(() => void reports.push(batch))),
+        );
+        const fiber = yield* Effect.forkChild(alertEvalLoop({ intervalMs: 15 * 60_000, run }));
+        yield* TestClock.adjust(31 * 60_000); // ticks at t=0, 15 min, 30 min
+        yield* Fiber.interrupt(fiber);
+      }),
+    );
+
+    await Effect.runPromise(withTestRuntime(program, capture.layer));
+    expect(reports).toHaveLength(3);
+    expect(reports[0]).toMatchObject({ triggered: 1, pushSent: 1, skippedCooldown: 0 });
+    expect(reports[1]).toMatchObject({ triggered: 0, pushSent: 0, skippedCooldown: 1 });
+    expect(reports[2]).toMatchObject({ triggered: 0, pushSent: 0, skippedCooldown: 1 });
+    expect(notifier.calls).toHaveLength(1);
+    expect(handle.events).toHaveLength(1);
+  });
+});
+
 describe("parseSyncCatalogArgs", () => {
   it("parses --set filters, --base-url and ignores the sync flag itself", () => {
     expect(
@@ -672,5 +842,125 @@ describe("loadWorkerConfig", () => {
       );
       expect(config.cardmarketPriceBatchLimit).toBe(Number(raw));
     }
+  });
+});
+
+describe("loadWorkerConfig — alert evaluation", () => {
+  const DB = "postgres://postgres:pass@postgres:5432/postgres?sslmode=disable";
+  const load = (env: Record<string, string>) =>
+    loadWorkerConfig.pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
+  const WEBHOOK = `https://discord.com/api/webhooks/123456789012345678/${"a".repeat(30)}`;
+
+  it("defaults: disabled, 15 min interval, no DATABASE_URL needed", async () => {
+    const config = await Effect.runPromise(load({}));
+    expect(config.alertEval).toBeNull();
+    expect(config.alertEvalIntervalMs).toBe(15 * 60 * 1000);
+  });
+
+  it("enables the alert cron with DATABASE_URL, a valid VAPID pair, Discord settings and APP_URL", async () => {
+    const keys = generateVapidKeys();
+    const config = await Effect.runPromise(
+      load({
+        DATABASE_URL: DB,
+        ALERT_EVAL_ENABLED: "true",
+        ALERT_EVAL_INTERVAL_MS: "60000",
+        VAPID_PUBLIC_KEY: keys.publicKey,
+        VAPID_PRIVATE_KEY: keys.privateKey,
+        VAPID_SUBJECT: "mailto:ops@pokevault.example",
+        DISCORD_DEFAULT_WEBHOOK_URL: WEBHOOK,
+        DISCORD_BOT_TOKEN: "bot-token",
+        APP_URL: "https://pokevault.example/",
+      }),
+    );
+    expect(config.alertEvalIntervalMs).toBe(60_000);
+    expect(config.alertEval).toEqual({
+      databaseUrl: DB,
+      appUrl: "https://pokevault.example",
+      vapid: { ...keys, subject: "mailto:ops@pokevault.example" },
+      discordBotToken: "bot-token",
+      defaultDiscordWebhookUrl: WEBHOOK,
+    });
+  });
+
+  it("falls back to SITE_URL, then to the local default, and runs push-less without VAPID", async () => {
+    const withSite = await Effect.runPromise(
+      load({ DATABASE_URL: DB, ALERT_EVAL_ENABLED: "1", SITE_URL: "https://site.example" }),
+    );
+    expect(withSite.alertEval?.appUrl).toBe("https://site.example");
+    expect(withSite.alertEval?.vapid).toBeNull();
+    expect(withSite.alertEval?.discordBotToken).toBeNull();
+    expect(withSite.alertEval?.defaultDiscordWebhookUrl).toBeNull();
+    const bare = await Effect.runPromise(load({ DATABASE_URL: DB, ALERT_EVAL_ENABLED: "1" }));
+    expect(bare.alertEval?.appUrl).toBe("http://localhost:3000");
+  });
+
+  it("fails with DATABASE_URL error when ALERT_EVAL_ENABLED=true without DATABASE_URL", async () => {
+    const error = await Effect.runPromise(Effect.flip(load({ ALERT_EVAL_ENABLED: "true" })));
+    expect(error).toBeInstanceOf(ServiceConfigError);
+    expect(error.key).toBe("DATABASE_URL");
+  });
+
+  it.each(["0", "-1", "abc"])("rejects ALERT_EVAL_INTERVAL_MS=%s", async (raw) => {
+    const error = await Effect.runPromise(Effect.flip(load({ ALERT_EVAL_INTERVAL_MS: raw })));
+    expect(error).toBeInstanceOf(ServiceConfigError);
+    expect(error.key).toBe("ALERT_EVAL_INTERVAL_MS");
+  });
+
+  it("requires the whole VAPID triplet, a mailto/https subject and a real P-256 pair", async () => {
+    const keys = generateVapidKeys();
+    const base = { DATABASE_URL: DB, ALERT_EVAL_ENABLED: "true" };
+    const partial = await Effect.runPromise(
+      Effect.flip(load({ ...base, VAPID_PUBLIC_KEY: keys.publicKey })),
+    );
+    expect(partial.key).toBe("VAPID_PRIVATE_KEY");
+    const badSubject = await Effect.runPromise(
+      Effect.flip(
+        load({
+          ...base,
+          VAPID_PUBLIC_KEY: keys.publicKey,
+          VAPID_PRIVATE_KEY: keys.privateKey,
+          VAPID_SUBJECT: "ops@pokevault.example",
+        }),
+      ),
+    );
+    expect(badSubject.key).toBe("VAPID_SUBJECT");
+    const other = generateVapidKeys();
+    const mismatched = await Effect.runPromise(
+      Effect.flip(
+        load({
+          ...base,
+          VAPID_PUBLIC_KEY: keys.publicKey,
+          VAPID_PRIVATE_KEY: other.privateKey,
+          VAPID_SUBJECT: "mailto:ops@pokevault.example",
+        }),
+      ),
+    );
+    expect(mismatched.key).toBe("VAPID_PRIVATE_KEY");
+    const garbage = await Effect.runPromise(
+      Effect.flip(
+        load({
+          ...base,
+          VAPID_PUBLIC_KEY: "abc",
+          VAPID_PRIVATE_KEY: "def",
+          VAPID_SUBJECT: "mailto:ops@pokevault.example",
+        }),
+      ),
+    );
+    expect(garbage.key).toBe("VAPID_PRIVATE_KEY");
+  });
+
+  it("rejects a DISCORD_DEFAULT_WEBHOOK_URL outside discord.com without echoing it, and a bad APP_URL", async () => {
+    const base = { DATABASE_URL: DB, ALERT_EVAL_ENABLED: "true" };
+    const ssrf = await Effect.runPromise(
+      Effect.flip(
+        load({ ...base, DISCORD_DEFAULT_WEBHOOK_URL: "https://169.254.169.254/secret-token" }),
+      ),
+    );
+    expect(ssrf.key).toBe("DISCORD_DEFAULT_WEBHOOK_URL");
+    expect(ssrf.message).not.toContain("secret-token");
+    const appUrl = await Effect.runPromise(
+      Effect.flip(load({ ...base, APP_URL: "javascript:alert(1)" })),
+    );
+    expect(appUrl.key).toBe("APP_URL");
   });
 });

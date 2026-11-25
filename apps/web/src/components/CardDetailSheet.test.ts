@@ -553,6 +553,40 @@ describe("CardDetailView — bloc prix Cardmarket", () => {
   });
 });
 
+describe("CardDetailView — bouton « Alerte prix » (07C)", () => {
+  const alertButton = (html: string): string =>
+    html.match(/<button[^>]*data-testid="card-detail-price-alert"[^>]*>/)?.[0] ?? "";
+
+  it("affiche le bouton dans le bloc Prix Cardmarket quand le hook est branché", () => {
+    const html = renderReady(makeState(), makeActions({ onOpenAlert: vi.fn() }));
+    const block = html.slice(html.indexOf('data-testid="card-detail-price"'));
+    expect(block.slice(0, block.indexOf('aria-label="Mes exemplaires"'))).toContain(
+      'data-testid="card-detail-price-alert"',
+    );
+    const button = alertButton(html);
+    expect(button).toContain('aria-label="Créer une alerte de prix pour Dracaufeu ex"');
+    expect(button).toContain("min-h-11");
+    expect(button).toContain("border-success/40");
+    expect(html).toContain("Alerte prix");
+  });
+
+  it("reste visible même sans prix connu (l'alerte peut précéder la cotation)", () => {
+    const withHook = renderToStaticMarkup(
+      h(CardDetailView, {
+        open: true,
+        title: payload.card.nameFr,
+        state: makeState({ load: { status: "ready", payload: { ...payload, price: null } } }),
+        actions: makeActions({ onOpenAlert: vi.fn() }),
+      }),
+    );
+    expect(alertButton(withHook)).not.toBe("");
+  });
+
+  it("n'affiche pas le bouton sans hook (vues existantes inchangées)", () => {
+    expect(renderReady(makeState(), makeActions())).not.toContain("card-detail-price-alert");
+  });
+});
+
 describe("formatPriceAgeLabel", () => {
   it.each([
     [0, "À l'instant"],

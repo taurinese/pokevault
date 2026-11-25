@@ -7,9 +7,15 @@ import {
 } from "@tanstack/react-router";
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fr } from "../i18n/fr.ts";
-import { AccountScreen, type AccountScreenProps } from "./AccountScreen.tsx";
+import type { ShareLinkEntry } from "../lib/share-client.ts";
+import {
+  AccountScreen,
+  type AccountScreenProps,
+  ShareLinksSectionView,
+  type ShareLinksSectionViewProps,
+} from "./AccountScreen.tsx";
 
 const googleOnly: AccountScreenProps["user"] = {
   email: "ada@pokevault.test",
@@ -165,5 +171,111 @@ describe("AccountScreen (09B)", () => {
     expect(await render({ user: bothLinked, error: "link_failed" })).not.toMatch(
       /#[0-9a-fA-F]{3,8}\b/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Section « Partages lecture seule » (docs/01 §2.2)
+// ---------------------------------------------------------------------------
+
+const shareLink = (overrides: Partial<ShareLinkEntry> = {}): ShareLinkEntry => ({
+  id: "44444444-4444-4444-8444-444444444444",
+  binderId: "33333333-3333-4333-8333-333333333333",
+  binderTitle: "Prisme Évolutif",
+  token: "T".repeat(43),
+  isActive: true,
+  showQuantities: true,
+  createdAt: "2026-03-12T10:00:00.000Z",
+  revokedAt: null,
+  ...overrides,
+});
+
+const renderShares = (props: Partial<ShareLinksSectionViewProps> = {}): string =>
+  renderToStaticMarkup(
+    h(ShareLinksSectionView, {
+      load: { status: "ready", links: [] },
+      busyId: null,
+      copiedId: null,
+      copyFailedId: null,
+      onCopy: vi.fn(),
+      onRevoke: vi.fn(),
+      onRetry: vi.fn(),
+      ...props,
+    }),
+  );
+
+describe("AccountScreen · Partages lecture seule", () => {
+  it("renders the section heading in the account screen (loading before the client fetch)", async () => {
+    const html = await render({ user: googleOnly });
+    expect(html).toContain(fr["share.account.heading"]);
+    expect(html).toContain('data-testid="account-shares-loading"');
+  });
+
+  it("lists active links with binder title, date, quantities status, copy and revoke", () => {
+    const html = renderShares({
+      load: {
+        status: "ready",
+        links: [
+          shareLink(),
+          shareLink({
+            id: "55555555-5555-4555-8555-555555555555",
+            binderTitle: "Doublons d'échange",
+            showQuantities: false,
+          }),
+        ],
+      },
+    });
+    expect(html.match(/data-testid="account-share-link"/g)).toHaveLength(2);
+    expect(html).toContain("Prisme Évolutif");
+    expect(html).toContain("Doublons d&#x27;échange");
+    expect(html).toContain("Créé le 12 mars 2026");
+    expect(html).toContain(fr["share.account.row.quantitiesOn"]);
+    expect(html).toContain(fr["share.account.row.quantitiesOff"]);
+    expect(html.match(/data-testid="account-share-copy"/g)).toHaveLength(2);
+    expect(html.match(/data-testid="account-share-revoke"/g)).toHaveLength(2);
+    expect(html).toContain('aria-label="Copier le lien de partage de Prisme Évolutif"');
+    expect(html).toContain('aria-label="Révoquer le lien de partage de Prisme Évolutif"');
+  });
+
+  it("never prints the secret token in the list (only copied on demand)", () => {
+    expect(renderShares({ load: { status: "ready", links: [shareLink()] } })).not.toContain(
+      "T".repeat(43),
+    );
+  });
+
+  it("shows « Lien copié » on the copied row only and disables a busy revocation", () => {
+    const html = renderShares({
+      load: { status: "ready", links: [shareLink()] },
+      copiedId: "44444444-4444-4444-8444-444444444444",
+      busyId: "44444444-4444-4444-8444-444444444444",
+    });
+    expect(html).toContain(fr["share.sheet.copied"]);
+    expect(html).toMatch(/data-testid="account-share-revoke"[^>]*disabled/);
+  });
+
+  it("shows a clean empty state when there is no active link", () => {
+    const html = renderShares();
+    expect(html).toContain('data-testid="account-shares-empty"');
+    expect(html).toContain(fr["share.account.empty.title"]);
+    expect(html).not.toContain('data-testid="account-share-link"');
+  });
+
+  it("shows a retryable error state", () => {
+    const html = renderShares({ load: { status: "error" } });
+    expect(html).toContain('data-testid="account-shares-error"');
+    expect(html).toContain('data-testid="account-shares-retry"');
+  });
+
+  it("falls back to a neutral title for a binder that no longer exists", () => {
+    const html = renderShares({
+      load: { status: "ready", links: [shareLink({ binderTitle: null })] },
+    });
+    expect(html).toContain(fr["share.account.row.binderFallback"]);
+  });
+
+  it("uses no raw hex colors", () => {
+    expect(
+      renderShares({ load: { status: "ready", links: [shareLink()] }, copiedId: "x" }),
+    ).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });

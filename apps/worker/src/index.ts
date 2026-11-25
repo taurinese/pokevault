@@ -1,5 +1,7 @@
-import type { PriceBatchReport } from "@pokevault/domain";
+import type { AlertEvaluationBatchReport, PriceBatchReport } from "@pokevault/domain";
 import {
+  AlertWorkerLayer,
+  AlertWorkerService,
   CardmarketPriceLayer,
   CardmarketPriceService,
   type CatalogSyncError,
@@ -63,11 +65,37 @@ const main = Effect.scoped(
           }
         : undefined;
 
+    // Same rule for the alert evaluation: ONE Layer.build (Postgres pool + notification
+    // service) shared by every cron tick and released with the worker scope.
+    const alertEvalSettings = config.alertEval;
+    const alertEvalEnv =
+      alertEvalSettings !== null
+        ? yield* Layer.build(
+            AlertWorkerLayer({
+              databaseUrl: alertEvalSettings.databaseUrl,
+              appUrl: alertEvalSettings.appUrl,
+              vapid: alertEvalSettings.vapid ?? undefined,
+              discordBotToken: alertEvalSettings.discordBotToken ?? undefined,
+              defaultDiscordWebhookUrl: alertEvalSettings.defaultDiscordWebhookUrl ?? undefined,
+            }),
+          )
+        : undefined;
+    const alertEval =
+      alertEvalEnv !== undefined
+        ? {
+            intervalMs: config.alertEvalIntervalMs,
+            run: Effect.flatMap(AlertWorkerService, (service) => service.evaluateAndNotify()).pipe(
+              Effect.provide(alertEvalEnv),
+            ) satisfies Effect.Effect<AlertEvaluationBatchReport, unknown>,
+          }
+        : undefined;
+
     yield* runWorker({
       heartbeatIntervalMs: config.heartbeatIntervalMs,
       signals: process,
       catalogSync,
       priceRefresh,
+      alertEval,
     });
   }),
 ).pipe(
