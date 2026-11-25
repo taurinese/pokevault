@@ -769,6 +769,38 @@ export const fr = {
   "cardDetail.add.submitting": "Ajout…",
   "cardDetail.add.cancel": "Annuler",
   "cardDetail.add.error": "Ajout impossible. Vérifiez les champs puis réessayez.",
+
+  // Écrans 04B–04D · Inspecteur 3D Holo
+  "inspector3d.dialog.aria": "Inspecteur 3D de {name}",
+  "inspector3d.close": "Fermer l'inspecteur 3D",
+  "inspector3d.stage.aria":
+    "Carte {name} en 3D : glisser pour incliner, double-taper pour retourner",
+  "inspector3d.card.frontAlt": "Recto de la carte {name}",
+  "inspector3d.card.backAlt": "Verso officiel de la carte Pokémon",
+  "inspector3d.card.fallback": "Visuel indisponible",
+  "inspector3d.controls.label": "Contrôles de l'inspecteur 3D",
+  "inspector3d.action.holo": "Holo",
+  "inspector3d.action.holo.enable": "Activer l'effet holographique",
+  "inspector3d.action.holo.disable": "Désactiver l'effet holographique",
+  "inspector3d.action.flip": "Retourner",
+  "inspector3d.action.flip.toBack": "Retourner la carte vers le verso",
+  "inspector3d.action.flip.toFront": "Retourner la carte vers le recto",
+  "inspector3d.hint.drag": "Glisser pour incliner · Double-tap pour retourner",
+  "inspector3d.hint.reducedMotion":
+    "Animation réduite active · Utilisez Retourner pour voir le verso",
+  "inspector3d.preset.label": "Effet foil : {preset}",
+  "inspector3d.preset.none": "Standard",
+  "inspector3d.preset.holo": "Holo classique",
+  "inspector3d.preset.reverse": "Reverse",
+  "inspector3d.preset.ex": "EX / Full Art",
+  "inspector3d.preset.sir": "SIR texturée",
+  "inspector3d.preset.tera": "Téracristal",
+  "inspector3d.preset.gold": "Gold",
+  "inspector3d.status.flippedBack": "Verso de la carte affiché",
+  "inspector3d.status.flippedFront": "Recto de la carte affiché",
+  "inspector3d.status.holoOn": "Effet holographique activé",
+  "inspector3d.status.holoOff": "Effet holographique désactivé",
+
   // Écrans 06A–06B · Wishlist (/wishlist)
   "wishlist.title": "Wishlist — PokéVault",
   "wishlist.heading": "Wishlist",
