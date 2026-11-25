@@ -8,7 +8,7 @@ import {
   tcgdexSetLogoUrl,
 } from "@pokevault/domain";
 import { Link } from "@tanstack/react-router";
-import { Eye, ImageOff, LinkIcon, SearchX, TriangleAlert } from "lucide-react";
+import { Eye, ImageOff, LinkIcon, Maximize2, SearchX, TriangleAlert } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { type TranslationKey, t } from "../i18n/index.ts";
 import {
@@ -22,6 +22,7 @@ import {
   sharedCompletionPercent,
 } from "../lib/share-client.ts";
 import { BottomSheet } from "./BottomSheet.tsx";
+import { Card3DInspector, type Card3DInspectorCard } from "./Card3DInspector.tsx";
 import { CardTile, type CardTileOwnership } from "./CardTile.tsx";
 import { ThemeToggle } from "./ThemeToggle.tsx";
 
@@ -42,11 +43,15 @@ export interface SharedBinderViewState {
   readonly filter: SharedBinderFilter;
   /** Carte ouverte dans le Bottom Sheet lecture seule (`null` : fermé). */
   readonly selectedCardId: string | null;
+  /** Inspecteur 3D Holo ouvert par-dessus la feuille lecture seule (`false` par défaut). */
+  readonly viewer3dOpen?: boolean | undefined;
 }
 
 export interface SharedBinderViewActions {
   readonly onFilterChange: (filter: SharedBinderFilter) => void;
   readonly onSelectCard: (cardId: string | null) => void;
+  readonly onOpenViewer3D?: (() => void) | undefined;
+  readonly onCloseViewer3D?: (() => void) | undefined;
   readonly onRetry: () => void;
 }
 
@@ -379,14 +384,28 @@ const SharedGridCard = ({
 // Bottom Sheet lecture seule d'une carte (jamais d'édition ni de donnée privée)
 // ---------------------------------------------------------------------------
 
+/** Projette une carte publique partagée vers le contrat lecture seule de `Card3DInspector`. */
+export const toSharedInspectorCard = (card: SharedBinderCard): Card3DInspectorCard => ({
+  cardId: card.cardId,
+  name: card.nameFr,
+  setLabel: card.setCode,
+  numberLabel: card.localId,
+  rarity: card.rarity,
+  holoEffect: card.holoEffect,
+  types: null,
+  imageBaseUrl: card.imageBaseUrl,
+});
+
 const SharedCardSheet = ({
   card,
   showQuantities,
   onClose,
+  onOpenViewer3D,
 }: {
   readonly card: SharedBinderCard | null;
   readonly showQuantities: boolean;
   readonly onClose: () => void;
+  readonly onOpenViewer3D: () => void;
 }) => {
   const imageUrl = card === null ? undefined : tcgdexCardImageUrl(card.imageBaseUrl, "high");
   const [failedUrl, setFailedUrl] = useState<string | undefined>(undefined);
@@ -399,27 +418,41 @@ const SharedCardSheet = ({
     >
       {card === null ? null : (
         <div data-testid="shared-card-sheet" className="flex flex-col gap-4">
-          {/* Emplacement de l'Inspecteur 3D Holo (M5) : l'effet est déjà porté par `data-holo-effect`. */}
-          <div
-            data-testid="shared-card-holo-slot"
-            data-holo-effect={card.holoEffect}
-            className="relative mx-auto w-56 max-w-full overflow-hidden rounded-card border border-line bg-surface-2 shadow-card"
-            style={{ aspectRatio: CardAspectRatio }}
-          >
-            {imageUrl !== undefined && failedUrl !== imageUrl ? (
-              <img
-                src={imageUrl}
-                alt={t("share.detail.imageAlt", { name: card.nameFr })}
-                decoding="async"
-                onError={() => setFailedUrl(imageUrl)}
-                className={`h-full w-full object-cover ${card.owned ? "" : "saturate-0 opacity-60"}`}
-              />
-            ) : (
-              <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted">
-                <ImageOff size={28} aria-hidden="true" />
-                <span className="text-xs">{t("share.detail.imageFallback")}</span>
-              </div>
-            )}
+          {/* 2e tap sur l'artwork ou le bouton agrandir → Inspecteur 3D Holo lecture seule. */}
+          <div className="relative mx-auto w-56 max-w-full">
+            <button
+              type="button"
+              data-testid="shared-card-holo-slot"
+              data-holo-effect={card.holoEffect}
+              aria-label={t("share.detail.zoom", { name: card.nameFr })}
+              onClick={onOpenViewer3D}
+              className={`relative block w-full cursor-pointer overflow-hidden rounded-card border border-line bg-surface-2 p-0 text-left shadow-card transition-transform active:scale-[0.99] ${focusRing}`}
+              style={{ aspectRatio: CardAspectRatio }}
+            >
+              {imageUrl !== undefined && failedUrl !== imageUrl ? (
+                <img
+                  src={imageUrl}
+                  alt={t("share.detail.imageAlt", { name: card.nameFr })}
+                  decoding="async"
+                  onError={() => setFailedUrl(imageUrl)}
+                  className={`h-full w-full object-cover ${card.owned ? "" : "saturate-0 opacity-60"}`}
+                />
+              ) : (
+                <span className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted">
+                  <ImageOff size={28} aria-hidden="true" />
+                  <span className="text-xs">{t("share.detail.imageFallback")}</span>
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              data-testid="shared-card-zoom"
+              aria-label={t("share.detail.zoom", { name: card.nameFr })}
+              onClick={onOpenViewer3D}
+              className={`absolute top-2 right-2 grid min-h-[44px] min-w-[44px] place-items-center rounded-pill border border-line bg-surface-1/90 text-secondary backdrop-blur transition-colors hover:text-primary ${focusRing}`}
+            >
+              <Maximize2 size={16} aria-hidden="true" />
+            </button>
           </div>
           <div className="flex flex-col gap-1.5 text-sm">
             <div className="flex items-center justify-between gap-3">
@@ -517,6 +550,30 @@ export const SharedBinderView = ({ state, actions }: SharedBinderViewProps) => {
     state.selectedCardId === null
       ? null
       : (allCards.find((card) => card.cardId === state.selectedCardId) ?? null);
+  const [localViewer3dCardId, setLocalViewer3dCardId] = useState<string | null>(null);
+
+  // Réinitialise l'état local non contrôlé dès que la carte sélectionnée change ou se ferme.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: réinitialisation volontaire à chaque changement de `state.selectedCardId`
+  useEffect(() => {
+    setLocalViewer3dCardId(null);
+  }, [state.selectedCardId]);
+
+  const localViewer3dOpen = selected !== null && localViewer3dCardId === selected.cardId;
+  const isViewer3dOpen = (state.viewer3dOpen ?? localViewer3dOpen) && selected !== null;
+  const handleOpenViewer3D = () => {
+    if (actions.onOpenViewer3D !== undefined) {
+      actions.onOpenViewer3D();
+    } else if (selected !== null) {
+      setLocalViewer3dCardId(selected.cardId);
+    }
+  };
+  const handleCloseViewer3D = () => {
+    if (actions.onCloseViewer3D !== undefined) {
+      actions.onCloseViewer3D();
+    } else {
+      setLocalViewer3dCardId(null);
+    }
+  };
 
   return (
     <main
@@ -593,7 +650,15 @@ export const SharedBinderView = ({ state, actions }: SharedBinderViewProps) => {
             card={selected}
             showQuantities={showQuantities}
             onClose={() => actions.onSelectCard(null)}
+            onOpenViewer3D={handleOpenViewer3D}
           />
+          {selected === null ? null : (
+            <Card3DInspector
+              open={isViewer3dOpen}
+              card={toSharedInspectorCard(selected)}
+              onClose={handleCloseViewer3D}
+            />
+          )}
         </>
       ) : load.status === "loading" ? (
         <div className="min-h-0 flex-1 px-4 pt-2">
@@ -646,6 +711,7 @@ export const SharedBinderScreen = ({ token }: SharedBinderScreenProps) => {
   const [load, setLoad] = useState<SharedBinderLoad>({ status: "loading" });
   const [filter, setFilter] = useState<SharedBinderFilter>("all");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [viewer3dCardId, setViewer3dCardId] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `retryToken` relance volontairement le chargement
@@ -653,6 +719,7 @@ export const SharedBinderScreen = ({ token }: SharedBinderScreenProps) => {
     const controller = new AbortController();
     setLoad({ status: "loading" });
     setSelectedCardId(null);
+    setViewer3dCardId(null);
     fetchSharedBinder(token, controller.signal)
       .then((result) => {
         setLoad(
@@ -667,12 +734,19 @@ export const SharedBinderScreen = ({ token }: SharedBinderScreenProps) => {
     return () => controller.abort();
   }, [token, retryToken]);
 
+  const viewer3dOpen = selectedCardId !== null && viewer3dCardId === selectedCardId;
+
   return (
     <SharedBinderView
-      state={{ token, load, filter, selectedCardId }}
+      state={{ token, load, filter, selectedCardId, viewer3dOpen }}
       actions={{
         onFilterChange: setFilter,
-        onSelectCard: setSelectedCardId,
+        onSelectCard: (nextCardId) => {
+          setSelectedCardId(nextCardId);
+          setViewer3dCardId(null);
+        },
+        onOpenViewer3D: () => setViewer3dCardId(selectedCardId),
+        onCloseViewer3D: () => setViewer3dCardId(null),
         onRetry: () => setRetryToken((value) => value + 1),
       }}
     />

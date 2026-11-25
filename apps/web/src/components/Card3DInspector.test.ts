@@ -166,6 +166,64 @@ describe("Card3DInspector", () => {
     expect(html).toContain("Gyroscope");
   });
 
+  it("rend le contrôle Gyro accessible et déterministe en SSR (désactivé tant que non détecté, zéro hydration mismatch)", () => {
+    const ssrHtml = renderToStaticMarkup(
+      h(Card3DInspector, { open: true, card: baseCard, onClose: noop }),
+    );
+    const ssrBtn = ssrHtml.match(/<button[^>]*data-testid="card3d-toggle-gyro"[^>]*>/)?.[0] ?? "";
+    expect(ssrBtn).not.toBe("");
+    expect(ssrBtn).toContain('aria-pressed="false"');
+    expect(ssrBtn).toContain(`aria-label="${fr["inspector3d.gyro.unavailable"]}"`);
+    expect(ssrBtn).toContain("min-h-[44px]");
+    expect(ssrBtn).toContain("min-height:var(--touch-target-min)");
+    expect(ssrBtn).toMatch(/\sdisabled=""/);
+    expect(ssrHtml).toContain(`>${fr["inspector3d.gyro.label"]}<`);
+
+    // Avec capteur supporté (post-hydratation ou prop explicite) → actif
+    const supportedHtml = renderToStaticMarkup(
+      h(Card3DInspector, { open: true, card: baseCard, onClose: noop, gyroSupported: true }),
+    );
+    const supportedBtn =
+      supportedHtml.match(/<button[^>]*data-testid="card3d-toggle-gyro"[^>]*>/)?.[0] ?? "";
+    expect(supportedBtn).not.toMatch(/\sdisabled=""/);
+    expect(supportedBtn).toContain(`aria-label="${fr["inspector3d.gyro.enable"]}"`);
+
+    // Avec reducedMotion = true → désactivé même si capteur présent
+    const reducedHtml = renderToStaticMarkup(
+      h(Card3DInspector, {
+        open: true,
+        card: baseCard,
+        onClose: noop,
+        gyroSupported: true,
+        reducedMotion: true,
+      }),
+    );
+    const reducedBtn =
+      reducedHtml.match(/<button[^>]*data-testid="card3d-toggle-gyro"[^>]*>/)?.[0] ?? "";
+    expect(reducedBtn).toMatch(/\sdisabled=""/);
+    expect(reducedBtn).toContain(
+      `aria-label="${fr["inspector3d.gyro.reducedMotion"].replaceAll("'", "&#x27;")}"`,
+    );
+  });
+
+  it("expose toutes les clés i18n inspector3d.gyro.* en fr-FR", () => {
+    const gyroKeys = [
+      "inspector3d.gyro.label",
+      "inspector3d.gyro.enable",
+      "inspector3d.gyro.disable",
+      "inspector3d.gyro.unavailable",
+      "inspector3d.gyro.reducedMotion",
+      "inspector3d.gyro.denied",
+      "inspector3d.gyro.active",
+      "inspector3d.gyro.inactive",
+      "inspector3d.gyro.paused",
+      "inspector3d.gyro.hint",
+    ] as const;
+    for (const key of gyroKeys) {
+      expect(fr[key].trim().length).toBeGreaterThan(0);
+    }
+  });
+
   it("adapte le halo radial au preset foil lorsqu'aucun type Pokémon n'est présent", () => {
     const html = renderToStaticMarkup(
       h(Card3DInspector, {
@@ -185,6 +243,7 @@ describe("Card3DInspector", () => {
 describe("Card3DInspector — hygiène statique & CSS", () => {
   const componentSource = readFileSync(new URL("./Card3DInspector.tsx", import.meta.url), "utf8");
   const physicsSource = readFileSync(new URL("../lib/card-3d-physics.ts", import.meta.url), "utf8");
+  const gyroSource = readFileSync(new URL("../lib/card-3d-gyro.ts", import.meta.url), "utf8");
   const cssSource = readFileSync(new URL("../styles/card-3d.css", import.meta.url), "utf8");
 
   it("ne contient aucune couleur hex brute dans Card3DInspector.tsx ni dans le HTML rendu", () => {
@@ -198,12 +257,19 @@ describe("Card3DInspector — hygiène statique & CSS", () => {
   });
 
   it("ne contient aucun @ts-ignore, any explicite ni assertion non-nulle '!'", () => {
-    for (const source of [componentSource, physicsSource]) {
+    for (const source of [componentSource, physicsSource, gyroSource]) {
       expect(source).not.toMatch(/@ts-ignore|@ts-expect-error/);
       expect(source).not.toMatch(/\b(?:as|:)\s*any\b/);
       // Vérifie l'absence d'assertion non-nulle TypeScript (ex. `foo!.bar`, `foo!`, `ref.current!`).
       expect(source).not.toMatch(/[)\w]!\s*(?:\.|\[|;|,|\)|$)/m);
     }
+  });
+
+  it("pilote le gyroscope de façon impérative (gyroTiltRef + startAnimationLoop, zéro setState par frame)", () => {
+    expect(componentSource).toContain("subscribeDeviceOrientation(");
+    expect(componentSource).toContain("gyroTiltRef.current = tilt");
+    expect(componentSource).toContain("onBackgroundPause:");
+    expect(componentSource).toContain("stopGyro(false)");
   });
 
   it("définit les 7 presets foil, la 3D matérielle, le flip 180° et prefers-reduced-motion dans card-3d.css", () => {
