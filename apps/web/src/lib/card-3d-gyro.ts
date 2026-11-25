@@ -295,6 +295,7 @@ export const subscribeDeviceOrientation = (
 
   let active = true;
   let baseline: GyroBaseline | null = null;
+  let lastScreenAngle = readScreenOrientationAngle(win);
 
   const handleOrientation = (event: DeviceOrientationReading): void => {
     if (!active) return;
@@ -307,13 +308,15 @@ export const subscribeDeviceOrientation = (
       return;
     }
 
-    if (baseline === null) {
+    const screenAngle = readScreenOrientationAngle(win);
+    if (baseline === null || screenAngle !== lastScreenAngle) {
+      lastScreenAngle = screenAngle;
       baseline = { beta: event.beta, gamma: event.gamma };
       onTilt(ZERO_TILT);
       return;
     }
 
-    const tilt = orientationToTilt(event, baseline, readScreenOrientationAngle(win));
+    const tilt = orientationToTilt(event, baseline, screenAngle);
     if (tilt !== null) {
       onTilt(tilt);
     }

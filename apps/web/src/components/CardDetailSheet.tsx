@@ -228,7 +228,7 @@ const DetailImage = ({
             className="h-full w-full object-cover"
           />
         ) : (
-          <div
+          <span
             aria-hidden="true"
             className="flex h-full w-full flex-col items-center justify-center gap-1 bg-surface-2 text-muted"
           >
@@ -236,7 +236,7 @@ const DetailImage = ({
             <span className="px-2 text-center text-[10px] leading-tight">
               {t("cardTile.imageFallback")}
             </span>
-          </div>
+          </span>
         )}
       </button>
       <button
@@ -1127,6 +1127,7 @@ export const CardDetailSheet = ({
     if (!silent) {
       loadedCardIdRef.current = null;
       setAlertTarget(null);
+      setViewer3dCardId(null);
       setPriceRefresh({ status: "idle" });
       setLoad({ status: "loading" });
       setBindersOpen(false);

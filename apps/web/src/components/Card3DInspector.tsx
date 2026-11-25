@@ -212,7 +212,8 @@ const PokemonCardBackSvg = ({ gradientId }: { readonly gradientId: string }) => 
  * - 7 presets foil par rareté (`none`, `holo`, `reverse`, `ex`, `sir`, `tera`, `gold`)
  *   + toggle **Holo** pour inspecter l'artwork brut.
  * - Flip 180° vers le verso Pokémon vectoriel (double-tap sur la carte ou bouton **Retourner**).
- * - Prêt pour le branchement Gyroscope (`externalTilt` + `controlsSlot`) dans T10.2.
+ * - Support Gyroscope mobile (`DeviceOrientationEvent` + `requestPermission()` iOS) via le bouton **Gyro**
+ *   avec arrêt automatique à la fermeture et à la mise en arrière-plan (`visibilitychange`).
  */
 export const Card3DInspector = ({
   open,
@@ -421,15 +422,32 @@ export const Card3DInspector = ({
       activePointerIdRef.current = null;
       pointerDownRef.current = null;
       lastTapRef.current = null;
-      document.body.style.overflow = previousOverflow;
       if (dialog?.open) {
         dialog.close();
       }
+      const hasOtherOpenDialog =
+        typeof document !== "undefined" && document.querySelector("dialog[open]") !== null;
+      document.body.style.overflow =
+        previousOverflow !== "hidden" || hasOtherOpenDialog ? previousOverflow : "";
       if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
         previouslyFocused.focus();
       }
     };
   }, [open, stopAnimationLoop, stopGyro, syncDomVars]);
+
+  // Réinitialise gyroscope et physique 3D dès qu'on change de carte sans fermer la modale.
+  useEffect(() => {
+    if (activeCardKey === null) return;
+    stopGyro(false);
+    stopAnimationLoop();
+    springRef.current = INITIAL_SPRING_STATE;
+    dragTargetRef.current = ZERO_TILT;
+    draggingRef.current = false;
+    activePointerIdRef.current = null;
+    pointerDownRef.current = null;
+    lastTapRef.current = null;
+    syncDomVars(0, 0, false);
+  }, [activeCardKey, stopAnimationLoop, stopGyro, syncDomVars]);
 
   // Synchronise d'abord `holoEnabledRef` et `reducedMotionRef` avant l'effet `externalTilt`.
   useEffect(() => {
@@ -450,7 +468,7 @@ export const Card3DInspector = ({
     );
   }, [open, holoEnabled, effectiveReducedMotion, stopAnimationLoop, stopGyro, syncDomVars]);
 
-  // Réagit aux changements d'inclinaison externe (gyroscope T10.2) sans re-render par frame.
+  // Réagit aux changements d'inclinaison externe optionnelle sans re-render par frame.
   useEffect(() => {
     externalTiltRef.current = externalTilt;
     if (!open) return;
@@ -520,6 +538,13 @@ export const Card3DInspector = ({
     if (gyroSessionIdRef.current !== sessionId) return;
     setGyroRequesting(false);
 
+    if (reducedMotionRef.current) return;
+
+    if (typeof document !== "undefined" && document.hidden) {
+      setStatusMessage(t("inspector3d.gyro.paused"));
+      return;
+    }
+
     if (permission === "unsupported") {
       const message = t("inspector3d.gyro.unavailable");
       setGyroFeedback(message);
@@ -545,6 +570,7 @@ export const Card3DInspector = ({
       {
         reducedMotion: reducedMotionRef.current,
         onBackgroundPause: () => {
+          gyroSessionIdRef.current += 1;
           gyroUnsubscribeRef.current = null;
           gyroTiltRef.current = null;
           setGyroActive(false);
@@ -553,6 +579,11 @@ export const Card3DInspector = ({
         },
       },
     );
+
+    if (gyroSessionIdRef.current !== sessionId) {
+      unsubscribe();
+      return;
+    }
 
     gyroUnsubscribeRef.current = unsubscribe;
     setGyroActive(true);

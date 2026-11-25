@@ -350,4 +350,41 @@ describe("subscribeDeviceOrientation", () => {
     expect(hiddenDoc.visibilityListeners.size).toBe(0);
     expect(onBackgroundPause).toHaveBeenCalledTimes(1);
   });
+
+  it("recalibre automatiquement la baseline lors d'une rotation d'écran en cours de session", () => {
+    let angle = 0;
+    const win = createFakeWindow();
+    Object.defineProperty(win, "screen", {
+      get: () => ({ orientation: { angle } }),
+      configurable: true,
+    });
+    const doc = createFakeDocument(false);
+    const received: TiltTarget[] = [];
+
+    const unsubscribe = subscribeDeviceOrientation(
+      (tilt) => {
+        received.push(tilt);
+      },
+      { window: win, document: doc, reducedMotion: false },
+    );
+
+    // Portrait (0°) : baseline capturée puis tilt
+    win.emitOrientation({ beta: 45, gamma: 0 });
+    win.emitOrientation({ beta: 45, gamma: 10 });
+    expect(received).toHaveLength(2);
+    expect(received[1]?.ry).toBeGreaterThan(0);
+
+    // Passage en paysage (90°) : recalibration immédiate à ZERO_TILT sur la nouvelle posture
+    angle = 90;
+    win.emitOrientation({ beta: 10, gamma: -40 });
+    expect(received).toHaveLength(3);
+    expect(received[2]).toEqual(ZERO_TILT);
+
+    // Mouvement relatif à la nouvelle baseline paysage
+    win.emitOrientation({ beta: 22, gamma: -40 });
+    expect(received).toHaveLength(4);
+    expect(received[3]?.ry).toBeGreaterThan(0);
+
+    unsubscribe();
+  });
 });

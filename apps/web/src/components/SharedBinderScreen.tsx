@@ -438,10 +438,10 @@ const SharedCardSheet = ({
                   className={`h-full w-full object-cover ${card.owned ? "" : "saturate-0 opacity-60"}`}
                 />
               ) : (
-                <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted">
+                <span className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted">
                   <ImageOff size={28} aria-hidden="true" />
                   <span className="text-xs">{t("share.detail.imageFallback")}</span>
-                </div>
+                </span>
               )}
             </button>
             <button
@@ -551,6 +551,12 @@ export const SharedBinderView = ({ state, actions }: SharedBinderViewProps) => {
       ? null
       : (allCards.find((card) => card.cardId === state.selectedCardId) ?? null);
   const [localViewer3dCardId, setLocalViewer3dCardId] = useState<string | null>(null);
+
+  // Réinitialise l'état local non contrôlé dès que la carte sélectionnée change ou se ferme.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: réinitialisation volontaire à chaque changement de `state.selectedCardId`
+  useEffect(() => {
+    setLocalViewer3dCardId(null);
+  }, [state.selectedCardId]);
 
   const localViewer3dOpen = selected !== null && localViewer3dCardId === selected.cardId;
   const isViewer3dOpen = (state.viewer3dOpen ?? localViewer3dOpen) && selected !== null;
