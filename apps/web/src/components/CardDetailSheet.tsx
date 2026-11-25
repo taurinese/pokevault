@@ -29,6 +29,7 @@ import {
   addCardCopy,
   adjustCardCopyQuantity,
   type CardDetailBinder,
+  type CardDetailCard,
   type CardDetailPayload,
   type CardDetailPrice,
   computePriceAge,
@@ -49,6 +50,7 @@ import {
   createAlertTarget,
 } from "./AlertFormSheet.tsx";
 import { BottomSheet } from "./BottomSheet.tsx";
+import { Card3DInspector, type Card3DInspectorCard } from "./Card3DInspector.tsx";
 
 // ---------------------------------------------------------------------------
 // Modèle de vue (pur : rendu testable via `renderToStaticMarkup`)
@@ -192,7 +194,7 @@ const selectClass = `min-h-11 w-full rounded-card border border-line bg-surface-
 // Briques
 // ---------------------------------------------------------------------------
 
-/** Grand visuel `high.webp` (ratio 63/88, coins 12px) avec fallback propre `ImageOff`. */
+/** Grand visuel `high.webp` (ratio 63/88, coins 12px) tappable pour ouvrir l'Inspecteur 3D. */
 const DetailImage = ({
   imageUrl,
   name,
@@ -204,11 +206,16 @@ const DetailImage = ({
 }) => {
   const [failed, setFailed] = useState(false);
   const showImage = imageUrl !== undefined && !failed;
+  const zoomDisabled = onOpenViewer3D === undefined;
   return (
     <div className="relative mx-auto w-full max-w-60">
-      <div
+      <button
+        type="button"
         data-testid="card-detail-image"
-        className="relative w-full overflow-hidden border border-line bg-surface-2 shadow-card"
+        aria-label={t("cardDetail.image.zoom", { name })}
+        disabled={zoomDisabled}
+        onClick={() => onOpenViewer3D?.()}
+        className={`relative block w-full overflow-hidden border border-line bg-surface-2 p-0 text-left shadow-card transition-transform enabled:cursor-pointer enabled:active:scale-[0.99] disabled:cursor-default ${focusRing}`}
         style={{ aspectRatio: CardAspectRatio, borderRadius: "12px" }}
       >
         {showImage ? (
@@ -231,12 +238,12 @@ const DetailImage = ({
             </span>
           </div>
         )}
-      </div>
+      </button>
       <button
         type="button"
         data-testid="card-detail-zoom"
         aria-label={t("cardDetail.image.zoom", { name })}
-        disabled={onOpenViewer3D === undefined}
+        disabled={zoomDisabled}
         onClick={() => onOpenViewer3D?.()}
         className={`absolute top-2 right-2 grid min-h-[44px] min-w-[44px] place-items-center rounded-pill border border-line bg-surface-1/90 text-secondary backdrop-blur transition-colors hover:text-primary disabled:opacity-40 ${focusRing}`}
       >
@@ -1033,6 +1040,18 @@ export const applyStepperResultToPayload = (
   };
 };
 
+/** Projette les métadonnées de la fiche carte vers le contrat de `Card3DInspector`. */
+export const toCardDetailInspectorCard = (card: CardDetailCard): Card3DInspectorCard => ({
+  cardId: card.id,
+  name: card.nameFr,
+  setLabel: card.setCode ?? card.setNameFr,
+  numberLabel: `${card.localId}/${card.officialCount}`,
+  rarity: card.rarity,
+  holoEffect: card.holoEffect,
+  types: card.types,
+  imageBaseUrl: card.imageBaseUrl,
+});
+
 /**
  * Bottom Sheet `04 · Fiche Carte` (conteneur) : charge la fiche via
  * `GET /api/cards/$cardId`, applique les mutations (`POST/PATCH/DELETE`) puis
@@ -1062,6 +1081,7 @@ export const CardDetailSheet = ({
   const [formError, setFormError] = useState<AddCopyFormError>(null);
   const [priceRefresh, setPriceRefresh] = useState<PriceRefreshState>({ status: "idle" });
   const [alertTarget, setAlertTarget] = useState<AlertFormTarget | null>(null);
+  const [viewer3dCardId, setViewer3dCardId] = useState<string | null>(null);
   // Horloge du calcul de fraîcheur : rafraîchie toutes les 30 s tant que la fiche est ouverte.
   const [nowMs, setNowMs] = useState(() => Date.now());
   // Identifiant de la carte actuellement chargée : évite d'afficher les données
@@ -1083,6 +1103,7 @@ export const CardDetailSheet = ({
     if (cardId === null) {
       loadedCardIdRef.current = null;
       setAlertTarget(null);
+      setViewer3dCardId(null);
       setPriceRefresh({ status: "idle" });
       setLoad({ status: "loading" });
       setBindersOpen(false);
@@ -1277,6 +1298,12 @@ export const CardDetailSheet = ({
 
   const title = readyPayload?.card.nameFr ?? cardName ?? t("cardDetail.title");
 
+  const viewer3dOpen =
+    cardId !== null &&
+    viewer3dCardId === cardId &&
+    readyPayload !== null &&
+    readyPayload.card.id === cardId;
+
   const actions: CardDetailViewActions = {
     onClose,
     onRetry: () => {
@@ -1284,9 +1311,14 @@ export const CardDetailSheet = ({
       setReloadToken((token) => token + 1);
     },
     onToggleWishlist: handleToggleWishlist,
-    ...(cardId === null || onOpenViewer3D === undefined
+    ...(cardId === null || readyPayload === null
       ? {}
-      : { onOpenViewer3D: () => onOpenViewer3D(cardId) }),
+      : {
+          onOpenViewer3D: () => {
+            setViewer3dCardId(cardId);
+            onOpenViewer3D?.(cardId);
+          },
+        }),
     onToggleBinders: () => setBindersOpen((open) => !open),
     onToggleBinder: (binder) => void handleToggleBinder(binder),
     onToggleAddForm: () => {
@@ -1330,6 +1362,13 @@ export const CardDetailSheet = ({
           setStatusMessage(t("alerts.toast.created", { name: title }));
         }}
       />
+      {readyPayload === null ? null : (
+        <Card3DInspector
+          open={viewer3dOpen}
+          card={toCardDetailInspectorCard(readyPayload.card)}
+          onClose={() => setViewer3dCardId(null)}
+        />
+      )}
     </>
   );
 };

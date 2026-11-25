@@ -13,6 +13,7 @@ import {
   type CardDetailViewState,
   formatPriceAgeLabel,
   isSilentCardReload,
+  toCardDetailInspectorCard,
 } from "./CardDetailSheet.tsx";
 
 // ---------------------------------------------------------------------------
@@ -152,13 +153,45 @@ const renderReady = (state = makeState(), actions = makeActions()): string =>
 // ---------------------------------------------------------------------------
 
 describe("CardDetailView — fiche prête", () => {
-  it("rend le grand visuel high.webp au ratio 63/88 avec coins 12px", () => {
+  it("rend le grand visuel high.webp au ratio 63/88 avec coins 12px et déclencheurs 3D actifs sans bouton imbriqué", () => {
     const html = renderReady();
     expect(html).toContain("https://assets.tcgdex.net/fr/sv/sv03.5/199/high.webp");
     expect(html).toContain(`aspect-ratio:${CardAspectRatio}`);
     expect(html).toContain('data-testid="card-detail-image"');
     expect(html).toContain("border-radius:12px");
     expect(html).toContain('data-testid="card-detail-zoom"');
+
+    // Artwork tappable + bouton zoom frères actifs (non disabled) quand onOpenViewer3D est branché
+    const imageBtn = html.match(/<button[^>]*data-testid="card-detail-image"[^>]*>/)?.[0] ?? "";
+    const zoomBtn = html.match(/<button[^>]*data-testid="card-detail-zoom"[^>]*>/)?.[0] ?? "";
+    expect(imageBtn).not.toBe("");
+    expect(zoomBtn).not.toBe("");
+    expect(imageBtn).not.toMatch(/\sdisabled=""/);
+    expect(zoomBtn).not.toMatch(/\sdisabled=""/);
+
+    // Aucun <button> imbriqué dans un autre <button>
+    expect(html).not.toMatch(/<button\b(?:(?!<\/button>).)*<button\b/s);
+  });
+
+  it("mappe proprement CardDetailCard vers Card3DInspectorCard et branche Card3DInspector dans CardDetailSheet", () => {
+    expect(toCardDetailInspectorCard(payload.card)).toEqual({
+      cardId: CARD_ID,
+      name: "Dracaufeu ex",
+      setLabel: "SV03.5",
+      numberLabel: "199/197",
+      rarity: "Rare secrète",
+      holoEffect: "sir",
+      types: ["Feu"],
+      imageBaseUrl: "https://assets.tcgdex.net/fr/sv/sv03.5/199",
+    });
+
+    expect(toCardDetailInspectorCard({ ...payload.card, setCode: null }).setLabel).toBe(
+      "Prisme Évolutif",
+    );
+
+    const source = readFileSync(new URL("./CardDetailSheet.tsx", import.meta.url), "utf8");
+    expect(source).toContain("<Card3DInspector");
+    expect(source).toContain("toCardDetailInspectorCard(readyPayload.card)");
   });
 
   it("affiche les métadonnées TCGdex (nom, rareté, numéro, extension, illustrateur, types, PV)", () => {

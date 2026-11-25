@@ -1,8 +1,13 @@
 import { CardAspectRatio, type HoloEffect, tcgdexCardImageUrl } from "@pokevault/domain";
-import { ImageOff, RotateCw, Sparkles, X } from "lucide-react";
+import { Compass, ImageOff, RotateCw, Sparkles, X } from "lucide-react";
 import type { ReactNode, PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { type TranslationKey, t } from "../i18n/index.ts";
+import {
+  isDeviceOrientationSupported,
+  requestGyroPermission,
+  subscribeDeviceOrientation,
+} from "../lib/card-3d-gyro.ts";
 import {
   type Card3dCssVars,
   computeCard3dCssVars,
@@ -39,9 +44,11 @@ export interface Card3DInspectorProps {
   readonly onClose: () => void;
   /** Force le mode animation réduite (sinon détecté via `prefers-reduced-motion`). */
   readonly reducedMotion?: boolean | undefined;
-  /** Inclinaison externe optionnelle (ex. gyroscope branché dans T10.2). */
+  /** Force la disponibilité du gyroscope (sinon détectée côté client post-hydratation). */
+  readonly gyroSupported?: boolean | undefined;
+  /** Inclinaison externe optionnelle (conservée pour compatibilité ascendante). */
   readonly externalTilt?: TiltTarget | null | undefined;
-  /** Slot d'actions additionnelles dans la barre de contrôles (ex. bouton Gyroscope). */
+  /** Slot d'actions additionnelles dans la barre de contrôles. */
   readonly controlsSlot?: ReactNode | undefined;
   /** État initial du toggle Holo (défaut : `true`). */
   readonly initialHoloEnabled?: boolean | undefined;
@@ -212,6 +219,7 @@ export const Card3DInspector = ({
   card,
   onClose,
   reducedMotion,
+  gyroSupported,
   externalTilt = null,
   controlsSlot,
   initialHoloEnabled = true,
@@ -233,8 +241,13 @@ export const Card3DInspector = ({
   const [failedUrl, setFailedUrl] = useState<string | undefined>(undefined);
   const [statusMessage, setStatusMessage] = useState("");
   const [systemReducedMotion, setSystemReducedMotion] = useState(false);
+  const [detectedGyroSupported, setDetectedGyroSupported] = useState(false);
+  const [gyroActive, setGyroActive] = useState(false);
+  const [gyroRequesting, setGyroRequesting] = useState(false);
+  const [gyroFeedback, setGyroFeedback] = useState<string | null>(null);
 
   const effectiveReducedMotion = reducedMotion ?? systemReducedMotion;
+  const effectiveGyroSupported = gyroSupported ?? detectedGyroSupported;
   const preset = resolveHoloPreset(card.holoEffect, card.rarity);
   const haloTone = resolveCardHaloTone(card.types, preset);
   const imageUrl = tcgdexCardImageUrl(card.imageBaseUrl, "high");
@@ -244,6 +257,9 @@ export const Card3DInspector = ({
   const springRef = useRef<SpringState>(INITIAL_SPRING_STATE);
   const dragTargetRef = useRef<TiltTarget>(ZERO_TILT);
   const externalTiltRef = useRef<TiltTarget | null>(externalTilt);
+  const gyroTiltRef = useRef<TiltTarget | null>(null);
+  const gyroUnsubscribeRef = useRef<(() => void) | null>(null);
+  const gyroSessionIdRef = useRef(0);
   const draggingRef = useRef(false);
   const activePointerIdRef = useRef<number | null>(null);
   const pointerDownRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
@@ -252,6 +268,12 @@ export const Card3DInspector = ({
   const lastFrameTimeRef = useRef<number | null>(null);
   const holoEnabledRef = useRef(holoEnabled);
   const reducedMotionRef = useRef(effectiveReducedMotion);
+
+  // Détection client post-hydratation du gyroscope (zéro hydration mismatch SSR).
+  useEffect(() => {
+    if (gyroSupported !== undefined) return;
+    setDetectedGyroSupported(isDeviceOrientationSupported());
+  }, [gyroSupported]);
 
   // Détection OS de `prefers-reduced-motion: reduce` quand la prop n'est pas forcée.
   useEffect(() => {
@@ -272,6 +294,7 @@ export const Card3DInspector = ({
     setFlipped(initialFlipped);
     setFailedUrl(undefined);
     setStatusMessage("");
+    setGyroFeedback(null);
   }, [activeCardKey, initialHoloEnabled, initialFlipped]);
 
   // Une image en erreur avant hydratation n'a pas émis `onError`.
@@ -288,6 +311,20 @@ export const Card3DInspector = ({
     }
     rafIdRef.current = null;
     lastFrameTimeRef.current = null;
+  }, []);
+
+  const stopGyro = useCallback((announce = false) => {
+    gyroSessionIdRef.current += 1;
+    if (gyroUnsubscribeRef.current !== null) {
+      gyroUnsubscribeRef.current();
+      gyroUnsubscribeRef.current = null;
+    }
+    gyroTiltRef.current = null;
+    setGyroActive(false);
+    setGyroRequesting(false);
+    if (announce) {
+      setStatusMessage(t("inspector3d.gyro.inactive"));
+    }
   }, []);
 
   const syncDomVars = useCallback((rx: number, ry: number, interacting: boolean) => {
@@ -316,12 +353,13 @@ export const Card3DInspector = ({
 
       const activeTarget = draggingRef.current
         ? dragTargetRef.current
-        : (externalTiltRef.current ?? ZERO_TILT);
+        : (externalTiltRef.current ?? gyroTiltRef.current ?? ZERO_TILT);
 
       const next = stepSpringState(springRef.current, activeTarget, dtSeconds);
       springRef.current = next;
 
-      const interacting = draggingRef.current || externalTiltRef.current !== null;
+      const interacting =
+        draggingRef.current || externalTiltRef.current !== null || gyroTiltRef.current !== null;
       syncDomVars(next.rx, next.ry, interacting);
 
       if (!next.isAtRest) {
@@ -335,9 +373,10 @@ export const Card3DInspector = ({
     rafIdRef.current = requestAnimationFrame(tick);
   }, [stopAnimationLoop, syncDomVars]);
 
-  // Ouverture / fermeture modale `<dialog>` top-layer + verrouillage scroll + nettoyage rAF.
+  // Ouverture / fermeture modale `<dialog>` top-layer + verrouillage scroll + nettoyage rAF & gyro.
   useEffect(() => {
     if (!open) {
+      stopGyro(false);
       stopAnimationLoop();
       springRef.current = INITIAL_SPRING_STATE;
       draggingRef.current = false;
@@ -375,6 +414,7 @@ export const Card3DInspector = ({
       if (shouldAttachKeyFallback) {
         window.removeEventListener("keydown", onKeyDown);
       }
+      stopGyro(false);
       stopAnimationLoop();
       springRef.current = INITIAL_SPRING_STATE;
       draggingRef.current = false;
@@ -389,7 +429,7 @@ export const Card3DInspector = ({
         previouslyFocused.focus();
       }
     };
-  }, [open, stopAnimationLoop, syncDomVars]);
+  }, [open, stopAnimationLoop, stopGyro, syncDomVars]);
 
   // Synchronise d'abord `holoEnabledRef` et `reducedMotionRef` avant l'effet `externalTilt`.
   useEffect(() => {
@@ -397,6 +437,7 @@ export const Card3DInspector = ({
     reducedMotionRef.current = effectiveReducedMotion;
     if (!open) return;
     if (effectiveReducedMotion) {
+      stopGyro(false);
       stopAnimationLoop();
       springRef.current = INITIAL_SPRING_STATE;
       syncDomVars(0, 0, false);
@@ -405,9 +446,9 @@ export const Card3DInspector = ({
     syncDomVars(
       springRef.current.rx,
       springRef.current.ry,
-      draggingRef.current || externalTiltRef.current !== null,
+      draggingRef.current || externalTiltRef.current !== null || gyroTiltRef.current !== null,
     );
-  }, [open, holoEnabled, effectiveReducedMotion, stopAnimationLoop, syncDomVars]);
+  }, [open, holoEnabled, effectiveReducedMotion, stopAnimationLoop, stopGyro, syncDomVars]);
 
   // Réagit aux changements d'inclinaison externe (gyroscope T10.2) sans re-render par frame.
   useEffect(() => {
@@ -458,6 +499,64 @@ export const Card3DInspector = ({
     const next = !holoEnabled;
     setHoloEnabled(next);
     setStatusMessage(t(next ? "inspector3d.status.holoOn" : "inspector3d.status.holoOff"));
+  };
+
+  const handleToggleGyro = async () => {
+    if (effectiveReducedMotion || !effectiveGyroSupported || gyroRequesting) return;
+
+    if (gyroActive) {
+      stopGyro(true);
+      setGyroFeedback(null);
+      startAnimationLoop();
+      return;
+    }
+
+    const sessionId = gyroSessionIdRef.current + 1;
+    gyroSessionIdRef.current = sessionId;
+    setGyroRequesting(true);
+    setGyroFeedback(null);
+
+    const permission = await requestGyroPermission();
+    if (gyroSessionIdRef.current !== sessionId) return;
+    setGyroRequesting(false);
+
+    if (permission === "unsupported") {
+      const message = t("inspector3d.gyro.unavailable");
+      setGyroFeedback(message);
+      setStatusMessage(message);
+      return;
+    }
+
+    if (permission === "denied") {
+      const message = t("inspector3d.gyro.denied");
+      setGyroFeedback(message);
+      setStatusMessage(message);
+      return;
+    }
+
+    // Abonnement impératif 60 Hz : met à jour uniquement `gyroTiltRef` (zéro re-render React par frame).
+    const unsubscribe = subscribeDeviceOrientation(
+      (tilt) => {
+        gyroTiltRef.current = tilt;
+        if (!draggingRef.current && !reducedMotionRef.current) {
+          startAnimationLoop();
+        }
+      },
+      {
+        reducedMotion: reducedMotionRef.current,
+        onBackgroundPause: () => {
+          gyroUnsubscribeRef.current = null;
+          gyroTiltRef.current = null;
+          setGyroActive(false);
+          setStatusMessage(t("inspector3d.gyro.paused"));
+          startAnimationLoop();
+        },
+      },
+    );
+
+    gyroUnsubscribeRef.current = unsubscribe;
+    setGyroActive(true);
+    setStatusMessage(t("inspector3d.gyro.active"));
   };
 
   const handleStagePointerDown = (event: ReactPointerEvent<HTMLElement>) => {
@@ -560,6 +659,12 @@ export const Card3DInspector = ({
   const subtitleParts = [card.setLabel, card.numberLabel].filter(
     (part): part is string => typeof part === "string" && part.trim() !== "",
   );
+  const gyroDisabled = !effectiveGyroSupported || effectiveReducedMotion || gyroRequesting;
+  const gyroAriaLabel = effectiveReducedMotion
+    ? t("inspector3d.gyro.reducedMotion")
+    : !effectiveGyroSupported
+      ? t("inspector3d.gyro.unavailable")
+      : t(gyroActive ? "inspector3d.gyro.disable" : "inspector3d.gyro.enable");
 
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: fermeture clavier assurée par Escape (onCancel/keydown) et le bouton Fermer
@@ -707,10 +812,16 @@ export const Card3DInspector = ({
           </section>
         </div>
 
-        {/* Barre inférieure : indice d'interaction + contrôles Holo / Retourner / slot Gyro */}
+        {/* Barre inférieure : indice d'interaction + contrôles Holo / Retourner / Gyro */}
         <footer className="relative z-10 mx-auto flex w-full max-w-lg flex-col items-center gap-3">
           <p data-testid="card3d-hint" className="pv-inspector-muted text-center text-xs">
-            {t(effectiveReducedMotion ? "inspector3d.hint.reducedMotion" : "inspector3d.hint.drag")}
+            {t(
+              effectiveReducedMotion
+                ? "inspector3d.hint.reducedMotion"
+                : gyroActive
+                  ? "inspector3d.gyro.hint"
+                  : "inspector3d.hint.drag",
+            )}
           </p>
 
           <div
@@ -728,7 +839,7 @@ export const Card3DInspector = ({
               )}
               data-active={holoEnabled ? "true" : "false"}
               onClick={handleToggleHolo}
-              className={`pv-inspector-pill inline-flex items-center justify-center gap-2 rounded-pill px-4 text-sm font-semibold transition-colors ${focusRing}`}
+              className={`pv-inspector-pill inline-flex min-h-[44px] items-center justify-center gap-2 rounded-pill px-4 text-sm font-semibold transition-colors ${focusRing}`}
               style={{ minWidth: "var(--touch-target-min)", minHeight: "var(--touch-target-min)" }}
             >
               <Sparkles size={16} aria-hidden="true" />
@@ -744,15 +855,39 @@ export const Card3DInspector = ({
               )}
               data-active={flipped ? "true" : "false"}
               onClick={handleToggleFlip}
-              className={`pv-inspector-pill inline-flex items-center justify-center gap-2 rounded-pill px-4 text-sm font-semibold transition-colors ${focusRing}`}
+              className={`pv-inspector-pill inline-flex min-h-[44px] items-center justify-center gap-2 rounded-pill px-4 text-sm font-semibold transition-colors ${focusRing}`}
               style={{ minWidth: "var(--touch-target-min)", minHeight: "var(--touch-target-min)" }}
             >
               <RotateCw size={16} aria-hidden="true" />
               <span aria-hidden="true">{t("inspector3d.action.flip")}</span>
             </button>
 
+            <button
+              type="button"
+              data-testid="card3d-toggle-gyro"
+              aria-pressed={gyroActive}
+              aria-label={gyroAriaLabel}
+              data-active={gyroActive ? "true" : "false"}
+              disabled={gyroDisabled}
+              onClick={() => void handleToggleGyro()}
+              className={`pv-inspector-pill inline-flex min-h-[44px] items-center justify-center gap-2 rounded-pill px-4 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${focusRing}`}
+              style={{ minWidth: "var(--touch-target-min)", minHeight: "var(--touch-target-min)" }}
+            >
+              <Compass size={16} aria-hidden="true" />
+              <span aria-hidden="true">{t("inspector3d.gyro.label")}</span>
+            </button>
+
             {controlsSlot ?? null}
           </div>
+
+          {gyroFeedback === null ? null : (
+            <p
+              data-testid="card3d-gyro-feedback"
+              className="pv-inspector-secondary text-center text-xs"
+            >
+              {gyroFeedback}
+            </p>
+          )}
 
           <output aria-live="polite" data-testid="card3d-live-status" className="sr-only">
             {statusMessage}

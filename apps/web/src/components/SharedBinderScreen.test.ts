@@ -19,6 +19,7 @@ import {
   SharedBinderView,
   type SharedBinderViewActions,
   type SharedBinderViewState,
+  toSharedInspectorCard,
 } from "./SharedBinderScreen.tsx";
 
 const TOKEN = "T".repeat(43);
@@ -260,9 +261,46 @@ describe("SharedBinderView · Bottom Sheet lecture seule d'une carte", () => {
     expect(html).toContain("Anglais (EN) · Holo");
     expect(html).toContain("×2");
     expect(html).toContain("×1");
-    // Emplacement prêt pour l'Inspecteur 3D Holo (M5) : l'effet est exposé.
-    expect(html).toMatch(/data-testid="shared-card-holo-slot"[^>]*data-holo-effect="holo"/);
+    // Emplacement prêt pour l'Inspecteur 3D Holo (M5) : l'effet est exposé et tappable sans bouton imbriqué.
+    expect(html).toMatch(
+      /<button[^>]*data-testid="shared-card-holo-slot"[^>]*data-holo-effect="holo"[^>]*>/,
+    );
+    const artworkBtn =
+      html.match(/<button[^>]*data-testid="shared-card-holo-slot"[^>]*>/)?.[0] ?? "";
+    const zoomBtn = html.match(/<button[^>]*data-testid="shared-card-zoom"[^>]*>/)?.[0] ?? "";
+    expect(artworkBtn).not.toMatch(/\sdisabled=""/);
+    expect(zoomBtn).not.toBe("");
+    expect(zoomBtn).not.toMatch(/\sdisabled=""/);
+    expect(zoomBtn).toContain("min-h-[44px] min-w-[44px]");
+    expect(zoomBtn).toContain('aria-label="Ouvrir l&#x27;inspecteur 3D de Carte 2"');
+    // Aucun <button> imbriqué dans un autre <button>
+    expect(html).not.toMatch(/<button\b(?:(?!<\/button>).)*<button\b/s);
     expect(html).toContain(`aspect-ratio:${CardAspectRatio}`);
+  });
+
+  it("opens the read-only Card3DInspector on 2nd tap without exposing any private field", async () => {
+    const card2 = cards[1];
+    expect(card2).toBeDefined();
+    if (card2 !== undefined) {
+      expect(toSharedInspectorCard(card2)).toEqual({
+        cardId: "sv08.5-2",
+        name: "Carte 2",
+        setLabel: "SV08.5",
+        numberLabel: "2",
+        rarity: "Commune",
+        holoEffect: "holo",
+        types: null,
+        imageBaseUrl: "https://assets.tcgdex.net/fr/sv/sv08.5/2",
+      });
+    }
+
+    const html = await render({ ...ready(), selectedCardId: "sv08.5-2", viewer3dOpen: true });
+    expect(html).toContain('data-testid="card3d-inspector"');
+    expect(html).toContain('data-holo-preset="holo"');
+    expect(html).toContain('data-testid="card3d-toggle-gyro"');
+    expect(html).not.toContain("<form");
+    expect(html).not.toContain("<input");
+    expect(html).not.toMatch(/Ajouter|Modifier|Supprimer|Éditer|Acheter|Wishlist|wishlist|@/);
   });
 
   it("hides quantities in the sheet when showQuantities is false", async () => {
@@ -299,11 +337,11 @@ describe("SharedBinderView · lecture seule stricte, zéro donnée privée", () 
     expect(html).not.toContain("badge-wishlist");
     expect(html).not.toMatch(/Ajouter|Modifier|Supprimer|Éditer|Acheter|Wishlist|wishlist|@/);
     expect(html).not.toMatch(/purchase|user_id|userId|email/i);
-    // Seuls des boutons de consultation : filtres, thème, tuiles, fermeture de la feuille.
+    // Seuls des boutons de consultation : filtres, thème, tuiles, inspection 3D lecture seule, fermeture de la feuille.
     const labels = [...html.matchAll(/<button[^>]*>/g)].map((match) => match[0]);
     for (const button of labels) {
       expect(button).toMatch(
-        /data-testid="shared-(filter-[a-z]+|card)"|aria-pressed|aria-label="Fermer la feuille"/,
+        /data-testid="shared-(filter-[a-z]+|card|card-holo-slot|card-zoom)"|aria-pressed|aria-label="Fermer la feuille"/,
       );
     }
   });

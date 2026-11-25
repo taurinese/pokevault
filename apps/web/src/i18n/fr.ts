@@ -800,6 +800,16 @@ export const fr = {
   "inspector3d.status.flippedFront": "Recto de la carte affiché",
   "inspector3d.status.holoOn": "Effet holographique activé",
   "inspector3d.status.holoOff": "Effet holographique désactivé",
+  "inspector3d.gyro.label": "Gyro",
+  "inspector3d.gyro.enable": "Activer le gyroscope pour incliner la carte",
+  "inspector3d.gyro.disable": "Désactiver le gyroscope",
+  "inspector3d.gyro.unavailable": "Gyroscope indisponible sur cet appareil",
+  "inspector3d.gyro.reducedMotion": "Gyroscope désactivé avec l'animation réduite",
+  "inspector3d.gyro.denied": "Autorisation du gyroscope refusée par l'appareil",
+  "inspector3d.gyro.active": "Gyroscope activé · Inclinez l'appareil pour faire briller la carte",
+  "inspector3d.gyro.inactive": "Gyroscope désactivé",
+  "inspector3d.gyro.paused": "Gyroscope mis en pause en arrière-plan",
+  "inspector3d.gyro.hint": "Inclinez l'appareil ou glissez · Double-tap pour retourner",
 
   // Écrans 06A–06B · Wishlist (/wishlist)
   "wishlist.title": "Wishlist — PokéVault",
@@ -1038,6 +1048,7 @@ export const fr = {
   "share.detail.owned": "Dans la collection",
   "share.detail.missing": "Pas dans la collection",
   "share.detail.quantitiesHidden": "Les quantités sont masquées par le propriétaire.",
+  "share.detail.zoom": "Ouvrir l'inspecteur 3D de {name}",
   "share.sheet.title": "Partage en lecture seule",
   "share.sheet.publicName.label": "Nom visible publiquement",
   "share.sheet.privacy":
