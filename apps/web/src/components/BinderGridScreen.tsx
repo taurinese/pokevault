@@ -36,6 +36,7 @@ import {
 } from "../lib/binder-grid-client.ts";
 import { formatPriceCents, tilePriceCents } from "../lib/card-detail-client.ts";
 import { CardTile, cardTilePriceLabel } from "./CardTile.tsx";
+import { ShareLinkSheet } from "./ShareLinkSheet.tsx";
 
 // ---------------------------------------------------------------------------
 // Modèle de vue (pur : rendu testable via `renderToStaticMarkup`)
@@ -808,7 +809,11 @@ export interface BinderGridScreenProps {
   readonly reloadToken?: number | undefined;
   /** Hook prêt pour T3.4 (réglages du classeur). */
   readonly onOpenSettings?: (() => void) | undefined;
-  /** Hook prêt pour M4 (partage lecture seule). */
+  /**
+   * Notification (optionnelle) à l'ouverture de la feuille de partage lecture seule : la feuille
+   * `ShareLinkSheet` (T9.2) est pilotée par l'écran lui-même, le bouton Partager est donc actif
+   * dès que le classeur est chargé.
+   */
   readonly onOpenShare?: (() => void) | undefined;
 }
 
@@ -834,6 +839,8 @@ export const BinderGridScreen = ({
   const [advanced, setAdvanced] = useState<BinderGridAdvancedFilters>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
+  // Feuille « Partage lecture seule » (T9.2) : ouverte depuis le bouton Partager du header.
+  const [shareOpen, setShareOpen] = useState(false);
   // Horloge du calcul de fraîcheur des prix : mise à jour à chaque chargement puis chaque minute.
   const [nowMs, setNowMs] = useState(() => Date.now());
   // Identifiant du classeur actuellement chargé : les rechargements suivants
@@ -897,13 +904,26 @@ export const BinderGridScreen = ({
       setRetryToken((token) => token + 1);
     },
     ...(onOpenSettings === undefined ? {} : { onOpenSettings }),
-    ...(onOpenShare === undefined ? {} : { onOpenShare }),
+    onOpenShare: () => {
+      setShareOpen(true);
+      onOpenShare?.();
+    },
   };
 
   return (
-    <BinderGridView
-      state={{ load, quickFilter, advanced, advancedOpen, nowMs }}
-      actions={actions}
-    />
+    <>
+      <BinderGridView
+        state={{ load, quickFilter, advanced, advancedOpen, nowMs }}
+        actions={actions}
+      />
+      {load.status === "ready" && load.payload.binder !== null ? (
+        <ShareLinkSheet
+          open={shareOpen}
+          binderId={binderId}
+          binderTitle={load.payload.binder.title}
+          onClose={() => setShareOpen(false)}
+        />
+      ) : null}
+    </>
   );
 };
