@@ -130,6 +130,10 @@ describe("Card3DInspector", () => {
     const flipBtn = html.match(/<button[^>]*data-testid="card3d-toggle-flip"[^>]*>/)?.[0] ?? "";
     expect(flipBtn).toContain('aria-pressed="true"');
     expect(flipBtn).toContain('data-active="true"');
+    const frontDiv = html.match(/<div[^>]*data-testid="card3d-front"[^>]*>/)?.[0] ?? "";
+    const backDiv = html.match(/<div[^>]*data-testid="card3d-back"[^>]*>/)?.[0] ?? "";
+    expect(frontDiv).toContain('aria-hidden="true"');
+    expect(backDiv).toContain('aria-hidden="false"');
   });
 
   it("respecte reducedMotion = true (attributs + indice adapté)", () => {
@@ -209,8 +213,18 @@ describe("Card3DInspector — hygiène statique & CSS", () => {
     expect(cssSource).toContain("rotateY(180deg)");
     expect(cssSource).toContain("@media (prefers-reduced-motion: reduce)");
     expect(cssSource).toContain('data-holo-enabled="false"');
+    // Ne pas aplatir `preserve-3d` avec `filter: drop-shadow` sur `.pv-card3d-tilt`.
+    expect(cssSource).not.toContain("filter: drop-shadow");
+    // Spécificité suffisante pour `prefers-reduced-motion` tout en préservant `preset="none"`.
+    expect(cssSource).toContain('[data-holo-preset]:not([data-holo-preset="none"])');
     for (const preset of HOLO_PRESETS) {
       expect(cssSource).toContain(`data-holo-preset="${preset}"`);
     }
+  });
+
+  it("gère onLostPointerCapture et arrête la boucle rAF au repos sans boucle infinie", () => {
+    expect(componentSource).toContain("onLostPointerCapture={handleStagePointerCancel}");
+    expect(componentSource).toContain("if (!next.isAtRest)");
+    expect(componentSource).not.toContain("if (!next.isAtRest || draggingRef.current)");
   });
 });

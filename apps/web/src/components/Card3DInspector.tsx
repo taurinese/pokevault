@@ -67,8 +67,7 @@ const DOUBLE_TAP_MAX_DELAY_MS = 320;
 const DOUBLE_TAP_MAX_DISTANCE_PX = 28;
 const DRAG_MOVE_THRESHOLD_PX = 6;
 
-const focusRing =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold";
+const focusRing = "pv-inspector-focus";
 
 const applyCssVarsToElement = (element: HTMLElement | null, vars: Card3dCssVars): void => {
   if (element === null) return;
@@ -271,6 +270,7 @@ export const Card3DInspector = ({
     if (activeCardKey === null) return;
     setHoloEnabled(initialHoloEnabled);
     setFlipped(initialFlipped);
+    setFailedUrl(undefined);
     setStatusMessage("");
   }, [activeCardKey, initialHoloEnabled, initialFlipped]);
 
@@ -324,7 +324,7 @@ export const Card3DInspector = ({
       const interacting = draggingRef.current || externalTiltRef.current !== null;
       syncDomVars(next.rx, next.ry, interacting);
 
-      if (!next.isAtRest || draggingRef.current) {
+      if (!next.isAtRest) {
         rafIdRef.current = requestAnimationFrame(tick);
       } else {
         rafIdRef.current = null;
@@ -342,6 +342,8 @@ export const Card3DInspector = ({
       springRef.current = INITIAL_SPRING_STATE;
       draggingRef.current = false;
       activePointerIdRef.current = null;
+      pointerDownRef.current = null;
+      lastTapRef.current = null;
       return;
     }
 
@@ -354,23 +356,31 @@ export const Card3DInspector = ({
       dialog.showModal();
     }
 
-    // Repli Escape explicite si le navigateur ou le contexte n'utilise pas `showModal()`.
+    // Repli Escape uniquement si le `<dialog>` n'est pas ouvert via `showModal()`
+    // (sinon l'événement natif `onCancel` du dialog gère déjà Escape sans double appel).
+    const shouldAttachKeyFallback = dialog === null || !dialog.open;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         onCloseRef.current();
       }
     };
-    window.addEventListener("keydown", onKeyDown);
+    if (shouldAttachKeyFallback) {
+      window.addEventListener("keydown", onKeyDown);
+    }
 
     syncDomVars(0, 0, false);
 
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
+      if (shouldAttachKeyFallback) {
+        window.removeEventListener("keydown", onKeyDown);
+      }
       stopAnimationLoop();
       springRef.current = INITIAL_SPRING_STATE;
       draggingRef.current = false;
       activePointerIdRef.current = null;
+      pointerDownRef.current = null;
+      lastTapRef.current = null;
       document.body.style.overflow = previousOverflow;
       if (dialog?.open) {
         dialog.close();
@@ -380,6 +390,24 @@ export const Card3DInspector = ({
       }
     };
   }, [open, stopAnimationLoop, syncDomVars]);
+
+  // Synchronise d'abord `holoEnabledRef` et `reducedMotionRef` avant l'effet `externalTilt`.
+  useEffect(() => {
+    holoEnabledRef.current = holoEnabled;
+    reducedMotionRef.current = effectiveReducedMotion;
+    if (!open) return;
+    if (effectiveReducedMotion) {
+      stopAnimationLoop();
+      springRef.current = INITIAL_SPRING_STATE;
+      syncDomVars(0, 0, false);
+      return;
+    }
+    syncDomVars(
+      springRef.current.rx,
+      springRef.current.ry,
+      draggingRef.current || externalTiltRef.current !== null,
+    );
+  }, [open, holoEnabled, effectiveReducedMotion, stopAnimationLoop, syncDomVars]);
 
   // Réagit aux changements d'inclinaison externe (gyroscope T10.2) sans re-render par frame.
   useEffect(() => {
@@ -403,24 +431,6 @@ export const Card3DInspector = ({
     syncDomVars,
   ]);
 
-  // Met à jour immédiatement les variables CSS quand `holoEnabled` ou `reducedMotion` change.
-  useEffect(() => {
-    holoEnabledRef.current = holoEnabled;
-    reducedMotionRef.current = effectiveReducedMotion;
-    if (!open) return;
-    if (effectiveReducedMotion) {
-      stopAnimationLoop();
-      springRef.current = INITIAL_SPRING_STATE;
-      syncDomVars(0, 0, false);
-      return;
-    }
-    syncDomVars(
-      springRef.current.rx,
-      springRef.current.ry,
-      draggingRef.current || externalTiltRef.current !== null,
-    );
-  }, [open, holoEnabled, effectiveReducedMotion, stopAnimationLoop, syncDomVars]);
-
   if (!open) return null;
 
   const updateDragTargetFromPointer = (clientX: number, clientY: number) => {
@@ -437,28 +447,31 @@ export const Card3DInspector = ({
   };
 
   const handleToggleFlip = () => {
-    setFlipped((prev) => {
-      const next = !prev;
-      setStatusMessage(
-        t(next ? "inspector3d.status.flippedBack" : "inspector3d.status.flippedFront"),
-      );
-      return next;
-    });
+    const next = !flipped;
+    setFlipped(next);
+    setStatusMessage(
+      t(next ? "inspector3d.status.flippedBack" : "inspector3d.status.flippedFront"),
+    );
   };
 
   const handleToggleHolo = () => {
-    setHoloEnabled((prev) => {
-      const next = !prev;
-      setStatusMessage(t(next ? "inspector3d.status.holoOn" : "inspector3d.status.holoOff"));
-      return next;
-    });
+    const next = !holoEnabled;
+    setHoloEnabled(next);
+    setStatusMessage(t(next ? "inspector3d.status.holoOn" : "inspector3d.status.holoOff"));
   };
 
   const handleStagePointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
     if (activePointerIdRef.current !== null) return;
     activePointerIdRef.current = event.pointerId;
     pointerDownRef.current = { x: event.clientX, y: event.clientY, moved: false };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    if (typeof event.currentTarget.setPointerCapture === "function") {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointeur déjà relâché ou synthétique.
+      }
+    }
 
     if (!effectiveReducedMotion) {
       draggingRef.current = true;
@@ -488,8 +501,17 @@ export const Card3DInspector = ({
     activePointerIdRef.current = null;
     pointerDownRef.current = null;
 
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    if (
+      typeof event.currentTarget.hasPointerCapture === "function" &&
+      typeof event.currentTarget.releasePointerCapture === "function"
+    ) {
+      try {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+      } catch {
+        // Capture déjà libérée.
+      }
     }
 
     if (draggingRef.current) {
@@ -499,7 +521,11 @@ export const Card3DInspector = ({
     }
 
     // Détection unifiée du double-tap (tactile + souris) sans conflit avec le drag.
-    if (down !== null && !down.moved) {
+    const moved =
+      down === null ||
+      down.moved ||
+      Math.hypot(event.clientX - down.x, event.clientY - down.y) > DRAG_MOVE_THRESHOLD_PX;
+    if (!moved) {
       const now = Date.now();
       const previous = lastTapRef.current;
       if (
@@ -522,6 +548,7 @@ export const Card3DInspector = ({
     if (activePointerIdRef.current !== event.pointerId) return;
     activePointerIdRef.current = null;
     pointerDownRef.current = null;
+    lastTapRef.current = null;
     if (draggingRef.current) {
       draggingRef.current = false;
       dragTargetRef.current = ZERO_TILT;
@@ -610,7 +637,7 @@ export const Card3DInspector = ({
         {/* Scène 3D centrale (ratio strict 63/88) */}
         <div
           data-testid="card3d-center"
-          className="relative z-10 flex flex-1 items-center justify-center py-4"
+          className="relative z-10 flex min-h-0 flex-1 items-center justify-center py-4"
         >
           <section
             ref={stageRef}
@@ -620,7 +647,8 @@ export const Card3DInspector = ({
             onPointerMove={handleStagePointerMove}
             onPointerUp={handleStagePointerUp}
             onPointerCancel={handleStagePointerCancel}
-            className="pv-card3d-stage w-full max-w-[300px] sm:max-w-[340px]"
+            onLostPointerCapture={handleStagePointerCancel}
+            className="pv-card3d-stage w-full"
           >
             <div
               ref={tiltRef}
@@ -634,7 +662,11 @@ export const Card3DInspector = ({
             >
               <div className="pv-card3d-flipper">
                 {/* Face recto : visuel haute résolution + couches foil/glare */}
-                <div className="pv-card3d-face pv-card3d-face--front" data-testid="card3d-front">
+                <div
+                  className="pv-card3d-face pv-card3d-face--front"
+                  data-testid="card3d-front"
+                  aria-hidden={flipped}
+                >
                   {showImage ? (
                     <img
                       ref={imageRef}
@@ -662,7 +694,11 @@ export const Card3DInspector = ({
                 </div>
 
                 {/* Face verso : dos Pokémon vectoriel stylisé + reflet léger */}
-                <div className="pv-card3d-face pv-card3d-face--back" data-testid="card3d-back">
+                <div
+                  className="pv-card3d-face pv-card3d-face--back"
+                  data-testid="card3d-back"
+                  aria-hidden={!flipped}
+                >
                   <PokemonCardBackSvg gradientId={gradientId} />
                   <div aria-hidden="true" className="pv-card3d-glare" />
                 </div>
