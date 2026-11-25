@@ -10,13 +10,14 @@ import {
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { FloatingPillNavbar } from "../components/FloatingPillNavbar.tsx";
+import { PwaStatusBar } from "../components/PwaStatusBar.tsx";
 import { HTML_LANG, t } from "../i18n/index.ts";
 import {
   ALERTS_UNREAD_EVENT,
   fetchUnreadAlertsCount,
   readUnreadEventDetail,
 } from "../lib/alerts-client.ts";
-import { THEME_INIT_SCRIPT } from "../lib/theme.ts";
+import { subscribeSystemThemeColor, THEME_COLOR_DARK, THEME_INIT_SCRIPT } from "../lib/theme.ts";
 import appCss from "../styles/app.css?url";
 
 const NotFound = () => (
@@ -34,10 +35,10 @@ const NotFound = () => (
 const RootDocument = ({ children }: { readonly children: ReactNode }) => (
   <html lang={HTML_LANG} suppressHydrationWarning>
     <head>
-      {/* Script bloquant avant le premier rendu : pose `data-theme` (zéro FOUC, toutes routes). */}
+      <HeadContent />
+      {/* Script bloquant avant le premier rendu : pose `data-theme` et synchronise `<meta name="theme-color">` (zéro FOUC). */}
       {/* biome-ignore lint/security/noDangerouslySetInnerHtml: constante statique maîtrisée (aucune entrée utilisateur) */}
       <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
-      <HeadContent />
     </head>
     <body>
       {children}
@@ -86,8 +87,12 @@ const RootLayout = () => {
     select: (matches) => matches.some((match) => match.staticData.hideNavbar === true),
   });
   const unreadCount = useUnreadAlertsCount(!hideNavbar);
+
+  useEffect(() => subscribeSystemThemeColor(), []);
+
   return (
     <>
+      <PwaStatusBar />
       <Outlet />
       {hideNavbar ? null : <FloatingPillNavbar unreadAlertsCount={unreadCount} />}
     </>
@@ -99,9 +104,19 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
+      { name: "theme-color", content: THEME_COLOR_DARK },
+      { name: "mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" },
+      { name: "apple-mobile-web-app-title", content: "PokéVault" },
       { title: t("home.title") },
     ],
-    links: [{ rel: "stylesheet", href: appCss }],
+    links: [
+      { rel: "stylesheet", href: appCss },
+      { rel: "manifest", href: "/manifest.webmanifest" },
+      { rel: "apple-touch-icon", sizes: "180x180", href: "/icons/apple-touch-icon.png" },
+      { rel: "icon", type: "image/png", sizes: "192x192", href: "/icons/icon-192.png" },
+    ],
   }),
   notFoundComponent: NotFound,
   shellComponent: RootDocument,

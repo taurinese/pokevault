@@ -1081,6 +1081,18 @@ export const fr = {
   "share.account.row.createdOn": "Créé le {date}",
   "share.account.row.quantitiesOn": "Quantités visibles",
   "share.account.row.quantitiesOff": "Quantités masquées",
+
+  // PWA · Hors-ligne, mise à jour Service Worker & micro-guide iOS Safari
+  "pwa.offline.banner": "Mode hors-ligne · prix figés",
+  "pwa.update.available": "Nouvelle version disponible",
+  "pwa.update.reload": "Recharger",
+  "pwa.update.reloadAria": "Recharger l'application pour appliquer la nouvelle version",
+  "pwa.iosGuide.title": "Notifications Push sur iOS",
+  "pwa.iosGuide.description":
+    "Sur iOS Safari, installez PokéVault sur votre écran d'accueil pour recevoir les alertes Push :",
+  "pwa.iosGuide.step1": "Touchez le bouton « Partager » dans la barre Safari",
+  "pwa.iosGuide.step2": "Sélectionnez « Sur l'écran d'accueil » puis « Ajouter »",
+  "pwa.iosGuide.step3": "Ouvrez PokéVault depuis l'icône sur l'écran d'accueil",
 } as const;
 
 export type TranslationKey = keyof typeof fr;

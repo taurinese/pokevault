@@ -167,10 +167,23 @@ describe("AccountScreen (09B)", () => {
     expect(html).toContain("text-danger");
   });
 
+  it("shows the iOS Safari PWA install guide in notifications when requested", async () => {
+    const hidden = await render({ user: googleOnly });
+    expect(hidden).not.toContain('data-testid="ios-pwa-install-guide"');
+
+    const shown = await render({ user: googleOnly, showIosPwaGuide: true });
+    const decoded = shown.replaceAll("&#x27;", "'");
+    expect(shown).toContain('data-testid="ios-pwa-install-guide"');
+    expect(decoded).toContain(fr["pwa.iosGuide.title"]);
+    expect(decoded).toContain(fr["pwa.iosGuide.step1"]);
+    expect(decoded).toContain(fr["pwa.iosGuide.step2"]);
+    expect(decoded).toContain(fr["pwa.iosGuide.step3"]);
+  });
+
   it("uses no raw hex colors", async () => {
-    expect(await render({ user: bothLinked, error: "link_failed" })).not.toMatch(
-      /#[0-9a-fA-F]{3,8}\b/,
-    );
+    expect(
+      await render({ user: bothLinked, error: "link_failed", showIosPwaGuide: true }),
+    ).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });
 

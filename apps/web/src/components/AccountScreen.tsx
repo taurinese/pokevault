@@ -10,6 +10,7 @@ import {
   oauthLinkHref,
 } from "../lib/auth-shared.ts";
 import { avatarInitials } from "../lib/profile.ts";
+import { clearPrivateServiceWorkerCache } from "../lib/pwa.ts";
 import {
   activeShareLinks,
   fetchShareLinks,
@@ -19,6 +20,7 @@ import {
   sharedPageUrl,
 } from "../lib/share-client.ts";
 import { DiscordIcon, GoogleIcon } from "./BrandIcons.tsx";
+import { IosPwaInstallGuide } from "./IosPwaInstallGuide.tsx";
 import { CopyLinkButton, useCopyFeedback } from "./ShareLinkSheet.tsx";
 import { ThemeSelector } from "./ThemeSelector.tsx";
 
@@ -35,6 +37,8 @@ export interface AccountScreenProps {
   readonly linked?: OAuthProvider | undefined;
   /** `?error=` : échec ou annulation de la liaison. */
   readonly error?: AccountLinkError | undefined;
+  /** Contrôle explicite du micro-guide iOS Safari (tests SSR ; détection auto par défaut). */
+  readonly showIosPwaGuide?: boolean | undefined;
 }
 
 const PROVIDER_LABEL_KEY = {
@@ -418,7 +422,7 @@ const ShareLinksSection = () => {
  * notifications & préférences, déconnexion. Vue profonde : navbar masquée,
  * retour explicite en haut à gauche.
  */
-export const AccountScreen = ({ user, linked, error }: AccountScreenProps) => {
+export const AccountScreen = ({ user, linked, error, showIosPwaGuide }: AccountScreenProps) => {
   const linkedProviders = new Set(user.identities.map((identity) => identity.provider));
   const discordLinked = linkedProviders.has("discord");
 
@@ -483,6 +487,7 @@ export const AccountScreen = ({ user, linked, error }: AccountScreenProps) => {
             </p>
           </div>
         </div>
+        <IosPwaInstallGuide visible={showIosPwaGuide} />
         <p className="text-xs text-muted">{t("account.notifications.soon")}</p>
         <dl className="flex flex-col gap-3 border-t border-line pt-4">
           <PreferenceRow
@@ -500,7 +505,11 @@ export const AccountScreen = ({ user, linked, error }: AccountScreenProps) => {
 
       <Section id="account-session" title={t("account.session.heading")}>
         <p className="text-sm text-secondary">{t("account.logout.description")}</p>
-        <form method="post" action={AUTH_LOGOUT_API_PATH}>
+        <form
+          method="post"
+          action={AUTH_LOGOUT_API_PATH}
+          onSubmit={() => clearPrivateServiceWorkerCache()}
+        >
           <button
             type="submit"
             className={`flex w-full items-center justify-center gap-2 rounded-pill border border-line bg-surface-2 px-5 text-sm font-semibold text-danger transition-colors hover:bg-surface-1 ${focusRing}`}
