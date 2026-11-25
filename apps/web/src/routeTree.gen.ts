@@ -19,7 +19,12 @@ import { Route as SearchRouteImport } from './routes/search'
 import { Route as WishlistRouteImport } from './routes/wishlist'
 import { Route as ApiDashboardRouteImport } from './routes/api/dashboard'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as ApiPushSubscriptionsRouteImport } from './routes/api/push-subscriptions'
 import { Route as BinderIdRouteImport } from './routes/binder/$id'
+import { Route as ApiAlertsIndexRouteImport } from './routes/api/alerts/index'
+import { Route as ApiAlertsIdRouteImport } from './routes/api/alerts/$id'
+import { Route as ApiAlertsChannelsRouteImport } from './routes/api/alerts/channels'
+import { Route as ApiAlertsUnreadCountRouteImport } from './routes/api/alerts/unread-count'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthLinkRouteImport } from './routes/api/auth/link'
 import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
@@ -34,6 +39,7 @@ import { Route as ApiCatalogDiscoverRouteImport } from './routes/api/catalog/dis
 import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/search'
 import { Route as ApiCatalogSuggestRouteImport } from './routes/api/catalog/suggest'
 import { Route as ApiWishlistIndexRouteImport } from './routes/api/wishlist/index'
+import { Route as ApiAlertsEventsReadRouteImport } from './routes/api/alerts/events/read'
 import { Route as ApiBindersIdIndexRouteImport } from './routes/api/binders/$id/index'
 import { Route as ApiBindersIdCoverRouteImport } from './routes/api/binders/$id/cover'
 import { Route as ApiCardsCardIdIndexRouteImport } from './routes/api/cards/$cardId/index'
@@ -94,9 +100,34 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
   path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPushSubscriptionsRoute = ApiPushSubscriptionsRouteImport.update({
+  id: '/api/push-subscriptions',
+  path: '/api/push-subscriptions',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BinderIdRoute = BinderIdRouteImport.update({
   id: '/binder/$id',
   path: '/binder/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAlertsIndexRoute = ApiAlertsIndexRouteImport.update({
+  id: '/api/alerts/',
+  path: '/api/alerts/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAlertsIdRoute = ApiAlertsIdRouteImport.update({
+  id: '/api/alerts/$id',
+  path: '/api/alerts/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAlertsChannelsRoute = ApiAlertsChannelsRouteImport.update({
+  id: '/api/alerts/channels',
+  path: '/api/alerts/channels',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAlertsUnreadCountRoute = ApiAlertsUnreadCountRouteImport.update({
+  id: '/api/alerts/unread-count',
+  path: '/api/alerts/unread-count',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
@@ -169,6 +200,11 @@ const ApiWishlistIndexRoute = ApiWishlistIndexRouteImport.update({
   path: '/api/wishlist/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAlertsEventsReadRoute = ApiAlertsEventsReadRouteImport.update({
+  id: '/api/alerts/events/read',
+  path: '/api/alerts/events/read',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiBindersIdIndexRoute = ApiBindersIdIndexRouteImport.update({
   id: '/api/binders/$id/',
   path: '/api/binders/$id/',
@@ -227,7 +263,11 @@ export interface FileRoutesByFullPath {
   '/wishlist': typeof WishlistRoute
   '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/push-subscriptions': typeof ApiPushSubscriptionsRoute
   '/binder/$id': typeof BinderIdRoute
+  '/api/alerts/$id': typeof ApiAlertsIdRoute
+  '/api/alerts/channels': typeof ApiAlertsChannelsRoute
+  '/api/alerts/unread-count': typeof ApiAlertsUnreadCountRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
@@ -240,8 +280,10 @@ export interface FileRoutesByFullPath {
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/alerts/': typeof ApiAlertsIndexRoute
   '/api/binders/': typeof ApiBindersIndexRoute
   '/api/wishlist/': typeof ApiWishlistIndexRoute
+  '/api/alerts/events/read': typeof ApiAlertsEventsReadRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
   '/api/cards/$cardId/binders': typeof ApiCardsCardIdBindersRoute
   '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
@@ -263,7 +305,11 @@ export interface FileRoutesByTo {
   '/wishlist': typeof WishlistRoute
   '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/push-subscriptions': typeof ApiPushSubscriptionsRoute
   '/binder/$id': typeof BinderIdRoute
+  '/api/alerts/$id': typeof ApiAlertsIdRoute
+  '/api/alerts/channels': typeof ApiAlertsChannelsRoute
+  '/api/alerts/unread-count': typeof ApiAlertsUnreadCountRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
@@ -276,8 +322,10 @@ export interface FileRoutesByTo {
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/alerts': typeof ApiAlertsIndexRoute
   '/api/binders': typeof ApiBindersIndexRoute
   '/api/wishlist': typeof ApiWishlistIndexRoute
+  '/api/alerts/events/read': typeof ApiAlertsEventsReadRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
   '/api/cards/$cardId/binders': typeof ApiCardsCardIdBindersRoute
   '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
@@ -300,7 +348,11 @@ export interface FileRoutesById {
   '/wishlist': typeof WishlistRoute
   '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/push-subscriptions': typeof ApiPushSubscriptionsRoute
   '/binder/$id': typeof BinderIdRoute
+  '/api/alerts/$id': typeof ApiAlertsIdRoute
+  '/api/alerts/channels': typeof ApiAlertsChannelsRoute
+  '/api/alerts/unread-count': typeof ApiAlertsUnreadCountRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
@@ -313,8 +365,10 @@ export interface FileRoutesById {
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/alerts/': typeof ApiAlertsIndexRoute
   '/api/binders/': typeof ApiBindersIndexRoute
   '/api/wishlist/': typeof ApiWishlistIndexRoute
+  '/api/alerts/events/read': typeof ApiAlertsEventsReadRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
   '/api/cards/$cardId/binders': typeof ApiCardsCardIdBindersRoute
   '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
@@ -338,7 +392,11 @@ export interface FileRouteTypes {
     | '/wishlist'
     | '/api/dashboard'
     | '/api/health'
+    | '/api/push-subscriptions'
     | '/binder/$id'
+    | '/api/alerts/$id'
+    | '/api/alerts/channels'
+    | '/api/alerts/unread-count'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
@@ -351,8 +409,10 @@ export interface FileRouteTypes {
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/alerts/'
     | '/api/binders/'
     | '/api/wishlist/'
+    | '/api/alerts/events/read'
     | '/api/binders/$id/cover'
     | '/api/cards/$cardId/binders'
     | '/api/cards/$cardId/copies'
@@ -374,7 +434,11 @@ export interface FileRouteTypes {
     | '/wishlist'
     | '/api/dashboard'
     | '/api/health'
+    | '/api/push-subscriptions'
     | '/binder/$id'
+    | '/api/alerts/$id'
+    | '/api/alerts/channels'
+    | '/api/alerts/unread-count'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
@@ -387,8 +451,10 @@ export interface FileRouteTypes {
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/alerts'
     | '/api/binders'
     | '/api/wishlist'
+    | '/api/alerts/events/read'
     | '/api/binders/$id/cover'
     | '/api/cards/$cardId/binders'
     | '/api/cards/$cardId/copies'
@@ -410,7 +476,11 @@ export interface FileRouteTypes {
     | '/wishlist'
     | '/api/dashboard'
     | '/api/health'
+    | '/api/push-subscriptions'
     | '/binder/$id'
+    | '/api/alerts/$id'
+    | '/api/alerts/channels'
+    | '/api/alerts/unread-count'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
@@ -423,8 +493,10 @@ export interface FileRouteTypes {
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/alerts/'
     | '/api/binders/'
     | '/api/wishlist/'
+    | '/api/alerts/events/read'
     | '/api/binders/$id/cover'
     | '/api/cards/$cardId/binders'
     | '/api/cards/$cardId/copies'
@@ -447,7 +519,11 @@ export interface RootRouteChildren {
   WishlistRoute: typeof WishlistRoute
   ApiDashboardRoute: typeof ApiDashboardRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  ApiPushSubscriptionsRoute: typeof ApiPushSubscriptionsRoute
   BinderIdRoute: typeof BinderIdRoute
+  ApiAlertsIdRoute: typeof ApiAlertsIdRoute
+  ApiAlertsChannelsRoute: typeof ApiAlertsChannelsRoute
+  ApiAlertsUnreadCountRoute: typeof ApiAlertsUnreadCountRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
   ApiAuthLinkRoute: typeof ApiAuthLinkRoute
   ApiAuthLoginRoute: typeof ApiAuthLoginRoute
@@ -460,8 +536,10 @@ export interface RootRouteChildren {
   ApiCatalogDiscoverRoute: typeof ApiCatalogDiscoverRoute
   ApiCatalogSearchRoute: typeof ApiCatalogSearchRoute
   ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
+  ApiAlertsIndexRoute: typeof ApiAlertsIndexRoute
   ApiBindersIndexRoute: typeof ApiBindersIndexRoute
   ApiWishlistIndexRoute: typeof ApiWishlistIndexRoute
+  ApiAlertsEventsReadRoute: typeof ApiAlertsEventsReadRoute
   ApiBindersIdCoverRoute: typeof ApiBindersIdCoverRoute
   ApiCardsCardIdBindersRoute: typeof ApiCardsCardIdBindersRoute
   ApiCardsCardIdCopiesRoute: typeof ApiCardsCardIdCopiesRoute
@@ -545,11 +623,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/push-subscriptions': {
+      id: '/api/push-subscriptions'
+      path: '/api/push-subscriptions'
+      fullPath: '/api/push-subscriptions'
+      preLoaderRoute: typeof ApiPushSubscriptionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/binder/$id': {
       id: '/binder/$id'
       path: '/binder/$id'
       fullPath: '/binder/$id'
       preLoaderRoute: typeof BinderIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/alerts/': {
+      id: '/api/alerts/'
+      path: '/api/alerts'
+      fullPath: '/api/alerts/'
+      preLoaderRoute: typeof ApiAlertsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/alerts/$id': {
+      id: '/api/alerts/$id'
+      path: '/api/alerts/$id'
+      fullPath: '/api/alerts/$id'
+      preLoaderRoute: typeof ApiAlertsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/alerts/channels': {
+      id: '/api/alerts/channels'
+      path: '/api/alerts/channels'
+      fullPath: '/api/alerts/channels'
+      preLoaderRoute: typeof ApiAlertsChannelsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/alerts/unread-count': {
+      id: '/api/alerts/unread-count'
+      path: '/api/alerts/unread-count'
+      fullPath: '/api/alerts/unread-count'
+      preLoaderRoute: typeof ApiAlertsUnreadCountRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/auth/callback': {
@@ -650,6 +763,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiWishlistIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/alerts/events/read': {
+      id: '/api/alerts/events/read'
+      path: '/api/alerts/events/read'
+      fullPath: '/api/alerts/events/read'
+      preLoaderRoute: typeof ApiAlertsEventsReadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/binders/$id/': {
       id: '/api/binders/$id/'
       path: '/api/binders/$id'
@@ -727,7 +847,11 @@ const rootRouteChildren: RootRouteChildren = {
   WishlistRoute: WishlistRoute,
   ApiDashboardRoute: ApiDashboardRoute,
   ApiHealthRoute: ApiHealthRoute,
+  ApiPushSubscriptionsRoute: ApiPushSubscriptionsRoute,
   BinderIdRoute: BinderIdRoute,
+  ApiAlertsIdRoute: ApiAlertsIdRoute,
+  ApiAlertsChannelsRoute: ApiAlertsChannelsRoute,
+  ApiAlertsUnreadCountRoute: ApiAlertsUnreadCountRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
   ApiAuthLinkRoute: ApiAuthLinkRoute,
   ApiAuthLoginRoute: ApiAuthLoginRoute,
@@ -740,8 +864,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCatalogDiscoverRoute: ApiCatalogDiscoverRoute,
   ApiCatalogSearchRoute: ApiCatalogSearchRoute,
   ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
+  ApiAlertsIndexRoute: ApiAlertsIndexRoute,
   ApiBindersIndexRoute: ApiBindersIndexRoute,
   ApiWishlistIndexRoute: ApiWishlistIndexRoute,
+  ApiAlertsEventsReadRoute: ApiAlertsEventsReadRoute,
   ApiBindersIdCoverRoute: ApiBindersIdCoverRoute,
   ApiCardsCardIdBindersRoute: ApiCardsCardIdBindersRoute,
   ApiCardsCardIdCopiesRoute: ApiCardsCardIdCopiesRoute,
