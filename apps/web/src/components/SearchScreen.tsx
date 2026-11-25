@@ -190,7 +190,7 @@ const CardGridSkeleton = ({ count }: { readonly count: number }) => (
   <ul
     aria-hidden="true"
     data-testid="search-skeleton"
-    className="grid grid-cols-3 gap-2.5 motion-reduce:animate-none"
+    className="grid grid-cols-3 gap-2.5 lg:grid-cols-5 lg:gap-4 xl:grid-cols-6 motion-reduce:animate-none"
   >
     {Array.from({ length: count }, (_, index) => (
       // biome-ignore lint/suspicious/noArrayIndexKey: squelette statique sans identité
@@ -417,7 +417,10 @@ const CardResults = ({
   readonly nowMs: number;
 }) =>
   viewMode === "grid" ? (
-    <ul data-testid="results-grid" className="grid grid-cols-3 gap-x-2.5 gap-y-3.5">
+    <ul
+      data-testid="results-grid"
+      className="grid grid-cols-3 gap-x-2.5 gap-y-3.5 lg:grid-cols-5 lg:gap-4 xl:grid-cols-6"
+    >
       {cards.map((card, index) => (
         <CardGridItem
           key={card.id}
@@ -430,7 +433,7 @@ const CardResults = ({
       ))}
     </ul>
   ) : (
-    <ul data-testid="results-list" className="flex flex-col gap-2">
+    <ul data-testid="results-list" className="flex flex-col gap-2 lg:grid lg:grid-cols-2 lg:gap-3">
       {cards.map((card, index) => (
         <CardListItem
           key={card.id}
@@ -459,7 +462,7 @@ const SearchHeader = ({
 }) => (
   <header
     data-testid="search-header"
-    className="sticky top-0 z-20 flex flex-col gap-3 border-b border-line bg-canvas/95 px-4 pb-3 backdrop-blur"
+    className="sticky top-0 z-20 flex flex-col gap-3 border-b border-line bg-canvas/95 px-4 pb-3 backdrop-blur lg:px-8"
     style={{ paddingTop: "calc(1rem + var(--safe-area-inset-top))" }}
   >
     <h1 className="sr-only">{t("search.heading")}</h1>
@@ -511,7 +514,7 @@ const SearchHeader = ({
         )}
       </form>
     </search>
-    <fieldset className="-mx-4 flex min-w-0 gap-2 overflow-x-auto px-4">
+    <fieldset className="-mx-4 flex min-w-0 gap-2 overflow-x-auto px-4 lg:mx-0 lg:px-0">
       <legend className="sr-only">{t("search.scope.label")}</legend>
       {SCOPES.map((scope) => (
         <button
@@ -562,9 +565,9 @@ const PopularSets = ({
   readonly sets: ReadonlyArray<SetSearchHit>;
   readonly onSelect: (set: SetSearchHit) => void;
 }) => (
-  <ul className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-1">
+  <ul className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-1 lg:mx-0 lg:grid lg:grid-cols-4 lg:overflow-visible lg:px-0 xl:grid-cols-5">
     {sets.map((set) => (
-      <li key={set.id} className="w-36 shrink-0">
+      <li key={set.id} className="w-36 shrink-0 lg:w-auto">
         <button
           type="button"
           data-testid="popular-set"
@@ -1030,7 +1033,7 @@ const ResultsReady = ({
         </fieldset>
       </div>
 
-      <fieldset className="-mx-4 flex min-w-0 gap-2 overflow-x-auto px-4">
+      <fieldset className="-mx-4 flex min-w-0 gap-2 overflow-x-auto px-4 lg:mx-0 lg:px-0">
         <legend className="sr-only">{t("search.results.sort.label")}</legend>
         {SORTS.map((sort) => (
           <button
@@ -1048,7 +1051,7 @@ const ResultsReady = ({
       {payload.sets.length === 0 ? null : (
         <section aria-labelledby="results-sets" className="flex flex-col gap-2">
           <SectionTitle id="results-sets">{t("search.results.sets.heading")}</SectionTitle>
-          <ul className="flex flex-col gap-2">
+          <ul className="flex flex-col gap-2 lg:grid lg:grid-cols-2 lg:gap-3">
             {payload.sets.map((set) => (
               <ResultSetRow key={set.id} set={set} onSelect={actions.onSelectSet} />
             ))}
@@ -1103,15 +1106,10 @@ export const SearchView = ({ state, actions, inputRef }: SearchViewProps) => (
   <main
     data-testid="search-screen"
     data-mode={state.mode}
-    className="mx-auto flex min-h-screen w-full max-w-md flex-col"
+    className="mx-auto flex min-h-screen w-full max-w-md flex-col lg:max-w-6xl"
   >
     <SearchHeader state={state} actions={actions} inputRef={inputRef} />
-    <div
-      className="flex flex-1 flex-col gap-4 px-4 pt-5"
-      style={{
-        paddingBottom: "calc(var(--navbar-pill-height) + 2.5rem + var(--safe-area-inset-bottom))",
-      }}
-    >
+    <div className="flex flex-1 flex-col gap-4 px-4 pt-5 pb-[calc(var(--navbar-pill-height)+2.5rem+var(--safe-area-inset-bottom))] lg:px-8 lg:pb-12">
       {state.mode === "neutral" ? (
         <NeutralState state={state} actions={actions} />
       ) : state.mode === "suggest" ? (

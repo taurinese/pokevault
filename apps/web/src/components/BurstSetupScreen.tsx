@@ -331,7 +331,7 @@ export const BurstSetupView = ({
   return (
     <div
       data-testid="burst-setup"
-      className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-5 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-4"
+      className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-5 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-4 lg:max-w-5xl lg:px-8"
     >
       {/* En-tête dédié (navbar masquée sur cette vue profonde, docs/01 §1) */}
       <header className="flex items-center gap-2 pb-3">
@@ -388,7 +388,10 @@ export const BurstSetupView = ({
             </button>
           </div>
         ) : (
-          <ul aria-label={t("burst.sets.heading")} className="flex flex-col gap-2">
+          <ul
+            aria-label={t("burst.sets.heading")}
+            className="flex flex-col gap-2 lg:grid lg:grid-cols-2"
+          >
             {visibleSets.length === 0 ? (
               <li data-testid="burst-sets-empty" className="py-6 text-center text-sm text-muted">
                 {t("burst.sets.empty")}
@@ -541,8 +544,8 @@ export const BurstSetupView = ({
       </section>
 
       {/* Barre d'action fixe */}
-      <div className="fixed inset-x-0 bottom-0 border-t border-line bg-canvas px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-nav">
-        <div className="mx-auto flex w-full max-w-md items-center gap-3">
+      <div className="fixed inset-x-0 bottom-0 border-t border-line bg-canvas px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-nav lg:px-8">
+        <div className="mx-auto flex w-full max-w-md items-center gap-3 lg:max-w-5xl">
           <p
             data-testid="burst-summary"
             className="min-w-0 flex-1 truncate font-mono text-xs tabular-nums text-secondary"

@@ -69,6 +69,7 @@
 /* Animations (indépendantes du thème). */
 @theme {
   --animate-sheet-in: sheet-in var(--pv-duration-med) var(--pv-ease-out);
+  --animate-drawer-in: drawer-in var(--pv-duration-med) var(--pv-ease-out);
   --animate-backdrop-in: backdrop-in var(--pv-duration-fast) ease-out;
 
   @keyframes sheet-in {
@@ -77,6 +78,15 @@
     }
     to {
       transform: translateY(0);
+    }
+  }
+
+  @keyframes drawer-in {
+    from {
+      transform: translateX(100%);
+    }
+    to {
+      transform: translateX(0);
     }
   }
 
@@ -105,6 +115,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .animate-sheet-in,
+  .animate-drawer-in,
   .animate-backdrop-in {
     animation: none;
   }

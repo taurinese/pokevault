@@ -156,7 +156,7 @@ const SkeletonList = () => (
     role="status"
     aria-label={t("wishlist.loading")}
     data-testid="wishlist-skeleton"
-    className="flex flex-col gap-3 motion-reduce:animate-none"
+    className="flex flex-col gap-3 lg:grid lg:grid-cols-2 motion-reduce:animate-none"
   >
     {Array.from({ length: 3 }, (_, index) => (
       <div
@@ -251,7 +251,10 @@ const Filters = ({
   const sets = wishlistSetOptions(items);
   const activeSetId = sets.some((set) => set.id === filters.setId) ? filters.setId : null;
   return (
-    <div className="flex flex-col gap-3" data-testid="wishlist-filters">
+    <div
+      className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"
+      data-testid="wishlist-filters"
+    >
       <fieldset className="m-0 min-w-0 border-0 p-0">
         <legend className="sr-only">{t("wishlist.filters.label")}</legend>
         <div className="flex gap-2 overflow-x-auto pb-1">
@@ -289,7 +292,7 @@ const Filters = ({
             actions.onSetChange(event.target.value === "" ? null : event.target.value)
           }
           style={touchTarget}
-          className={`w-full rounded-card border border-line bg-surface-1 px-3 text-sm text-primary ${focusRing}`}
+          className={`w-full rounded-card border border-line bg-surface-1 px-3 text-sm text-primary lg:w-72 ${focusRing}`}
         >
           <option value="">{t("wishlist.set.all")}</option>
           {sets.map((set) => (
@@ -641,7 +644,7 @@ const ToastRegion = ({
     role="status"
     aria-live="polite"
     data-testid="wishlist-toast-region"
-    className="pointer-events-none fixed inset-x-4 bottom-28 z-40 mx-auto max-w-md"
+    className="pointer-events-none fixed inset-x-4 bottom-28 z-40 mx-auto max-w-md lg:right-8 lg:bottom-8 lg:left-60"
   >
     {toast === null ? null : (
       <div
@@ -695,7 +698,7 @@ export const WishlistView = ({ state, actions }: WishlistViewProps) => {
       : { ...state.filters, setId: resolveEffectiveWishlistSetId(items, state.filters.setId) };
   const visible = items === null ? [] : filterWishlistItems(items, effectiveFilters);
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-4 px-4 pt-10 pb-40">
+    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-4 px-4 pt-10 pb-40 lg:max-w-5xl lg:gap-5 lg:px-8 lg:pb-12">
       <WishlistHeader
         exportDisabled={items === null || items.length === 0}
         onOpenExport={actions.onOpenExport}
@@ -758,7 +761,10 @@ export const WishlistView = ({ state, actions }: WishlistViewProps) => {
         />
       ) : null}
       {visible.length > 0 ? (
-        <ul aria-label={t("wishlist.list.label")} className="flex flex-col gap-3">
+        <ul
+          aria-label={t("wishlist.list.label")}
+          className="flex flex-col gap-3 lg:grid lg:grid-cols-2"
+        >
           {visible.map((item) => (
             <WishlistRow
               key={item.id}

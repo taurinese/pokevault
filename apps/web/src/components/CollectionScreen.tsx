@@ -202,7 +202,7 @@ const focusRing =
 
 const touchTarget = { minHeight: "var(--touch-target-min)" } as const;
 
-const GRID = "grid grid-cols-2 gap-3";
+const GRID = "grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4 lg:gap-4 xl:grid-cols-5";
 
 const StateNotice = ({
   testId,
@@ -384,7 +384,7 @@ const SegmentedTabs = ({
     <div
       role="tablist"
       aria-label={t("collection.tabs.label")}
-      className="grid grid-cols-2 gap-1 rounded-pill border border-line bg-surface-1 p-1"
+      className="grid grid-cols-2 gap-1 rounded-pill border border-line bg-surface-1 p-1 lg:max-w-md"
     >
       {TABS.map((entry) => {
         const selected = entry.id === tab;
@@ -430,7 +430,7 @@ const SeriesPills = ({
     ...groups.map((group) => ({ id: group.series.seriesId, label: group.series.nameFr })),
   ];
   return (
-    <fieldset className="-mx-4 flex min-w-0 gap-2 overflow-x-auto border-0 p-0 px-4 pb-1">
+    <fieldset className="-mx-4 flex min-w-0 gap-2 overflow-x-auto border-0 p-0 px-4 pb-1 lg:mx-0 lg:flex-wrap lg:px-0">
       <legend className="sr-only">{t("collection.series.label")}</legend>
       {pills.map((pill) => {
         const active = pill.id === seriesId;
@@ -519,7 +519,7 @@ const FollowButton = ({ onClick }: { readonly onClick: () => void }) => (
     onClick={onClick}
     data-testid="follow-cta"
     style={touchTarget}
-    className={`flex w-full items-center justify-center gap-2 rounded-pill border border-dashed border-gold px-4 text-sm font-semibold text-gold ${focusRing}`}
+    className={`flex w-full items-center justify-center gap-2 rounded-pill border border-dashed border-gold px-4 text-sm font-semibold text-gold lg:w-auto lg:self-start lg:px-6 ${focusRing}`}
   >
     <Plus size={16} aria-hidden="true" />
     {t("collection.follow.cta")}
@@ -881,7 +881,7 @@ export const CollectionView = ({ state, actions }: CollectionViewProps) => {
   const tabKind = state.tab === "sets" ? "set" : "custom";
   const tabBinders = ready?.binders.filter(({ binder }) => binder.kind === tabKind) ?? [];
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-4 px-4 pt-10 pb-40">
+    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-4 px-4 pt-10 pb-40 lg:max-w-6xl lg:gap-5 lg:px-8 lg:pb-12">
       <CollectionHeader
         data={state.data}
         filters={state.filters}

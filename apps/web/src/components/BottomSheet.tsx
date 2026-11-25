@@ -16,14 +16,26 @@ export type BottomSheetProps = BottomSheetLabel & {
 
 /** Distance de balayage vers le bas (en px) qui déclenche la fermeture. */
 const SWIPE_CLOSE_THRESHOLD_PX = 96;
+/** Seuil desktop (`lg:` = 1024px) où la feuille devient un panneau latéral droit. */
+const DESKTOP_DRAWER_MEDIA_QUERY = "(min-width: 1024px)";
+
+const isDesktopDrawerViewport = (): boolean => {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  try {
+    return window.matchMedia(DESKTOP_DRAWER_MEDIA_QUERY).matches;
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Feuille modale mobile-first basée sur un `<dialog>` natif (`showModal()`) :
- * focus trap, couche top-layer, `::backdrop` et `Escape` natifs (aucun bouton
+ * - Mobile (`< 1024px`) : Bottom Sheet ancrée en bas avec poignée et swipe-down.
+ * - Desktop (`>= 1024px`, `lg:`) : panneau latéral droit pleine hauteur (`460px`).
+ * Focus trap, couche top-layer, `::backdrop` et `Escape` natifs (aucun bouton
  * de fond dans l'ordre de tabulation). Fermeture par le fond, `Escape` ou le
- * bouton fermer ; swipe-down sur toute la zone d'en-tête (poignée + titre) avec
- * retour animé sous le seuil ; focus restauré sur l'élément précédent ;
- * safe-area inférieure ; `prefers-reduced-motion` géré en CSS.
+ * bouton fermer ; focus restauré sur l'élément précédent ; safe-area inférieure ;
+ * `prefers-reduced-motion` géré en CSS.
  */
 export const BottomSheet = ({ open, onClose, title, ariaLabel, children }: BottomSheetProps) => {
   const titleId = useId();
@@ -57,6 +69,8 @@ export const BottomSheet = ({ open, onClose, title, ariaLabel, children }: Botto
   if (!open) return null;
 
   const onHeaderPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // Le swipe-down vertical est réservé à la bottom sheet tactile mobile (jamais souris / panneau latéral desktop).
+    if (event.pointerType === "mouse" || isDesktopDrawerViewport()) return;
     // Laisse le bouton fermer gérer son propre clic (pas de capture du pointeur).
     if (event.target instanceof Element && event.target.closest("button") !== null) return;
     dragState.current = { startY: event.clientY, deltaY: 0 };
@@ -96,10 +110,10 @@ export const BottomSheet = ({ open, onClose, title, ariaLabel, children }: Botto
       onClick={(event) => {
         if (event.target === event.currentTarget) onCloseRef.current();
       }}
-      className="m-0 h-dvh max-h-none border-0 w-dvw max-w-none items-end justify-center bg-transparent p-0 text-inherit open:flex backdrop:animate-backdrop-in backdrop:bg-[color-mix(in_srgb,var(--bg-canvas)_65%,transparent)]"
+      className="m-0 h-dvh max-h-none border-0 w-dvw max-w-none items-end justify-center bg-transparent p-0 text-inherit open:flex lg:items-stretch lg:justify-end backdrop:animate-backdrop-in backdrop:bg-[color-mix(in_srgb,var(--bg-canvas)_65%,transparent)]"
     >
       <div
-        className="animate-sheet-in flex max-h-[85dvh] w-full max-w-md flex-col rounded-t-sheet border border-line bg-surface-1 shadow-sheet motion-reduce:transition-none"
+        className="animate-sheet-in lg:animate-drawer-in flex max-h-[85dvh] w-full max-w-md flex-col rounded-t-sheet border border-line bg-surface-1 shadow-sheet motion-reduce:animate-none motion-reduce:transition-none lg:h-dvh lg:max-h-dvh lg:w-full lg:max-w-[460px] lg:rounded-none lg:rounded-l-sheet lg:border-y-0 lg:border-r-0 lg:border-l"
         style={{
           paddingBottom: "var(--safe-area-inset-bottom)",
           transform:
@@ -108,16 +122,16 @@ export const BottomSheet = ({ open, onClose, title, ariaLabel, children }: Botto
         }}
       >
         <div
-          className="cursor-grab touch-none active:cursor-grabbing"
+          className="cursor-grab touch-none active:cursor-grabbing lg:cursor-default lg:touch-auto lg:active:cursor-default"
           onPointerDown={onHeaderPointerDown}
           onPointerMove={onHeaderPointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
         >
-          <div aria-hidden="true" className="flex justify-center px-4 pt-3 pb-2">
+          <div aria-hidden="true" className="flex justify-center px-4 pt-3 pb-2 lg:hidden">
             <div className="h-1.5 w-10 rounded-pill bg-muted opacity-60" />
           </div>
-          <div className="flex items-center justify-between gap-3 px-4 pb-2">
+          <div className="flex items-center justify-between gap-3 px-4 pb-2 lg:border-b lg:border-line lg:px-6 lg:pt-5 lg:pb-4">
             {title === undefined ? (
               <span className="min-h-7" aria-hidden="true" />
             ) : (
@@ -129,14 +143,14 @@ export const BottomSheet = ({ open, onClose, title, ariaLabel, children }: Botto
               type="button"
               onClick={() => onCloseRef.current()}
               aria-label={t("bottomSheet.close")}
-              className="flex items-center justify-center rounded-pill text-secondary transition-colors hover:bg-surface-2 hover:text-primary"
+              className="flex items-center justify-center rounded-pill text-secondary transition-colors hover:bg-surface-2 hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
               style={{ minWidth: "var(--touch-target-min)", minHeight: "var(--touch-target-min)" }}
             >
               <X size={20} aria-hidden="true" />
             </button>
           </div>
         </div>
-        <div className="overflow-y-auto overscroll-contain px-4 pb-6 text-secondary">
+        <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-6 text-secondary lg:px-6 lg:pt-4">
           {children}
         </div>
       </div>

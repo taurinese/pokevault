@@ -13,7 +13,7 @@
 import { type CardVariant, tcgdexCardImageUrl } from "@pokevault/domain";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Minus, SearchX } from "lucide-react";
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { t, tPlural } from "../i18n/index.ts";
 import { chunkIntoRows } from "../lib/binder-grid-client.ts";
 import {
@@ -23,6 +23,7 @@ import {
   filterBurstCards,
   resolveBurstVariantForCard,
 } from "../lib/burst-client.ts";
+import { CARD_GRID_COLS_CLASS, useResponsiveCardGridColumns } from "../lib/responsive-grid.ts";
 import { CardTile } from "./CardTile.tsx";
 
 export const BURST_GRID_COLUMNS = 3;
@@ -165,7 +166,7 @@ export interface BurstGridModeProps {
   readonly onRemove: (cardId: string) => void;
 }
 
-/** Grille 3 colonnes virtualisée par rangée (`@tanstack/react-virtual`, `gap: 10`). */
+/** Grille responsive (3 mobile · 5 lg · 6 xl) virtualisée par rangée (`@tanstack/react-virtual`). */
 export const BurstGridMode = ({
   cards,
   batchByCard,
@@ -175,19 +176,27 @@ export const BurstGridMode = ({
 }: BurstGridModeProps) => {
   const [query, setQuery] = useState("");
   const scrollRef = useRef<HTMLElement>(null);
+  const columns = useResponsiveCardGridColumns();
+  const gridColsClass = CARD_GRID_COLS_CLASS[columns];
   const visibleCards = useMemo(() => filterBurstCards(cards, query), [cards, query]);
-  const rows = useMemo(() => chunkIntoRows(visibleCards, BURST_GRID_COLUMNS), [visibleCards]);
+  const rows = useMemo(() => chunkIntoRows(visibleCards, columns), [visibleCards, columns]);
   const virtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW_HEIGHT_PX,
-    // Cohérent avec `gap-2.5` (10 px) entre les colonnes et dans le repli SSR.
-    gap: 10,
+    // Cohérent avec `gap-2.5` (10 px) sur mobile et `lg:gap-4` (16 px) sur desktop.
+    gap: columns === 3 ? 10 : 16,
     overscan: 4,
   });
+  const prevColumnsRef = useRef(columns);
+  useEffect(() => {
+    if (prevColumnsRef.current === columns) return;
+    prevColumnsRef.current = columns;
+    virtualizer.measure();
+  }, [columns, virtualizer]);
   const virtualRows = virtualizer.getVirtualItems();
   // Repli SSR / avant montage : premières rangées en flux normal ; le premier
-  // rendu client est identique (aucun item virtuel) → pas d'erreur d'hydratation.
+  // rendu client est identique (aucun item virtuel, 3 colonnes) → pas d'erreur d'hydratation.
   const useFallback = virtualRows.length === 0;
 
   const adjustedFor = (card: BurstCatalogCard): CardVariant | null => {
@@ -202,7 +211,7 @@ export const BurstGridMode = ({
         card={card}
         batchQuantity={batchByCard.get(card.id) ?? 0}
         adjustedVariant={adjustedFor(card)}
-        priority={rowIndex * BURST_GRID_COLUMNS + cardIndex < PRIORITY_CARD_COUNT}
+        priority={rowIndex * columns + cardIndex < PRIORITY_CARD_COUNT}
         onAdd={onAdd}
         onRemove={onRemove}
       />
@@ -210,7 +219,7 @@ export const BurstGridMode = ({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 px-4 pt-3 pb-3">
+      <div className="shrink-0 px-4 pt-3 pb-3 lg:px-8">
         <input
           type="search"
           data-testid="burst-grid-search"
@@ -225,7 +234,7 @@ export const BurstGridMode = ({
         ref={scrollRef}
         data-testid="burst-grid-scroll"
         aria-label={t("burst.grid.label")}
-        className="min-h-0 flex-1 overflow-y-auto px-4"
+        className="min-h-0 flex-1 overflow-y-auto px-4 lg:px-8"
       >
         {rows.length === 0 ? (
           <p
@@ -236,10 +245,10 @@ export const BurstGridMode = ({
             {t("burst.grid.empty")}
           </p>
         ) : useFallback ? (
-          <div data-testid="burst-grid" className="flex flex-col gap-2.5 pb-4">
+          <div data-testid="burst-grid" className="flex flex-col gap-2.5 pb-4 lg:gap-4">
             {rows.slice(0, SSR_FALLBACK_ROWS).map((row, rowIndex) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: repli SSR statique, rangées stables
-              <div key={rowIndex} className="grid grid-cols-3 gap-2.5">
+              <div key={rowIndex} className={`grid ${gridColsClass} gap-2.5 lg:gap-4`}>
                 {renderRow(row, rowIndex)}
               </div>
             ))}
@@ -255,7 +264,7 @@ export const BurstGridMode = ({
                 key={virtualRow.key}
                 data-index={virtualRow.index}
                 ref={virtualizer.measureElement}
-                className="grid grid-cols-3 gap-2.5"
+                className={`grid ${gridColsClass} gap-2.5 lg:gap-4`}
                 style={{
                   position: "absolute",
                   top: 0,

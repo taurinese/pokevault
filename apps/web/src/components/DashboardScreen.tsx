@@ -173,7 +173,7 @@ const SummaryBar = ({
     <section
       aria-label={t("dashboard.summary.label")}
       data-testid="dashboard-summary"
-      className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-sheet border border-line bg-surface-1 px-3 py-2.5 shadow-card"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-sheet border border-line bg-surface-1 px-3 py-2.5 shadow-card lg:gap-x-4 lg:px-5 lg:py-3.5"
     >
       <span
         data-testid="dashboard-freshness-dot"
@@ -217,7 +217,7 @@ const SummaryBar = ({
         >
           {formatPercent(summary.globalCompletionPercent)}
         </span>
-        <span className="w-14">
+        <span className="w-14 lg:w-28">
           <ProgressBar
             percent={summary.globalCompletionPercent}
             label={t("dashboard.summary.completion")}
@@ -386,7 +386,10 @@ const FeaturedSection = ({
     {featuredCards.length === 0 ? (
       <FeaturedEmpty />
     ) : (
-      <div data-testid="dashboard-featured-grid" className="grid grid-cols-3 gap-3">
+      <div
+        data-testid="dashboard-featured-grid"
+        className="grid grid-cols-3 gap-3 lg:grid-cols-5 lg:gap-4 xl:grid-cols-6"
+      >
         {featuredCards.map((card) => (
           <FeaturedCardTile
             key={`${card.cardId}:${card.language}:${card.variant}`}
@@ -580,7 +583,10 @@ const BindersSection = ({ binders }: { readonly binders: ReadonlyArray<Dashboard
     {binders.length === 0 ? (
       <BindersEmpty />
     ) : (
-      <div data-testid="dashboard-binders-grid" className="grid grid-cols-2 gap-3">
+      <div
+        data-testid="dashboard-binders-grid"
+        className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4 lg:gap-4"
+      >
         {binders.map((binder) => (
           <DashboardBinderCard key={binder.id} binder={binder} />
         ))}
@@ -674,7 +680,10 @@ const Skeleton = () => (
     className="flex flex-col gap-4 motion-reduce:animate-none"
   >
     <div aria-hidden="true" className="h-11 animate-pulse rounded-sheet bg-surface-2" />
-    <div aria-hidden="true" className="grid grid-cols-3 gap-3">
+    <div
+      aria-hidden="true"
+      className="grid grid-cols-3 gap-3 lg:grid-cols-5 lg:gap-4 xl:grid-cols-6"
+    >
       {Array.from({ length: 3 }, (_, index) => (
         <div
           // biome-ignore lint/suspicious/noArrayIndexKey: squelette statique sans identité
@@ -685,7 +694,10 @@ const Skeleton = () => (
         />
       ))}
     </div>
-    <div aria-hidden="true" className="grid grid-cols-2 gap-3">
+    <div
+      aria-hidden="true"
+      className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4 lg:gap-4"
+    >
       {Array.from({ length: 2 }, (_, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: squelette statique sans identité
         <div key={index} className="aspect-4/3 animate-pulse rounded-sheet bg-surface-2" />
@@ -726,7 +738,7 @@ const ErrorNotice = ({ onRetry }: { readonly onRetry: () => void }) => (
 export const DashboardView = ({ state, actions }: DashboardViewProps) => {
   const ready = state.data.status === "ready" ? state.data.data : null;
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-4 px-4 pt-10 pb-40">
+    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-4 px-4 pt-10 pb-40 lg:max-w-6xl lg:gap-6 lg:px-8 lg:pb-12">
       <DashboardHeader />
       {state.data.status === "loading" ? <Skeleton /> : null}
       {state.data.status === "error" ? <ErrorNotice onRetry={actions.onRetry} /> : null}

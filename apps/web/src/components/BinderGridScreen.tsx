@@ -20,7 +20,6 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { type TranslationKey, t, tPlural } from "../i18n/index.ts";
 import { loginRedirectTo } from "../lib/auth-shared.ts";
 import {
-  BINDER_GRID_COLUMNS,
   type BinderGridAdvancedFilters,
   type BinderGridCard,
   type BinderGridPayload,
@@ -35,6 +34,7 @@ import {
   hasActiveAdvancedFilters,
 } from "../lib/binder-grid-client.ts";
 import { formatPriceCents, tilePriceCents } from "../lib/card-detail-client.ts";
+import { CARD_GRID_COLS_CLASS, useResponsiveCardGridColumns } from "../lib/responsive-grid.ts";
 import { CardTile, cardTilePriceLabel } from "./CardTile.tsx";
 import { ShareLinkSheet } from "./ShareLinkSheet.tsx";
 
@@ -155,7 +155,7 @@ const SkeletonTile = () => (
 const SkeletonGrid = () => (
   <div role="status" data-testid="binder-grid-loading" aria-label={t("binderGrid.loading")}>
     <span className="sr-only">{t("binderGrid.loading")}</span>
-    <div className="grid grid-cols-3 gap-2.5">
+    <div className="grid grid-cols-3 gap-2.5 lg:grid-cols-5 lg:gap-4 xl:grid-cols-6">
       {Array.from({ length: 9 }, (_, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: squelette statique sans identité
         <SkeletonTile key={index} />
@@ -209,7 +209,7 @@ const BinderHeader = ({
   return (
     <header
       data-testid="binder-header"
-      className="sticky top-0 z-20 shrink-0 border-b border-line bg-canvas/95 px-4 pb-3 backdrop-blur"
+      className="sticky top-0 z-20 shrink-0 border-b border-line bg-canvas/95 px-4 pb-3 backdrop-blur lg:px-8"
       style={{ paddingTop: "calc(0.75rem + var(--safe-area-inset-top))" }}
     >
       {binder === null ? <h1 className="sr-only">{t("binderGrid.heading")}</h1> : null}
@@ -394,7 +394,7 @@ const FiltersBar = ({
   );
   return (
     <>
-      <fieldset className="flex shrink-0 items-center gap-2 overflow-x-auto px-4 py-2.5">
+      <fieldset className="flex shrink-0 items-center gap-2 overflow-x-auto px-4 py-2.5 lg:px-8">
         <legend className="sr-only">{t("binderGrid.filters.label")}</legend>
         {QUICK_FILTERS.map((filter) => {
           const active = state.quickFilter === filter.id;
@@ -429,12 +429,12 @@ const FiltersBar = ({
           id="binder-advanced-filters"
           data-testid="advanced-filters"
           aria-label={t("binderGrid.advanced.heading")}
-          className="mx-4 mb-2 flex shrink-0 flex-col gap-3 rounded-sheet border border-line bg-surface-1 p-3 shadow-card"
+          className="mx-4 mb-2 flex shrink-0 flex-col gap-3 rounded-sheet border border-line bg-surface-1 p-3 shadow-card lg:mx-8"
         >
           <h2 className="text-xs font-semibold tracking-wide text-muted uppercase">
             {t("binderGrid.advanced.heading")}
           </h2>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 lg:gap-3">
             <FilterSelect
               id="advanced-rarity"
               label={t("binderGrid.advanced.rarity")}
@@ -598,7 +598,7 @@ const GridCard = ({
 };
 
 // ---------------------------------------------------------------------------
-// Grille 3 colonnes virtualisée par rangée (`@tanstack/react-virtual`)
+// Grille responsive (3 mobile · 5 lg · 6 xl) virtualisée par rangée
 // ---------------------------------------------------------------------------
 
 const GridBody = ({
@@ -611,19 +611,27 @@ const GridBody = ({
   readonly onSelectCard: (card: BinderGridCard) => void;
 }) => {
   const scrollRef = useRef<HTMLElement>(null);
-  const rows = useMemo(() => chunkIntoRows(cards, BINDER_GRID_COLUMNS), [cards]);
+  const columns = useResponsiveCardGridColumns();
+  const gridColsClass = CARD_GRID_COLS_CLASS[columns];
+  const rows = useMemo(() => chunkIntoRows(cards, columns), [cards, columns]);
   const virtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW_HEIGHT_PX,
-    // Cohérent avec `gap-2.5` (10 px) entre les colonnes et dans le repli SSR.
-    gap: 10,
+    // Cohérent avec `gap-2.5` (10 px) sur mobile et `lg:gap-4` (16 px) sur desktop.
+    gap: columns === 3 ? 10 : 16,
     overscan: 4,
   });
+  const prevColumnsRef = useRef(columns);
+  useEffect(() => {
+    if (prevColumnsRef.current === columns) return;
+    prevColumnsRef.current = columns;
+    virtualizer.measure();
+  }, [columns, virtualizer]);
   const virtualRows = virtualizer.getVirtualItems();
   // Repli SSR / avant montage : les premières rangées en flux normal. Le premier
-  // rendu client produit exactement le même HTML (virtualItems vide) → pas d'erreur
-  // d'hydratation ; la virtualisation prend le relais après le montage.
+  // rendu client produit exactement le même HTML (virtualItems vide, 3 colonnes) →
+  // pas d'erreur d'hydratation ; la virtualisation prend le relais après le montage.
   const useFallback = virtualRows.length === 0;
 
   return (
@@ -631,19 +639,19 @@ const GridBody = ({
       ref={scrollRef}
       data-testid="binder-grid-scroll"
       aria-label={t("binderGrid.grid.label")}
-      className="min-h-0 flex-1 overflow-y-auto px-4"
+      className="min-h-0 flex-1 overflow-y-auto px-4 lg:px-8"
       style={{ paddingBottom: "calc(2.5rem + var(--safe-area-inset-bottom))" }}
     >
       {useFallback ? (
-        <div data-testid="binder-grid" className="flex flex-col gap-2.5">
+        <div data-testid="binder-grid" className="flex flex-col gap-2.5 lg:gap-4">
           {rows.slice(0, SSR_FALLBACK_ROWS).map((row, rowIndex) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: repli SSR statique, rangées stables
-            <div key={rowIndex} className="grid grid-cols-3 gap-2.5">
+            <div key={rowIndex} className={`grid ${gridColsClass} gap-2.5 lg:gap-4`}>
               {row.map((card, cardIndex) => (
                 <GridCard
                   key={card.id}
                   card={card}
-                  priority={rowIndex * BINDER_GRID_COLUMNS + cardIndex < PRIORITY_CARD_COUNT}
+                  priority={rowIndex * columns + cardIndex < PRIORITY_CARD_COUNT}
                   nowMs={nowMs}
                   onSelectCard={onSelectCard}
                 />
@@ -661,7 +669,7 @@ const GridBody = ({
               key={virtualRow.key}
               data-index={virtualRow.index}
               ref={virtualizer.measureElement}
-              className="grid grid-cols-3 gap-2.5"
+              className={`grid ${gridColsClass} gap-2.5 lg:gap-4`}
               style={{
                 position: "absolute",
                 top: 0,
@@ -674,9 +682,7 @@ const GridBody = ({
                 <GridCard
                   key={card.id}
                   card={card}
-                  priority={
-                    virtualRow.index * BINDER_GRID_COLUMNS + cardIndex < PRIORITY_CARD_COUNT
-                  }
+                  priority={virtualRow.index * columns + cardIndex < PRIORITY_CARD_COUNT}
                   nowMs={nowMs}
                   onSelectCard={onSelectCard}
                 />
@@ -716,7 +722,7 @@ export const BinderGridView = ({ state, actions }: BinderGridViewProps) => {
   return (
     <main
       data-testid="binder-grid-screen"
-      className="mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden bg-canvas"
+      className="mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden bg-canvas lg:max-w-6xl"
     >
       <BinderHeader state={state} actions={actions} />
       {load.status === "ready" && binder !== null ? (
@@ -757,7 +763,7 @@ export const BinderGridView = ({ state, actions }: BinderGridViewProps) => {
           )}
         </>
       ) : load.status === "loading" ? (
-        <div className="min-h-0 flex-1 overflow-hidden px-4 pt-4">
+        <div className="min-h-0 flex-1 overflow-hidden px-4 pt-4 lg:px-8">
           <SkeletonGrid />
         </div>
       ) : load.status === "not-found" ? (

@@ -427,7 +427,7 @@ export const AccountScreen = ({ user, linked, error, showIosPwaGuide }: AccountS
   const discordLinked = linkedProviders.has("discord");
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-5 px-6 pt-4 pb-10">
+    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-5 px-6 pt-4 pb-10 lg:max-w-3xl lg:px-8 lg:pt-8 lg:pb-12">
       <header className="flex items-center gap-3">
         <Link
           to="/"

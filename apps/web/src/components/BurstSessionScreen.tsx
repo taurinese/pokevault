@@ -683,7 +683,7 @@ const DonePanel = ({
   return (
     <div
       data-testid="burst-done"
-      className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-4 bg-canvas px-5 pt-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+      className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-4 bg-canvas px-5 pt-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] lg:max-w-xl lg:px-8"
     >
       <header className="flex flex-col items-center gap-2 text-center">
         <CircleCheck size={40} aria-hidden="true" className="text-success" />
@@ -835,10 +835,10 @@ export const BurstSessionView = ({
     <div
       data-testid="burst-session"
       data-mode={state.mode}
-      className="mx-auto flex h-dvh w-full max-w-md flex-col bg-canvas"
+      className="mx-auto flex h-dvh w-full max-w-md flex-col bg-canvas lg:max-w-5xl"
     >
       {/* Barre supérieure sticky (commune Grille & Pavé #) */}
-      <header className="sticky top-0 z-10 shrink-0 border-b border-line bg-canvas px-4 pt-3 pb-3">
+      <header className="sticky top-0 z-10 shrink-0 border-b border-line bg-canvas px-4 pt-3 pb-3 lg:px-8">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -902,18 +902,20 @@ export const BurstSessionView = ({
           onRemove={actions.onRemoveCard}
         />
       ) : (
-        <BurstKeypadMode
-          cards={cards}
-          input={state.keypadInput}
-          variantOverride={state.variantOverride}
-          currentVariant={state.variant}
-          batchByCard={batchByCard}
-          onChar={actions.onKeypadChar}
-          onBackspace={actions.onKeypadBackspace}
-          onClear={actions.onKeypadClear}
-          onVariantOverride={actions.onKeypadVariant}
-          onAdd={actions.onKeypadAdd}
-        />
+        <div className="mx-auto flex min-h-0 w-full max-w-md flex-1 flex-col">
+          <BurstKeypadMode
+            cards={cards}
+            input={state.keypadInput}
+            variantOverride={state.variantOverride}
+            currentVariant={state.variant}
+            batchByCard={batchByCard}
+            onChar={actions.onKeypadChar}
+            onBackspace={actions.onKeypadBackspace}
+            onClear={actions.onKeypadClear}
+            onVariantOverride={actions.onKeypadVariant}
+            onAdd={actions.onKeypadAdd}
+          />
+        </div>
       )}
 
       {/* Pied fixe : ruban (Pavé #) + barre de validation flottante, safe-area aware */}
@@ -927,7 +929,7 @@ export const BurstSessionView = ({
           ) : null}
           <section
             aria-label={t("burst.bar.label")}
-            className="px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+            className="px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] lg:px-8"
           >
             {state.notice === null ? null : (
               <p

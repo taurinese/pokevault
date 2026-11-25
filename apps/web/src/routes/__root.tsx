@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
+import { DesktopNav } from "../components/DesktopNav.tsx";
 import { FloatingPillNavbar } from "../components/FloatingPillNavbar.tsx";
 import { PwaStatusBar } from "../components/PwaStatusBar.tsx";
 import { HTML_LANG, t } from "../i18n/index.ts";
@@ -93,7 +94,10 @@ const RootLayout = () => {
   return (
     <>
       <PwaStatusBar />
-      <Outlet />
+      {hideNavbar ? null : <DesktopNav unreadAlertsCount={unreadCount} />}
+      <div className={hideNavbar ? undefined : "lg:pl-60"}>
+        <Outlet />
+      </div>
       {hideNavbar ? null : <FloatingPillNavbar unreadAlertsCount={unreadCount} />}
     </>
   );

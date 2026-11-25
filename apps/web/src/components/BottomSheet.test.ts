@@ -56,4 +56,21 @@ describe("BottomSheet", () => {
     expect(html).toContain("open:flex");
     expect(html).not.toMatch(/<dialog[^>]*\sopen(=|\s|>)/);
   });
+
+  it("adapts into a full-height right-side drawer on desktop (lg:) and hides the mobile grab handle", () => {
+    const html = renderToStaticMarkup(
+      h(BottomSheet, { open: true, onClose: noop, title: "Fiche carte" }, "détails"),
+    );
+    expect(html).toContain("lg:items-stretch");
+    expect(html).toContain("lg:justify-end");
+    expect(html).toContain("lg:h-dvh");
+    expect(html).toContain("lg:max-h-dvh");
+    expect(html).toContain("lg:max-w-[460px]");
+    expect(html).toContain("lg:rounded-l-sheet");
+    expect(html).toContain("lg:animate-drawer-in");
+    expect(html).toContain("motion-reduce:animate-none");
+    expect(html).toContain("lg:hidden");
+    expect(html).toContain("lg:cursor-default");
+    expect(html).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
 });
