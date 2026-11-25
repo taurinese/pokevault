@@ -143,6 +143,7 @@ export const sanitizeNotificationUrl = (
     try {
       const parsed = new URL(trimmed, "https://pokevault.local");
       if (parsed.origin !== "https://pokevault.local") return fallback;
+      if (!parsed.pathname.startsWith("/") || parsed.pathname.startsWith("//")) return fallback;
       return `${parsed.pathname}${parsed.search}${parsed.hash}`;
     } catch {
       return fallback;
@@ -238,18 +239,25 @@ export const registerServiceWorker = async (
       window.dispatchEvent(new Event(PWA_UPDATE_AVAILABLE_EVENT));
     };
 
-    if (registration.waiting !== null && navigator.serviceWorker.controller !== null) {
-      notifyUpdate();
-    }
-
-    registration.addEventListener("updatefound", () => {
-      const installing = registration.installing;
-      if (installing === null) return;
-      installing.addEventListener("statechange", () => {
-        if (installing.state === "installed" && navigator.serviceWorker.controller !== null) {
+    const watchedWorkers = new WeakSet<ServiceWorker>();
+    const watchInstallingWorker = (worker: ServiceWorker | null): void => {
+      if (worker === null || watchedWorkers.has(worker)) return;
+      watchedWorkers.add(worker);
+      worker.addEventListener("statechange", () => {
+        if (worker.state === "installed" && navigator.serviceWorker.controller !== null) {
           notifyUpdate();
         }
       });
+    };
+
+    if (registration.waiting !== null && navigator.serviceWorker.controller !== null) {
+      notifyUpdate();
+    } else if (registration.installing !== null) {
+      watchInstallingWorker(registration.installing);
+    }
+
+    registration.addEventListener("updatefound", () => {
+      watchInstallingWorker(registration.installing);
     });
 
     return registration;

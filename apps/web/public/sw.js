@@ -31,6 +31,13 @@ const TCGDEX_IMAGE_ORIGIN = "https://assets.tcgdex.net";
 const TCGDEX_IMAGE_MAX_ENTRIES = 600;
 const TCGDEX_IMAGE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const TCGDEX_IMAGE_MAX_AGE_MS = TCGDEX_IMAGE_MAX_AGE_SECONDS * 1000;
+const TCGDEX_PRUNE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const TCGDEX_META_READ_BATCH_SIZE = 25;
+
+let activeImagePrunePromise = null;
+let imagePrunePendingNowMs = null;
+let lastFullImageSweepMs = 0;
+const inFlightImageMetaUrls = new Set();
 
 const PRECACHE_URLS = [
   "/manifest.webmanifest",
@@ -176,6 +183,7 @@ function sanitizeNotificationUrl(rawUrl, origin, fallback = DEFAULT_NOTIFICATION
     try {
       const parsed = new URL(trimmed, "https://pokevault.local");
       if (parsed.origin !== "https://pokevault.local") return fallback;
+      if (!parsed.pathname.startsWith("/") || parsed.pathname.startsWith("//")) return fallback;
       return `${parsed.pathname}${parsed.search}${parsed.hash}`;
     } catch {
       return fallback;
@@ -233,23 +241,52 @@ async function writeImageMeta(metaCache, url, meta) {
   );
 }
 
-/** Éviction TTL (30 jours) puis LRU (600 entrées max) sur le cache d'images TCGdex. */
+/** Éviction TTL (30 jours) puis LRU (600 entrées max) + nettoyage des métadonnées orphelines. */
 async function pruneCardImageCache(nowMs) {
   const [imageCache, metaCache] = await Promise.all([
     caches.open(CARD_IMAGE_CACHE),
     caches.open(CARD_IMAGE_META_CACHE),
   ]);
-  const keys = await imageCache.keys();
-  const entries = [];
+  const imageKeys = await imageCache.keys();
+  const mustEnforceLimit = imageKeys.length > TCGDEX_IMAGE_MAX_ENTRIES;
+  const sweepRecentlyRan =
+    lastFullImageSweepMs > 0 &&
+    nowMs >= lastFullImageSweepMs &&
+    nowMs - lastFullImageSweepMs < TCGDEX_PRUNE_SWEEP_INTERVAL_MS;
 
-  for (const req of keys) {
-    const meta = await readImageMeta(metaCache, req.url);
-    const cachedAt = meta ? meta.cachedAt : 0;
-    const lastAccessedAt = meta ? meta.lastAccessedAt : cachedAt;
-    if (cachedAt === 0 || nowMs - cachedAt > TCGDEX_IMAGE_MAX_AGE_MS) {
-      await Promise.all([imageCache.delete(req), metaCache.delete(metaKeyForUrl(req.url))]);
-    } else {
-      entries.push({ req, lastAccessedAt });
+  if (!mustEnforceLimit && sweepRecentlyRan) {
+    return;
+  }
+
+  lastFullImageSweepMs = nowMs;
+  const entries = [];
+  const activeMetaUrls = new Set();
+
+  for (let i = 0; i < imageKeys.length; i += TCGDEX_META_READ_BATCH_SIZE) {
+    const batch = imageKeys.slice(i, i + TCGDEX_META_READ_BATCH_SIZE);
+    const metas = await Promise.all(batch.map((req) => readImageMeta(metaCache, req.url)));
+    const expiredDeletes = [];
+
+    for (let j = 0; j < batch.length; j += 1) {
+      const req = batch[j];
+      const meta = metas[j];
+      const metaKey = metaKeyForUrl(req.url);
+      if (inFlightImageMetaUrls.has(metaKey.url)) {
+        activeMetaUrls.add(metaKey.url);
+        continue;
+      }
+      const cachedAt = meta ? meta.cachedAt : 0;
+      const lastAccessedAt = meta ? meta.lastAccessedAt : cachedAt;
+      if (cachedAt === 0 || nowMs - cachedAt > TCGDEX_IMAGE_MAX_AGE_MS) {
+        expiredDeletes.push(Promise.all([imageCache.delete(req), metaCache.delete(metaKey)]));
+      } else {
+        activeMetaUrls.add(metaKey.url);
+        entries.push({ req, metaKey, lastAccessedAt });
+      }
+    }
+
+    if (expiredDeletes.length > 0) {
+      await Promise.all(expiredDeletes);
     }
   }
 
@@ -257,12 +294,57 @@ async function pruneCardImageCache(nowMs) {
     entries.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
     const overflow = entries.length - TCGDEX_IMAGE_MAX_ENTRIES;
     const toEvict = entries.slice(0, overflow);
+    for (const item of toEvict) {
+      activeMetaUrls.delete(item.metaKey.url);
+    }
     await Promise.all(
       toEvict.map((item) =>
-        Promise.all([imageCache.delete(item.req), metaCache.delete(metaKeyForUrl(item.req.url))]),
+        Promise.all([imageCache.delete(item.req), metaCache.delete(item.metaKey)]),
       ),
     );
   }
+
+  // Supprime les métadonnées orphelines (ex. écriture interrompue ou entrée purgée par le navigateur)
+  // sans jamais toucher à une image écrite concurremment.
+  const metaKeys = await metaCache.keys();
+  const candidateOrphans = metaKeys.filter(
+    (metaReq) => !activeMetaUrls.has(metaReq.url) && !inFlightImageMetaUrls.has(metaReq.url),
+  );
+  if (candidateOrphans.length > 0) {
+    const freshImageKeys = await imageCache.keys();
+    const freshMetaUrls = new Set(freshImageKeys.map((req) => metaKeyForUrl(req.url).url));
+    const confirmedOrphans = candidateOrphans.filter(
+      (metaReq) => !freshMetaUrls.has(metaReq.url) && !inFlightImageMetaUrls.has(metaReq.url),
+    );
+    if (confirmedOrphans.length > 0) {
+      await Promise.all(confirmedOrphans.map((metaReq) => metaCache.delete(metaReq)));
+    }
+  }
+}
+
+/** Coalesce les purges LRU pour éviter d'empiler plusieurs passes concurrentes sur le thread SW. */
+function schedulePruneCardImageCache(nowMs) {
+  if (activeImagePrunePromise !== null) {
+    imagePrunePendingNowMs = Math.max(imagePrunePendingNowMs ?? 0, nowMs);
+    return activeImagePrunePromise;
+  }
+
+  activeImagePrunePromise = (async () => {
+    let currentNow = nowMs;
+    try {
+      while (true) {
+        await pruneCardImageCache(currentNow);
+        if (imagePrunePendingNowMs === null) break;
+        currentNow = imagePrunePendingNowMs;
+        imagePrunePendingNowMs = null;
+      }
+    } finally {
+      activeImagePrunePromise = null;
+      imagePrunePendingNowMs = null;
+    }
+  })();
+
+  return activeImagePrunePromise;
 }
 
 /** CacheFirst + LRU (600 entrées / 30 jours) pour les images `assets.tcgdex.net`. */
@@ -279,10 +361,16 @@ async function handleTcgdexImageRequest(request, event) {
     const isFresh = meta !== null && nowMs - meta.cachedAt <= TCGDEX_IMAGE_MAX_AGE_MS;
     if (isFresh) {
       event.waitUntil(
-        writeImageMeta(metaCache, request.url, {
-          cachedAt: meta.cachedAt,
-          lastAccessedAt: nowMs,
-        }),
+        (async () => {
+          try {
+            await writeImageMeta(metaCache, request.url, {
+              cachedAt: meta.cachedAt,
+              lastAccessedAt: nowMs,
+            });
+          } catch {
+            // QuotaExceededError ou stockage indisponible : la réponse reste servie.
+          }
+        })(),
       );
       return cached;
     }
@@ -290,16 +378,31 @@ async function handleTcgdexImageRequest(request, event) {
 
   try {
     const response = await fetch(request);
-    if (response.ok || response.type === "opaque") {
+    if (response.status === 200 || response.type === "opaque") {
       const clone = response.clone();
+      const metaKey = metaKeyForUrl(request.url);
       event.waitUntil(
         (async () => {
-          await imageCache.put(request, clone);
-          await writeImageMeta(metaCache, request.url, {
-            cachedAt: nowMs,
-            lastAccessedAt: nowMs,
-          });
-          await pruneCardImageCache(nowMs);
+          inFlightImageMetaUrls.add(metaKey.url);
+          try {
+            // Écrire la métadonnée AVANT l'image garantit qu'une purge concurrente ne verra jamais
+            // une image fraîche sans métadonnée (`cachedAt === 0`).
+            await writeImageMeta(metaCache, request.url, {
+              cachedAt: nowMs,
+              lastAccessedAt: nowMs,
+            });
+            await imageCache.put(request, clone);
+          } catch {
+            await metaCache.delete(metaKey).catch(() => undefined);
+            return;
+          } finally {
+            inFlightImageMetaUrls.delete(metaKey.url);
+          }
+          try {
+            await schedulePruneCardImageCache(nowMs);
+          } catch {
+            // Purge non bloquante.
+          }
         })(),
       );
     }
@@ -317,8 +420,12 @@ async function handleImmutableAssetRequest(request) {
   if (cached) return cached;
 
   const response = await fetch(request);
-  if (response.ok && response.type === "basic") {
-    await cache.put(request, response.clone());
+  if (response.status === 200 && response.type === "basic") {
+    try {
+      await cache.put(request, response.clone());
+    } catch {
+      // QuotaExceededError non bloquant.
+    }
   }
   return response;
 }
@@ -329,8 +436,12 @@ async function handleSwrAssetRequest(request, event) {
   const cached = await cache.match(request);
   const networkPromise = fetch(request)
     .then(async (response) => {
-      if (response.ok && response.type === "basic") {
-        await cache.put(request, response.clone());
+      if (response.status === 200 && response.type === "basic") {
+        try {
+          await cache.put(request, response.clone());
+        } catch {
+          // QuotaExceededError non bloquant.
+        }
       }
       return response;
     })
@@ -352,8 +463,14 @@ async function handlePrivateApiRequest(request) {
   try {
     const response = await fetch(request);
     if (response.status === 200 && response.type === "basic") {
-      await cache.put(request, response.clone());
-    } else if (response.status === 401 || response.status === 403) {
+      try {
+        await cache.put(request, response.clone());
+      } catch {
+        // QuotaExceededError non bloquant.
+      }
+    } else if (response.status === 401) {
+      await clearPrivateCaches();
+    } else if (response.status === 403) {
       await cache.delete(request);
     }
     return response;
@@ -374,8 +491,12 @@ async function handleNavigationRequest(request, pathname) {
 
   try {
     const response = await fetch(request);
-    if (canCache && response.ok && response.type === "basic" && !response.redirected) {
-      await cache.put(request, response.clone());
+    if (canCache && response.status === 200 && response.type === "basic" && !response.redirected) {
+      try {
+        await cache.put(request, response.clone());
+      } catch {
+        // QuotaExceededError non bloquant.
+      }
     }
     return response;
   } catch {
@@ -412,7 +533,7 @@ self.addEventListener("message", (event) => {
   const payload = event.data;
   if (!payload || typeof payload !== "object") return;
   if (payload.type === "SKIP_WAITING") {
-    self.skipWaiting();
+    event.waitUntil(self.skipWaiting());
   } else if (payload.type === "CLEAR_PRIVATE_CACHE") {
     event.waitUntil(clearPrivateCaches());
   }
@@ -453,13 +574,27 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // 2. Navigations HTML (mode hors-ligne lecture seule).
+  // 2. Routes API : traitées AVANT `mode === "navigate"` afin de ne jamais intercepter
+  //    les redirections OAuth (`/api/auth/login`, `/api/auth/link`, `/api/auth/callback`)
+  //    ni `/api/shared/*`.
+  if (url.pathname.startsWith("/api/")) {
+    if (url.pathname === "/api/auth/callback") {
+      event.waitUntil(clearPrivateCaches());
+      return;
+    }
+    if (request.mode !== "navigate" && isCacheablePrivateApiPath(url.pathname)) {
+      event.respondWith(handlePrivateApiRequest(request));
+    }
+    return;
+  }
+
+  // 3. Navigations HTML (mode hors-ligne lecture seule).
   if (request.mode === "navigate") {
     event.respondWith(handleNavigationRequest(request, url.pathname));
     return;
   }
 
-  // 3. Assets statiques de l'App Shell.
+  // 4. Assets statiques de l'App Shell.
   if (isImmutableStaticAsset(url.pathname)) {
     event.respondWith(handleImmutableAssetRequest(request));
     return;
@@ -467,11 +602,6 @@ self.addEventListener("fetch", (event) => {
   if (isSwrStaticAsset(url.pathname)) {
     event.respondWith(handleSwrAssetRequest(request, event));
     return;
-  }
-
-  // 4. Lectures API privées autorisées (jamais /api/auth/* ni /api/shared/*).
-  if (isCacheablePrivateApiPath(url.pathname)) {
-    event.respondWith(handlePrivateApiRequest(request));
   }
 });
 

@@ -11,6 +11,7 @@ import {
 export interface PwaStatusBarViewProps {
   readonly isOnline: boolean;
   readonly updateAvailable: boolean;
+  readonly reloading?: boolean;
   readonly onReload: () => void;
 }
 
@@ -27,6 +28,7 @@ const focusRing =
 export const PwaStatusBarView = ({
   isOnline,
   updateAvailable,
+  reloading = false,
   onReload,
 }: PwaStatusBarViewProps) => {
   if (isOnline && !updateAvailable) return null;
@@ -64,8 +66,9 @@ export const PwaStatusBarView = ({
             type="button"
             data-testid="pwa-update-reload"
             aria-label={t("pwa.update.reloadAria")}
+            disabled={reloading}
             onClick={onReload}
-            className={`inline-flex shrink-0 items-center justify-center rounded-pill bg-gold-soft px-4 text-xs font-semibold text-gold transition-colors hover:bg-surface-2 ${focusRing}`}
+            className={`inline-flex shrink-0 items-center justify-center rounded-pill bg-gold-soft px-4 text-xs font-semibold text-gold transition-colors hover:bg-surface-2 disabled:opacity-60 ${focusRing}`}
             style={{ minHeight: "var(--touch-target-min)" }}
           >
             {t("pwa.update.reload")}
@@ -84,6 +87,7 @@ export const PwaStatusBarView = ({
 export const PwaStatusBar = () => {
   const [isOnline, setIsOnline] = useState(true);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [reloading, setReloading] = useState(false);
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
 
   useEffect(() => {
@@ -110,6 +114,8 @@ export const PwaStatusBar = () => {
   }, []);
 
   const handleReload = (): void => {
+    if (reloading) return;
+    setReloading(true);
     const applied = applyServiceWorkerUpdate(registrationRef.current);
     if (!applied && typeof window !== "undefined") {
       window.location.reload();
@@ -120,6 +126,7 @@ export const PwaStatusBar = () => {
     <PwaStatusBarView
       isOnline={isOnline}
       updateAvailable={updateAvailable}
+      reloading={reloading}
       onReload={handleReload}
     />
   );

@@ -189,12 +189,15 @@ describe("sanitizeNotificationUrl", () => {
     );
   });
 
-  it("blocks open redirects, protocol-relative URLs, backslashes, scripts and control chars", () => {
+  it("blocks open redirects, protocol-relative URLs, dot-segment bypasses, backslashes, scripts and control chars", () => {
     const attacks: ReadonlyArray<unknown> = [
       "https://evil.example/phish",
       "http://evil.example/phish",
       "//evil.example/phish",
       "///evil.example/phish",
+      "/.//evil.example/phish",
+      "/a/..//evil.example/phish",
+      "https://pokevault.example/.//evil.example/phish",
       "/\\evil.example",
       "javascript:alert(1)",
       "data:text/html,<script>alert(1)</script>",
@@ -309,6 +312,45 @@ describe("pwa client helpers", () => {
 
     clearPrivateServiceWorkerCache();
     expect(controllerPostMessage).toHaveBeenCalledWith({ type: SW_MESSAGE_CLEAR_PRIVATE_CACHE });
+  });
+
+  it("observes an already-installing Service Worker when register() resolves", async () => {
+    let state = "installing";
+    const stateListeners: Array<() => void> = [];
+    const installingWorker = {
+      get state() {
+        return state;
+      },
+      addEventListener: (type: string, cb: () => void) => {
+        if (type === "statechange") stateListeners.push(cb);
+      },
+    } as unknown as ServiceWorker;
+
+    const registration = {
+      waiting: null,
+      installing: installingWorker,
+      addEventListener: vi.fn(),
+    } as unknown as ServiceWorkerRegistration;
+
+    const windowEvents: string[] = [];
+    vi.stubGlobal("window", {
+      dispatchEvent: (event: Event) => windowEvents.push(event.type),
+    });
+    vi.stubGlobal("navigator", {
+      serviceWorker: {
+        controller: { postMessage: vi.fn() },
+        register: vi.fn().mockResolvedValue(registration),
+      },
+    });
+
+    const onUpdateAvailable = vi.fn();
+    await registerServiceWorker({ onUpdateAvailable });
+    expect(onUpdateAvailable).not.toHaveBeenCalled();
+
+    state = "installed";
+    for (const cb of stateListeners) cb();
+    expect(onUpdateAvailable).toHaveBeenCalledTimes(1);
+    expect(windowEvents).toContain(PWA_UPDATE_AVAILABLE_EVENT);
   });
 });
 
@@ -511,20 +553,247 @@ describe("public/sw.js", () => {
       data: { url: "/alerts", cardId: "sv03.5-198", alertId: "alert-1" },
     });
 
-    // Notification click with malicious cross-origin URL -> falls back safely to /alerts
-    const close = vi.fn();
-    const clickWaits: Array<Promise<unknown>> = [];
-    sb.listeners.get("notificationclick")?.({
-      notification: { close, data: { url: "https://evil.example/steal" } },
-      waitUntil: (p: Promise<unknown>) => clickWaits.push(p),
+    // Notification click with malicious cross-origin and dot-segment URLs -> falls back safely to /alerts
+    for (const maliciousUrl of [
+      "https://evil.example/steal",
+      "/.//evil.example/phish",
+      "/a/..//evil.example/phish",
+    ]) {
+      const close = vi.fn();
+      const clickWaits: Array<Promise<unknown>> = [];
+      sb.listeners.get("notificationclick")?.({
+        notification: { close, data: { url: maliciousUrl } },
+        waitUntil: (p: Promise<unknown>) => clickWaits.push(p),
+      });
+      await Promise.all(clickWaits);
+
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(sb.openWindow).toHaveBeenLastCalledWith("/alerts");
+    }
+
+    // SKIP_WAITING message triggers self.skipWaiting() inside event.waitUntil(...)
+    const skipWaits: Array<Promise<unknown>> = [];
+    sb.skipWaiting.mockResolvedValueOnce(undefined);
+    sb.listeners.get("message")?.({
+      data: { type: "SKIP_WAITING" },
+      waitUntil: (p: Promise<unknown>) => skipWaits.push(p),
     });
-    await Promise.all(clickWaits);
-
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(sb.openWindow).toHaveBeenCalledWith("/alerts");
-
-    // SKIP_WAITING message triggers self.skipWaiting()
-    sb.listeners.get("message")?.({ data: { type: "SKIP_WAITING" }, waitUntil: () => undefined });
+    await Promise.all(skipWaits);
     expect(sb.skipWaiting).toHaveBeenCalledTimes(1);
+    expect(skipWaits).toHaveLength(1);
+  });
+
+  it("never intercepts navigate requests to /api/* (OAuth login/callback) and purges private caches on callback and 401", async () => {
+    const sb = createSwSandbox();
+
+    const dispatchFetch = async (
+      request: Request,
+    ): Promise<{ readonly intercepted: boolean; readonly response: Response | undefined }> => {
+      let responded: Promise<Response> | undefined;
+      const waits: Array<Promise<unknown>> = [];
+      sb.listeners.get("fetch")?.({
+        request,
+        respondWith: (p: Promise<Response>) => {
+          responded = p;
+        },
+        waitUntil: (p: Promise<unknown>) => waits.push(p),
+      });
+      const response = responded === undefined ? undefined : await responded;
+      await Promise.all(waits);
+      return { intercepted: responded !== undefined, response };
+    };
+
+    const makeNavRequest = (url: string): Request => {
+      const req = new Request(url, { method: "GET" });
+      Object.defineProperty(req, "mode", { value: "navigate" });
+      return req;
+    };
+
+    // Seed private caches
+    sb.store.set(
+      "pokevault-private-api-v1",
+      new Map([["https://pokevault.example/api/dashboard", new Response("{}")]]),
+    );
+    sb.store.set(
+      "pokevault-pages-v1",
+      new Map([["https://pokevault.example/", new Response("<html></html>")]]),
+    );
+
+    // Navigate to /api/auth/login and /api/shared/token must NOT be intercepted
+    for (const url of [
+      "https://pokevault.example/api/auth/login?provider=google",
+      "https://pokevault.example/api/shared/some-token",
+      "https://pokevault.example/api/dashboard",
+    ]) {
+      const res = await dispatchFetch(makeNavRequest(url));
+      expect(res.intercepted).toBe(false);
+    }
+    expect(sb.store.has("pokevault-private-api-v1")).toBe(true);
+
+    // Navigate to /api/auth/callback must NOT be intercepted AND must purge private caches
+    const callbackRes = await dispatchFetch(
+      makeNavRequest("https://pokevault.example/api/auth/callback?code=abc"),
+    );
+    expect(callbackRes.intercepted).toBe(false);
+    expect(sb.store.has("pokevault-private-api-v1")).toBe(false);
+    expect(sb.store.has("pokevault-pages-v1")).toBe(false);
+
+    // 401 on cached private API purges both private caches; 403 deletes only the failing entry
+    sb.store.set(
+      "pokevault-private-api-v1",
+      new Map([
+        ["https://pokevault.example/api/dashboard", new Response("{}")],
+        ["https://pokevault.example/api/wishlist", new Response("[]")],
+      ]),
+    );
+    sb.store.set(
+      "pokevault-pages-v1",
+      new Map([["https://pokevault.example/", new Response("<html></html>")]]),
+    );
+
+    const forbidden = new Response("forbidden", { status: 403 });
+    sb.fetchMock.mockResolvedValueOnce(forbidden);
+    await dispatchFetch(new Request("https://pokevault.example/api/wishlist", { method: "GET" }));
+    expect(
+      sb.store.get("pokevault-private-api-v1")?.has("https://pokevault.example/api/wishlist"),
+    ).toBe(false);
+    expect(
+      sb.store.get("pokevault-private-api-v1")?.has("https://pokevault.example/api/dashboard"),
+    ).toBe(true);
+    expect(sb.store.has("pokevault-pages-v1")).toBe(true);
+
+    const unauthorized = new Response("unauthorized", { status: 401 });
+    sb.fetchMock.mockResolvedValueOnce(unauthorized);
+    await dispatchFetch(new Request("https://pokevault.example/api/dashboard", { method: "GET" }));
+    expect(sb.store.has("pokevault-private-api-v1")).toBe(false);
+    expect(sb.store.has("pokevault-pages-v1")).toBe(false);
+  });
+
+  it("caches TCGdex images with CacheFirst, handles opaque/206, prevents concurrent write/prune races, and enforces 30d TTL + 600 LRU", async () => {
+    const nowSpy = vi.spyOn(Date, "now");
+    let currentTime = 1_700_000_000_000;
+    nowSpy.mockImplementation(() => currentTime);
+
+    try {
+      const sb = createSwSandbox();
+
+      const dispatchFetch = async (
+        request: Request,
+      ): Promise<{ readonly intercepted: boolean; readonly response: Response | undefined }> => {
+        let responded: Promise<Response> | undefined;
+        const waits: Array<Promise<unknown>> = [];
+        sb.listeners.get("fetch")?.({
+          request,
+          respondWith: (p: Promise<Response>) => {
+            responded = p;
+          },
+          waitUntil: (p: Promise<unknown>) => waits.push(p),
+        });
+        const response = responded === undefined ? undefined : await responded;
+        await Promise.all(waits);
+        return { intercepted: responded !== undefined, response };
+      };
+
+      const metaKey = (url: string): string =>
+        `https://pokevault.sw.meta/tcgdex?u=${encodeURIComponent(url)}`;
+
+      // 1. Concurrent misses on 2 TCGdex images must keep BOTH images and BOTH meta entries
+      const imgA = "https://assets.tcgdex.net/fr/sv/sv03.5/199/high.webp";
+      const imgB = "https://assets.tcgdex.net/fr/sv/sv03.5/198/high.webp";
+      sb.fetchMock
+        .mockResolvedValueOnce(new Response("bytes-a", { status: 200 }))
+        .mockResolvedValueOnce(new Response("bytes-b", { status: 200 }));
+
+      await Promise.all([
+        dispatchFetch(new Request(imgA, { method: "GET" })),
+        dispatchFetch(new Request(imgB, { method: "GET" })),
+      ]);
+
+      expect(sb.store.get("pokevault-tcgdex-images-v1")?.has(imgA)).toBe(true);
+      expect(sb.store.get("pokevault-tcgdex-images-v1")?.has(imgB)).toBe(true);
+      expect(sb.store.get("pokevault-tcgdex-meta-v1")?.has(metaKey(imgA))).toBe(true);
+      expect(sb.store.get("pokevault-tcgdex-meta-v1")?.has(metaKey(imgB))).toBe(true);
+
+      // 2. CacheFirst hit serves cached bytes without network and updates lastAccessedAt
+      currentTime += 60_000;
+      const hitRes = await dispatchFetch(new Request(imgA, { method: "GET" }));
+      expect(hitRes.intercepted).toBe(true);
+      expect(await hitRes.response?.text()).toBe("bytes-a");
+      expect(sb.fetchMock).toHaveBeenCalledTimes(2);
+      const updatedMeta = (await sb.store
+        .get("pokevault-tcgdex-meta-v1")
+        ?.get(metaKey(imgA))
+        ?.clone()
+        .json()) as { readonly cachedAt: number; readonly lastAccessedAt: number };
+      expect(updatedMeta.lastAccessedAt).toBe(currentTime);
+      expect(updatedMeta.cachedAt).toBe(currentTime - 60_000);
+
+      // 3. Opaque response is cached; 206 Partial Content is NOT cached
+      const imgOpaque = "https://assets.tcgdex.net/fr/sv/sv03.5/001/high.webp";
+      const opaqueRes = new Response("opaque-bytes", { status: 200 });
+      Object.defineProperty(opaqueRes, "type", { value: "opaque" });
+      sb.fetchMock.mockResolvedValueOnce(opaqueRes);
+      await dispatchFetch(new Request(imgOpaque, { method: "GET" }));
+      expect(sb.store.get("pokevault-tcgdex-images-v1")?.has(imgOpaque)).toBe(true);
+
+      const imgPartial = "https://assets.tcgdex.net/fr/sv/sv03.5/002/high.webp";
+      sb.fetchMock.mockResolvedValueOnce(new Response("part", { status: 206 }));
+      await dispatchFetch(new Request(imgPartial, { method: "GET" }));
+      expect(sb.store.get("pokevault-tcgdex-images-v1")?.has(imgPartial)).toBe(false);
+
+      // 4. Orphan meta + >30d TTL expiration are cleaned up on next sweep
+      const orphanMetaUrl = metaKey("https://assets.tcgdex.net/fr/sv/sv03.5/999/high.webp");
+      sb.store
+        .get("pokevault-tcgdex-meta-v1")
+        ?.set(
+          orphanMetaUrl,
+          new Response(JSON.stringify({ cachedAt: currentTime, lastAccessedAt: currentTime })),
+        );
+
+      currentTime += 31 * 24 * 60 * 60 * 1000;
+      sb.fetchMock.mockResolvedValueOnce(new Response("bytes-a-fresh", { status: 200 }));
+      const refreshed = await dispatchFetch(new Request(imgA, { method: "GET" }));
+      expect(await refreshed.response?.text()).toBe("bytes-a-fresh");
+      expect(sb.store.get("pokevault-tcgdex-images-v1")?.has(imgA)).toBe(true);
+      expect(sb.store.get("pokevault-tcgdex-images-v1")?.has(imgB)).toBe(false);
+      expect(sb.store.get("pokevault-tcgdex-images-v1")?.has(imgOpaque)).toBe(false);
+      expect(sb.store.get("pokevault-tcgdex-meta-v1")?.has(orphanMetaUrl)).toBe(false);
+
+      // 5. LRU eviction strictly caps at 600 entries and preserves recently accessed entries
+      const imgBucket = sb.store.get("pokevault-tcgdex-images-v1");
+      const metaBucket = sb.store.get("pokevault-tcgdex-meta-v1");
+      imgBucket?.clear();
+      metaBucket?.clear();
+
+      for (let i = 0; i < SW_CACHE_CONFIG.tcgdexImageMaxEntries; i += 1) {
+        const url = `https://assets.tcgdex.net/fr/sv/sv04/${String(i).padStart(3, "0")}/high.webp`;
+        const ts = currentTime - (SW_CACHE_CONFIG.tcgdexImageMaxEntries - i) * 1000;
+        imgBucket?.set(url, new Response(`img-${i}`, { status: 200 }));
+        metaBucket?.set(
+          metaKey(url),
+          new Response(JSON.stringify({ cachedAt: ts, lastAccessedAt: ts })),
+        );
+      }
+
+      // Touch entry #0 so entry #1 becomes the true LRU victim
+      const url0 = "https://assets.tcgdex.net/fr/sv/sv04/000/high.webp";
+      const url1 = "https://assets.tcgdex.net/fr/sv/sv04/001/high.webp";
+      const url600 = "https://assets.tcgdex.net/fr/sv/sv04/600/high.webp";
+      currentTime += 10_000;
+      await dispatchFetch(new Request(url0, { method: "GET" }));
+
+      currentTime += 1_000;
+      sb.fetchMock.mockResolvedValueOnce(new Response("img-600", { status: 200 }));
+      await dispatchFetch(new Request(url600, { method: "GET" }));
+
+      expect(imgBucket?.size).toBe(SW_CACHE_CONFIG.tcgdexImageMaxEntries);
+      expect(metaBucket?.size).toBe(SW_CACHE_CONFIG.tcgdexImageMaxEntries);
+      expect(imgBucket?.has(url0)).toBe(true);
+      expect(imgBucket?.has(url600)).toBe(true);
+      expect(imgBucket?.has(url1)).toBe(false);
+      expect(metaBucket?.has(metaKey(url1))).toBe(false);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });
