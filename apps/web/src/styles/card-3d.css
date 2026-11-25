@@ -1,0 +1,613 @@
+/* ==========================================================================
+   PokéVault — Inspecteur 3D Holo (Écrans 04B–04D)
+   Sources : docs/01-cahier-des-charges.md §5.3 & docs/05-pwa-mobile.md §3
+   - Fond studio sombre adaptatif (halo radial dérivé du type dominant)
+   - Transformation 3D matérielle pilotée par CSS custom properties (--rx/--ry)
+   - 7 presets foil : none, holo, reverse, ex, sir, tera, gold
+   - Flip 180° (backface-visibility: hidden) + verso Pokémon vectoriel
+   - Respect strict de prefers-reduced-motion: reduce
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. Studio sombre & halo radial adaptatif par type Pokémon / preset foil
+   -------------------------------------------------------------------------- */
+.pv-inspector-dialog {
+  --pv-studio-bg: rgba(7, 9, 14, 0.94);
+  --pv-studio-surface: rgba(18, 22, 32, 0.84);
+  --pv-studio-surface-hover: rgba(28, 34, 48, 0.92);
+  --pv-studio-border: rgba(255, 255, 255, 0.14);
+  --pv-studio-text: #f4f6fa;
+  --pv-studio-text-secondary: #b4bfd4;
+  --pv-studio-text-muted: #8a96ae;
+  --pv-studio-accent: #f5c43d;
+  --pv-studio-accent-soft: rgba(245, 196, 61, 0.18);
+
+  --pv-halo-primary: rgba(148, 163, 184, 0.24);
+  --pv-halo-secondary: rgba(96, 165, 250, 0.12);
+
+  /* Palette du verso officiel stylisé (consommée par le SVG inline sans hex en JSX). */
+  --pv-cardback-border: #1d356b;
+  --pv-cardback-navy-deep: #0b1636;
+  --pv-cardback-navy-mid: #162e66;
+  --pv-cardback-aura: #3b82f6;
+  --pv-cardback-gold: #f5c43d;
+  --pv-cardback-red: #dc2626;
+  --pv-cardback-red-highlight: #f87171;
+  --pv-cardback-white: #f8fafc;
+  --pv-cardback-ink: #0f172a;
+
+  background: var(--pv-studio-bg);
+  color: var(--pv-studio-text);
+}
+
+.pv-inspector-dialog::backdrop {
+  background: rgba(5, 7, 12, 0.86);
+  backdrop-filter: blur(10px);
+}
+
+.pv-inspector-dialog[data-halo-tone="fire"] {
+  --pv-halo-primary: rgba(249, 115, 22, 0.34);
+  --pv-halo-secondary: rgba(239, 68, 68, 0.18);
+}
+
+.pv-inspector-dialog[data-halo-tone="water"] {
+  --pv-halo-primary: rgba(56, 189, 248, 0.32);
+  --pv-halo-secondary: rgba(37, 99, 235, 0.2);
+}
+
+.pv-inspector-dialog[data-halo-tone="grass"] {
+  --pv-halo-primary: rgba(34, 197, 94, 0.3);
+  --pv-halo-secondary: rgba(16, 185, 129, 0.18);
+}
+
+.pv-inspector-dialog[data-halo-tone="lightning"] {
+  --pv-halo-primary: rgba(250, 204, 21, 0.34);
+  --pv-halo-secondary: rgba(245, 158, 11, 0.18);
+}
+
+.pv-inspector-dialog[data-halo-tone="psychic"] {
+  --pv-halo-primary: rgba(192, 132, 252, 0.34);
+  --pv-halo-secondary: rgba(236, 72, 153, 0.18);
+}
+
+.pv-inspector-dialog[data-halo-tone="fighting"] {
+  --pv-halo-primary: rgba(234, 88, 12, 0.3);
+  --pv-halo-secondary: rgba(180, 83, 9, 0.18);
+}
+
+.pv-inspector-dialog[data-halo-tone="darkness"] {
+  --pv-halo-primary: rgba(99, 102, 241, 0.3);
+  --pv-halo-secondary: rgba(88, 28, 135, 0.22);
+}
+
+.pv-inspector-dialog[data-halo-tone="metal"] {
+  --pv-halo-primary: rgba(203, 213, 225, 0.28);
+  --pv-halo-secondary: rgba(100, 116, 139, 0.18);
+}
+
+.pv-inspector-dialog[data-halo-tone="dragon"] {
+  --pv-halo-primary: rgba(234, 179, 8, 0.3);
+  --pv-halo-secondary: rgba(20, 184, 166, 0.22);
+}
+
+.pv-inspector-dialog[data-halo-tone="colorless"] {
+  --pv-halo-primary: rgba(226, 232, 240, 0.24);
+  --pv-halo-secondary: rgba(148, 163, 184, 0.14);
+}
+
+.pv-inspector-dialog[data-halo-tone="gold"] {
+  --pv-halo-primary: rgba(245, 196, 61, 0.38);
+  --pv-halo-secondary: rgba(217, 119, 6, 0.2);
+}
+
+.pv-inspector-dialog[data-halo-tone="tera"] {
+  --pv-halo-primary: rgba(99, 102, 241, 0.34);
+  --pv-halo-secondary: rgba(34, 211, 238, 0.24);
+}
+
+.pv-inspector-dialog[data-halo-tone="prismatic"] {
+  --pv-halo-primary: rgba(244, 114, 182, 0.3);
+  --pv-halo-secondary: rgba(56, 189, 248, 0.22);
+}
+
+.pv-inspector-dialog[data-halo-tone="neutral"] {
+  --pv-halo-primary: rgba(148, 163, 184, 0.24);
+  --pv-halo-secondary: rgba(96, 165, 250, 0.12);
+}
+
+.pv-inspector-halo {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(62% 46% at 50% 48%, var(--pv-halo-primary) 0%, transparent 72%),
+    radial-gradient(48% 36% at 50% 54%, var(--pv-halo-secondary) 0%, transparent 76%);
+}
+
+/* Contrôles studio lisibles quel que soit le thème (Dark ou Light) de l'app. */
+.pv-inspector-pill {
+  border: 1px solid var(--pv-studio-border);
+  background: var(--pv-studio-surface);
+  color: var(--pv-studio-text);
+  backdrop-filter: blur(12px);
+}
+
+.pv-inspector-pill:hover {
+  background: var(--pv-studio-surface-hover);
+}
+
+.pv-inspector-pill[data-active="true"] {
+  border-color: var(--pv-studio-accent);
+  background: var(--pv-studio-accent-soft);
+  color: var(--pv-studio-accent);
+}
+
+.pv-inspector-badge {
+  border: 1px solid var(--pv-studio-border);
+  background: var(--pv-studio-surface);
+  color: var(--pv-studio-accent);
+}
+
+.pv-inspector-muted {
+  color: var(--pv-studio-text-muted);
+}
+
+.pv-inspector-secondary {
+  color: var(--pv-studio-text-secondary);
+}
+
+.pv-inspector-focus:focus-visible {
+  outline: 2px solid var(--pv-studio-accent);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   2. Scène 3D matérielle, tilt spring et flip 180°
+   -------------------------------------------------------------------------- */
+.pv-card3d-stage {
+  perspective: 1000px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+  max-width: min(300px, max(160px, calc((100dvh - 14rem) * 63 / 88)));
+}
+
+@media (min-width: 640px) {
+  .pv-card3d-stage {
+    max-width: min(340px, max(180px, calc((100dvh - 14rem) * 63 / 88)));
+  }
+}
+
+.pv-card3d-stage:active {
+  cursor: grabbing;
+}
+
+.pv-card3d-tilt {
+  --rx: 0deg;
+  --ry: 0deg;
+  --px: 50%;
+  --py: 50%;
+  --bg-x: 50%;
+  --bg-y: 50%;
+  --glare-opacity: 0;
+  --hyp: 0;
+
+  position: relative;
+  width: 100%;
+  aspect-ratio: 63 / 88;
+  transform-style: preserve-3d;
+  will-change: transform;
+  transform: rotateX(var(--rx)) rotateY(var(--ry));
+}
+
+.pv-card3d-flipper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pv-card3d-tilt[data-flipped="true"] .pv-card3d-flipper {
+  transform: rotateY(180deg);
+}
+
+.pv-card3d-face {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  box-shadow:
+    0 24px 38px rgba(0, 0, 0, 0.65),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.pv-card3d-face--front {
+  transform: rotateY(0deg);
+  isolation: isolate;
+  background: var(--pv-studio-surface);
+}
+
+.pv-card3d-face--back {
+  transform: rotateY(180deg);
+  background: var(--pv-cardback-navy-deep);
+}
+
+/* --------------------------------------------------------------------------
+   3. Couches foil / texture / glare (pilotées par les CSS custom properties)
+   -------------------------------------------------------------------------- */
+.pv-card3d-foil,
+.pv-card3d-sparkle,
+.pv-card3d-glare {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* Couche spéculaire commune (ajustée par chaque preset). */
+.pv-card3d-glare {
+  mix-blend-mode: overlay;
+  opacity: calc(var(--glare-opacity) * 0.72);
+  background: radial-gradient(
+    farthest-corner circle at var(--px) var(--py),
+    rgba(255, 255, 255, 0.78) 0%,
+    rgba(255, 255, 255, 0.24) 30%,
+    rgba(0, 0, 0, 0.32) 86%
+  );
+}
+
+/* Preset 1 · none : reflet spéculaire mat très léger uniquement. */
+.pv-card3d-tilt[data-holo-preset="none"] .pv-card3d-foil,
+.pv-card3d-tilt[data-holo-preset="none"] .pv-card3d-sparkle {
+  opacity: 0;
+}
+
+.pv-card3d-tilt[data-holo-preset="none"] .pv-card3d-glare {
+  mix-blend-mode: soft-light;
+  opacity: calc(var(--glare-opacity) * 0.34);
+}
+
+/* Preset 2 · holo : bande arc-en-ciel verticale (mix-blend-mode: color-dodge). */
+.pv-card3d-tilt[data-holo-preset="holo"] .pv-card3d-foil {
+  mix-blend-mode: color-dodge;
+  opacity: calc(0.14 + var(--glare-opacity) * 0.72);
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 92, 138, 0.55) 0%,
+      rgba(255, 214, 70, 0.55) 16%,
+      rgba(74, 222, 128, 0.55) 34%,
+      rgba(56, 189, 248, 0.6) 52%,
+      rgba(167, 139, 250, 0.6) 70%,
+      rgba(255, 92, 138, 0.55) 100%
+    ),
+    radial-gradient(
+      farthest-corner circle at var(--px) var(--py),
+      rgba(255, 255, 255, 0.52) 0%,
+      rgba(15, 23, 42, 0.15) 68%
+    );
+  background-size:
+    220% 220%,
+    100% 100%;
+  background-position:
+    var(--bg-x) var(--bg-y),
+    center;
+  filter: brightness(0.92) contrast(1.35) saturate(1.15);
+}
+
+.pv-card3d-tilt[data-holo-preset="holo"] .pv-card3d-sparkle {
+  mix-blend-mode: soft-light;
+  opacity: calc(var(--glare-opacity) * 0.35);
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0px,
+    rgba(255, 255, 255, 0.2) 2px,
+    rgba(255, 255, 255, 0) 6px
+  );
+  background-position: var(--bg-x) 0;
+}
+
+/* Preset 3 · reverse : brillance discrète sur le cadre hors fenêtre d'illustration. */
+.pv-card3d-tilt[data-holo-preset="reverse"] .pv-card3d-foil {
+  mix-blend-mode: color-dodge;
+  opacity: calc(0.1 + var(--glare-opacity) * 0.64);
+  background-image:
+    linear-gradient(
+      115deg,
+      transparent 16%,
+      rgba(226, 232, 240, 0.45) 38%,
+      rgba(147, 197, 253, 0.5) 50%,
+      rgba(253, 224, 71, 0.4) 62%,
+      transparent 84%
+    ),
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.14) 0px,
+      rgba(255, 255, 255, 0.14) 1px,
+      transparent 1px,
+      transparent 7px
+    );
+  background-size:
+    240% 240%,
+    100% 100%;
+  background-position:
+    var(--bg-x) var(--bg-y),
+    center;
+  /* Préserve la fenêtre d'illustration centrale (10%..90% X, 12%..48% Y). */
+  -webkit-mask-image: linear-gradient(#000, #000), linear-gradient(#000, #000);
+  -webkit-mask-size:
+    100% 100%,
+    80% 37%;
+  -webkit-mask-position:
+    0 0,
+    50% 21%;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-composite: xor;
+  mask-image: linear-gradient(#000, #000), linear-gradient(#000, #000);
+  mask-size:
+    100% 100%,
+    80% 37%;
+  mask-position:
+    0 0,
+    50% 21%;
+  mask-repeat: no-repeat;
+  mask-composite: exclude;
+}
+
+.pv-card3d-tilt[data-holo-preset="reverse"] .pv-card3d-sparkle {
+  opacity: 0;
+}
+
+/* Preset 4 · ex : reflet diagonal métallique contrasté. */
+.pv-card3d-tilt[data-holo-preset="ex"] .pv-card3d-foil {
+  mix-blend-mode: color-dodge;
+  opacity: calc(0.18 + var(--glare-opacity) * 0.78);
+  background-image:
+    linear-gradient(
+      125deg,
+      rgba(15, 23, 42, 0.2) 8%,
+      rgba(241, 245, 249, 0.75) 28%,
+      rgba(56, 189, 248, 0.65) 42%,
+      rgba(250, 204, 21, 0.6) 54%,
+      rgba(244, 114, 182, 0.65) 66%,
+      rgba(15, 23, 42, 0.2) 88%
+    ),
+    repeating-linear-gradient(
+      -45deg,
+      rgba(255, 255, 255, 0.08) 0px,
+      rgba(255, 255, 255, 0.08) 2px,
+      transparent 2px,
+      transparent 10px
+    );
+  background-size:
+    250% 250%,
+    120% 120%;
+  background-position:
+    var(--bg-x) var(--bg-y),
+    var(--bg-y) var(--bg-x);
+  filter: brightness(0.95) contrast(1.45) saturate(1.2);
+}
+
+.pv-card3d-tilt[data-holo-preset="ex"] .pv-card3d-sparkle {
+  mix-blend-mode: overlay;
+  opacity: calc(var(--glare-opacity) * 0.55);
+  background: linear-gradient(
+    125deg,
+    transparent 35%,
+    rgba(255, 255, 255, 0.62) 50%,
+    transparent 65%
+  );
+  background-size: 220% 220%;
+  background-position: var(--bg-x) var(--bg-y);
+}
+
+/* Preset 5 · sir : micro-texture diagonale fine + irisation multi-couches. */
+.pv-card3d-tilt[data-holo-preset="sir"] .pv-card3d-foil {
+  mix-blend-mode: color-dodge;
+  opacity: calc(0.2 + var(--glare-opacity) * 0.8);
+  background-image:
+    repeating-linear-gradient(
+      130deg,
+      rgba(244, 114, 182, 0.58) 0%,
+      rgba(250, 204, 21, 0.58) 18%,
+      rgba(52, 211, 153, 0.58) 36%,
+      rgba(56, 189, 248, 0.64) 54%,
+      rgba(167, 139, 250, 0.64) 72%,
+      rgba(244, 114, 182, 0.58) 100%
+    ),
+    radial-gradient(
+      farthest-corner circle at var(--px) var(--py),
+      rgba(255, 255, 255, 0.65) 0%,
+      rgba(255, 255, 255, 0.14) 45%,
+      transparent 80%
+    );
+  background-size:
+    280% 280%,
+    100% 100%;
+  background-position:
+    var(--bg-x) var(--bg-y),
+    center;
+  filter: brightness(0.94) contrast(1.42) saturate(1.28);
+}
+
+.pv-card3d-tilt[data-holo-preset="sir"] .pv-card3d-sparkle {
+  mix-blend-mode: soft-light;
+  opacity: calc(0.24 + var(--glare-opacity) * 0.6);
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.24) 0px,
+      rgba(255, 255, 255, 0.24) 1px,
+      transparent 1px,
+      transparent 4px
+    ),
+    repeating-linear-gradient(
+      -45deg,
+      rgba(255, 255, 255, 0.16) 0px,
+      rgba(255, 255, 255, 0.16) 1px,
+      transparent 1px,
+      transparent 5px
+    );
+  background-position:
+    var(--bg-x) var(--bg-y),
+    var(--bg-y) var(--bg-x);
+}
+
+/* Preset 6 · tera : prisme cristallin multi-facettes (indigo / cyan / or). */
+.pv-card3d-tilt[data-holo-preset="tera"] .pv-card3d-foil {
+  mix-blend-mode: color-dodge;
+  opacity: calc(0.22 + var(--glare-opacity) * 0.82);
+  background-image:
+    conic-gradient(
+      from 30deg at var(--px) var(--py),
+      rgba(99, 102, 241, 0.72) 0deg,
+      rgba(34, 211, 238, 0.74) 60deg,
+      rgba(245, 196, 61, 0.7) 120deg,
+      rgba(129, 140, 248, 0.72) 180deg,
+      rgba(56, 189, 248, 0.74) 240deg,
+      rgba(250, 204, 21, 0.68) 300deg,
+      rgba(99, 102, 241, 0.72) 360deg
+    ),
+    linear-gradient(60deg, transparent 22%, rgba(255, 255, 255, 0.48) 50%, transparent 78%);
+  background-size:
+    100% 100%,
+    220% 220%;
+  background-position:
+    center,
+    var(--bg-x) var(--bg-y);
+  filter: brightness(0.95) contrast(1.48) saturate(1.3);
+}
+
+.pv-card3d-tilt[data-holo-preset="tera"] .pv-card3d-sparkle {
+  mix-blend-mode: overlay;
+  opacity: calc(0.22 + var(--glare-opacity) * 0.66);
+  background-image:
+    repeating-linear-gradient(
+      60deg,
+      rgba(255, 255, 255, 0.24) 0px,
+      rgba(255, 255, 255, 0.24) 1px,
+      transparent 1px,
+      transparent 16px
+    ),
+    repeating-linear-gradient(
+      -60deg,
+      rgba(34, 211, 238, 0.22) 0px,
+      rgba(34, 211, 238, 0.22) 1px,
+      transparent 1px,
+      transparent 16px
+    );
+  background-position:
+    var(--bg-x) var(--bg-y),
+    var(--bg-y) var(--bg-x);
+}
+
+/* Preset 7 · gold : éclat doré métallique chaud. */
+.pv-card3d-tilt[data-holo-preset="gold"] .pv-card3d-foil {
+  mix-blend-mode: color-dodge;
+  opacity: calc(0.2 + var(--glare-opacity) * 0.8);
+  background-image:
+    linear-gradient(
+      120deg,
+      rgba(120, 53, 15, 0.28) 10%,
+      rgba(245, 196, 61, 0.78) 34%,
+      rgba(254, 243, 199, 0.86) 50%,
+      rgba(217, 119, 6, 0.76) 66%,
+      rgba(120, 53, 15, 0.28) 90%
+    ),
+    radial-gradient(
+      farthest-corner circle at var(--px) var(--py),
+      rgba(254, 249, 195, 0.72) 0%,
+      rgba(245, 158, 11, 0.24) 48%,
+      transparent 80%
+    );
+  background-size:
+    240% 240%,
+    100% 100%;
+  background-position:
+    var(--bg-x) var(--bg-y),
+    center;
+  filter: brightness(0.98) contrast(1.38) saturate(1.25);
+}
+
+.pv-card3d-tilt[data-holo-preset="gold"] .pv-card3d-sparkle {
+  mix-blend-mode: soft-light;
+  opacity: calc(0.2 + var(--glare-opacity) * 0.62);
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(254, 243, 199, 0.34) 0px,
+    rgba(254, 243, 199, 0.34) 1px,
+    transparent 1px,
+    transparent 6px
+  );
+  background-position: var(--bg-x) var(--bg-y);
+}
+
+/* Toggle Holo désactivé : coupe les couches foil pour inspecter l'artwork brut. */
+.pv-card3d-tilt[data-holo-enabled="false"] .pv-card3d-foil,
+.pv-card3d-tilt[data-holo-enabled="false"] .pv-card3d-sparkle,
+.pv-card3d-tilt[data-holo-enabled="false"] .pv-card3d-glare {
+  opacity: 0;
+}
+
+/* --------------------------------------------------------------------------
+   4. Accessibilité : prefers-reduced-motion (OS ou prop explicite)
+   -------------------------------------------------------------------------- */
+.pv-card3d-tilt[data-reduced-motion="true"] {
+  transform: none;
+  will-change: auto;
+}
+
+.pv-card3d-tilt[data-reduced-motion="true"] .pv-card3d-flipper {
+  transition: none;
+}
+
+.pv-card3d-tilt[data-reduced-motion="true"][data-holo-preset]:not([data-holo-preset="none"])
+  .pv-card3d-foil,
+.pv-card3d-tilt[data-reduced-motion="true"][data-holo-preset]:not([data-holo-preset="none"])
+  .pv-card3d-sparkle {
+  opacity: 0.14;
+}
+
+.pv-card3d-tilt[data-reduced-motion="true"][data-holo-preset]:not([data-holo-preset="none"])
+  .pv-card3d-glare {
+  opacity: 0.08;
+}
+
+.pv-card3d-tilt[data-reduced-motion="true"][data-holo-enabled="false"][data-holo-preset]
+  .pv-card3d-foil,
+.pv-card3d-tilt[data-reduced-motion="true"][data-holo-enabled="false"][data-holo-preset]
+  .pv-card3d-sparkle,
+.pv-card3d-tilt[data-reduced-motion="true"][data-holo-enabled="false"][data-holo-preset]
+  .pv-card3d-glare {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pv-card3d-tilt {
+    transform: none;
+    will-change: auto;
+  }
+
+  .pv-card3d-flipper {
+    transition: none;
+  }
+
+  .pv-card3d-tilt[data-holo-preset]:not([data-holo-preset="none"]) .pv-card3d-foil,
+  .pv-card3d-tilt[data-holo-preset]:not([data-holo-preset="none"]) .pv-card3d-sparkle {
+    opacity: 0.14;
+  }
+
+  .pv-card3d-tilt[data-holo-preset]:not([data-holo-preset="none"]) .pv-card3d-glare {
+    opacity: 0.08;
+  }
+
+  .pv-card3d-tilt[data-holo-enabled="false"][data-holo-preset] .pv-card3d-foil,
+  .pv-card3d-tilt[data-holo-enabled="false"][data-holo-preset] .pv-card3d-sparkle,
+  .pv-card3d-tilt[data-holo-enabled="false"][data-holo-preset] .pv-card3d-glare {
+    opacity: 0;
+  }
+}

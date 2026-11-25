@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./tokens.css";
+@import "./card-3d.css";
 
 /* Polices : uniquement le sous-ensemble `latin` (français complet : accents, œ, €)
    pour garder le précache PWA léger — les sous-ensembles cyrillic/greek/vietnamese/
