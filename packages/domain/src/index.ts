@@ -5,4 +5,5 @@ export * from "./catalog.ts";
 export * from "./collection.ts";
 export * from "./pricing.ts";
 export * from "./search.ts";
+export * from "./share.ts";
 export * from "./wishlist.ts";

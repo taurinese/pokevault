@@ -25,6 +25,7 @@ export * from "./collection-service.ts";
 export * from "./cover-image.ts";
 export * from "./db.ts";
 export * from "./rls.ts";
+export * from "./share-service.ts";
 export * from "./storage.ts";
 export * from "./tcgdex.ts";
 export * from "./wishlist-service.ts";
