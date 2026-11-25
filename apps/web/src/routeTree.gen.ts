@@ -19,7 +19,9 @@ import { Route as SearchRouteImport } from './routes/search'
 import { Route as WishlistRouteImport } from './routes/wishlist'
 import { Route as ApiDashboardRouteImport } from './routes/api/dashboard'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as ApiShareLinksRouteImport } from './routes/api/share-links'
 import { Route as BinderIdRouteImport } from './routes/binder/$id'
+import { Route as STokenRouteImport } from './routes/s/$token'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthLinkRouteImport } from './routes/api/auth/link'
 import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
@@ -33,6 +35,8 @@ import { Route as ApiBurstSetsRouteImport } from './routes/api/burst/sets'
 import { Route as ApiCatalogDiscoverRouteImport } from './routes/api/catalog/discover'
 import { Route as ApiCatalogSearchRouteImport } from './routes/api/catalog/search'
 import { Route as ApiCatalogSuggestRouteImport } from './routes/api/catalog/suggest'
+import { Route as ApiShareLinksIdRouteImport } from './routes/api/share-links/$id'
+import { Route as ApiSharedTokenRouteImport } from './routes/api/shared/$token'
 import { Route as ApiWishlistIndexRouteImport } from './routes/api/wishlist/index'
 import { Route as ApiBindersIdIndexRouteImport } from './routes/api/binders/$id/index'
 import { Route as ApiBindersIdCoverRouteImport } from './routes/api/binders/$id/cover'
@@ -41,6 +45,7 @@ import { Route as ApiCardsCardIdBindersRouteImport } from './routes/api/cards/$c
 import { Route as ApiCardsCardIdCopiesRouteImport } from './routes/api/cards/$cardId/copies'
 import { Route as ApiCardsCardIdPriceRefreshRouteImport } from './routes/api/cards/$cardId/price-refresh'
 import { Route as ApiCardsCopiesCopyIdRouteImport } from './routes/api/cards/copies/$copyId'
+import { Route as ApiSharedTokenCoverRouteImport } from './routes/api/shared/$token/cover'
 import { Route as ApiWishlistIdIndexRouteImport } from './routes/api/wishlist/$id/index'
 import { Route as ApiWishlistIdAcquireRouteImport } from './routes/api/wishlist/$id/acquire'
 
@@ -94,9 +99,19 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
   path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiShareLinksRoute = ApiShareLinksRouteImport.update({
+  id: '/api/share-links',
+  path: '/api/share-links',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BinderIdRoute = BinderIdRouteImport.update({
   id: '/binder/$id',
   path: '/binder/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const STokenRoute = STokenRouteImport.update({
+  id: '/s/$token',
+  path: '/s/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
@@ -164,6 +179,16 @@ const ApiCatalogSuggestRoute = ApiCatalogSuggestRouteImport.update({
   path: '/api/catalog/suggest',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiShareLinksIdRoute = ApiShareLinksIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiShareLinksRoute,
+} as any)
+const ApiSharedTokenRoute = ApiSharedTokenRouteImport.update({
+  id: '/api/shared/$token',
+  path: '/api/shared/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiWishlistIndexRoute = ApiWishlistIndexRouteImport.update({
   id: '/api/wishlist/',
   path: '/api/wishlist/',
@@ -205,6 +230,11 @@ const ApiCardsCopiesCopyIdRoute = ApiCardsCopiesCopyIdRouteImport.update({
   path: '/api/cards/copies/$copyId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSharedTokenCoverRoute = ApiSharedTokenCoverRouteImport.update({
+  id: '/cover',
+  path: '/cover',
+  getParentRoute: () => ApiSharedTokenRoute,
+} as any)
 const ApiWishlistIdIndexRoute = ApiWishlistIdIndexRouteImport.update({
   id: '/api/wishlist/$id/',
   path: '/api/wishlist/$id/',
@@ -227,7 +257,9 @@ export interface FileRoutesByFullPath {
   '/wishlist': typeof WishlistRoute
   '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/share-links': typeof ApiShareLinksRouteWithChildren
   '/binder/$id': typeof BinderIdRoute
+  '/s/$token': typeof STokenRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
@@ -240,6 +272,8 @@ export interface FileRoutesByFullPath {
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/share-links/$id': typeof ApiShareLinksIdRoute
+  '/api/shared/$token': typeof ApiSharedTokenRouteWithChildren
   '/api/binders/': typeof ApiBindersIndexRoute
   '/api/wishlist/': typeof ApiWishlistIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
@@ -247,6 +281,7 @@ export interface FileRoutesByFullPath {
   '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
   '/api/cards/$cardId/price-refresh': typeof ApiCardsCardIdPriceRefreshRoute
   '/api/cards/copies/$copyId': typeof ApiCardsCopiesCopyIdRoute
+  '/api/shared/$token/cover': typeof ApiSharedTokenCoverRoute
   '/api/wishlist/$id/acquire': typeof ApiWishlistIdAcquireRoute
   '/api/binders/$id/': typeof ApiBindersIdIndexRoute
   '/api/cards/$cardId/': typeof ApiCardsCardIdIndexRoute
@@ -263,7 +298,9 @@ export interface FileRoutesByTo {
   '/wishlist': typeof WishlistRoute
   '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/share-links': typeof ApiShareLinksRouteWithChildren
   '/binder/$id': typeof BinderIdRoute
+  '/s/$token': typeof STokenRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
@@ -276,6 +313,8 @@ export interface FileRoutesByTo {
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/share-links/$id': typeof ApiShareLinksIdRoute
+  '/api/shared/$token': typeof ApiSharedTokenRouteWithChildren
   '/api/binders': typeof ApiBindersIndexRoute
   '/api/wishlist': typeof ApiWishlistIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
@@ -283,6 +322,7 @@ export interface FileRoutesByTo {
   '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
   '/api/cards/$cardId/price-refresh': typeof ApiCardsCardIdPriceRefreshRoute
   '/api/cards/copies/$copyId': typeof ApiCardsCopiesCopyIdRoute
+  '/api/shared/$token/cover': typeof ApiSharedTokenCoverRoute
   '/api/wishlist/$id/acquire': typeof ApiWishlistIdAcquireRoute
   '/api/binders/$id': typeof ApiBindersIdIndexRoute
   '/api/cards/$cardId': typeof ApiCardsCardIdIndexRoute
@@ -300,7 +340,9 @@ export interface FileRoutesById {
   '/wishlist': typeof WishlistRoute
   '/api/dashboard': typeof ApiDashboardRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/share-links': typeof ApiShareLinksRouteWithChildren
   '/binder/$id': typeof BinderIdRoute
+  '/s/$token': typeof STokenRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/link': typeof ApiAuthLinkRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
@@ -313,6 +355,8 @@ export interface FileRoutesById {
   '/api/catalog/discover': typeof ApiCatalogDiscoverRoute
   '/api/catalog/search': typeof ApiCatalogSearchRoute
   '/api/catalog/suggest': typeof ApiCatalogSuggestRoute
+  '/api/share-links/$id': typeof ApiShareLinksIdRoute
+  '/api/shared/$token': typeof ApiSharedTokenRouteWithChildren
   '/api/binders/': typeof ApiBindersIndexRoute
   '/api/wishlist/': typeof ApiWishlistIndexRoute
   '/api/binders/$id/cover': typeof ApiBindersIdCoverRoute
@@ -320,6 +364,7 @@ export interface FileRoutesById {
   '/api/cards/$cardId/copies': typeof ApiCardsCardIdCopiesRoute
   '/api/cards/$cardId/price-refresh': typeof ApiCardsCardIdPriceRefreshRoute
   '/api/cards/copies/$copyId': typeof ApiCardsCopiesCopyIdRoute
+  '/api/shared/$token/cover': typeof ApiSharedTokenCoverRoute
   '/api/wishlist/$id/acquire': typeof ApiWishlistIdAcquireRoute
   '/api/binders/$id/': typeof ApiBindersIdIndexRoute
   '/api/cards/$cardId/': typeof ApiCardsCardIdIndexRoute
@@ -338,7 +383,9 @@ export interface FileRouteTypes {
     | '/wishlist'
     | '/api/dashboard'
     | '/api/health'
+    | '/api/share-links'
     | '/binder/$id'
+    | '/s/$token'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
@@ -351,6 +398,8 @@ export interface FileRouteTypes {
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/share-links/$id'
+    | '/api/shared/$token'
     | '/api/binders/'
     | '/api/wishlist/'
     | '/api/binders/$id/cover'
@@ -358,6 +407,7 @@ export interface FileRouteTypes {
     | '/api/cards/$cardId/copies'
     | '/api/cards/$cardId/price-refresh'
     | '/api/cards/copies/$copyId'
+    | '/api/shared/$token/cover'
     | '/api/wishlist/$id/acquire'
     | '/api/binders/$id/'
     | '/api/cards/$cardId/'
@@ -374,7 +424,9 @@ export interface FileRouteTypes {
     | '/wishlist'
     | '/api/dashboard'
     | '/api/health'
+    | '/api/share-links'
     | '/binder/$id'
+    | '/s/$token'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
@@ -387,6 +439,8 @@ export interface FileRouteTypes {
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/share-links/$id'
+    | '/api/shared/$token'
     | '/api/binders'
     | '/api/wishlist'
     | '/api/binders/$id/cover'
@@ -394,6 +448,7 @@ export interface FileRouteTypes {
     | '/api/cards/$cardId/copies'
     | '/api/cards/$cardId/price-refresh'
     | '/api/cards/copies/$copyId'
+    | '/api/shared/$token/cover'
     | '/api/wishlist/$id/acquire'
     | '/api/binders/$id'
     | '/api/cards/$cardId'
@@ -410,7 +465,9 @@ export interface FileRouteTypes {
     | '/wishlist'
     | '/api/dashboard'
     | '/api/health'
+    | '/api/share-links'
     | '/binder/$id'
+    | '/s/$token'
     | '/api/auth/callback'
     | '/api/auth/link'
     | '/api/auth/login'
@@ -423,6 +480,8 @@ export interface FileRouteTypes {
     | '/api/catalog/discover'
     | '/api/catalog/search'
     | '/api/catalog/suggest'
+    | '/api/share-links/$id'
+    | '/api/shared/$token'
     | '/api/binders/'
     | '/api/wishlist/'
     | '/api/binders/$id/cover'
@@ -430,6 +489,7 @@ export interface FileRouteTypes {
     | '/api/cards/$cardId/copies'
     | '/api/cards/$cardId/price-refresh'
     | '/api/cards/copies/$copyId'
+    | '/api/shared/$token/cover'
     | '/api/wishlist/$id/acquire'
     | '/api/binders/$id/'
     | '/api/cards/$cardId/'
@@ -447,7 +507,9 @@ export interface RootRouteChildren {
   WishlistRoute: typeof WishlistRoute
   ApiDashboardRoute: typeof ApiDashboardRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  ApiShareLinksRoute: typeof ApiShareLinksRouteWithChildren
   BinderIdRoute: typeof BinderIdRoute
+  STokenRoute: typeof STokenRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
   ApiAuthLinkRoute: typeof ApiAuthLinkRoute
   ApiAuthLoginRoute: typeof ApiAuthLoginRoute
@@ -460,6 +522,7 @@ export interface RootRouteChildren {
   ApiCatalogDiscoverRoute: typeof ApiCatalogDiscoverRoute
   ApiCatalogSearchRoute: typeof ApiCatalogSearchRoute
   ApiCatalogSuggestRoute: typeof ApiCatalogSuggestRoute
+  ApiSharedTokenRoute: typeof ApiSharedTokenRouteWithChildren
   ApiBindersIndexRoute: typeof ApiBindersIndexRoute
   ApiWishlistIndexRoute: typeof ApiWishlistIndexRoute
   ApiBindersIdCoverRoute: typeof ApiBindersIdCoverRoute
@@ -545,11 +608,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/share-links': {
+      id: '/api/share-links'
+      path: '/api/share-links'
+      fullPath: '/api/share-links'
+      preLoaderRoute: typeof ApiShareLinksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/binder/$id': {
       id: '/binder/$id'
       path: '/binder/$id'
       fullPath: '/binder/$id'
       preLoaderRoute: typeof BinderIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/s/$token': {
+      id: '/s/$token'
+      path: '/s/$token'
+      fullPath: '/s/$token'
+      preLoaderRoute: typeof STokenRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/auth/callback': {
@@ -643,6 +720,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCatalogSuggestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/share-links/$id': {
+      id: '/api/share-links/$id'
+      path: '/$id'
+      fullPath: '/api/share-links/$id'
+      preLoaderRoute: typeof ApiShareLinksIdRouteImport
+      parentRoute: typeof ApiShareLinksRoute
+    }
+    '/api/shared/$token': {
+      id: '/api/shared/$token'
+      path: '/api/shared/$token'
+      fullPath: '/api/shared/$token'
+      preLoaderRoute: typeof ApiSharedTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/wishlist/': {
       id: '/api/wishlist/'
       path: '/api/wishlist'
@@ -699,6 +790,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCardsCopiesCopyIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/shared/$token/cover': {
+      id: '/api/shared/$token/cover'
+      path: '/cover'
+      fullPath: '/api/shared/$token/cover'
+      preLoaderRoute: typeof ApiSharedTokenCoverRouteImport
+      parentRoute: typeof ApiSharedTokenRoute
+    }
     '/api/wishlist/$id/': {
       id: '/api/wishlist/$id/'
       path: '/api/wishlist/$id'
@@ -716,6 +814,30 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface ApiShareLinksRouteChildren {
+  ApiShareLinksIdRoute: typeof ApiShareLinksIdRoute
+}
+
+const ApiShareLinksRouteChildren: ApiShareLinksRouteChildren = {
+  ApiShareLinksIdRoute: ApiShareLinksIdRoute,
+}
+
+const ApiShareLinksRouteWithChildren = ApiShareLinksRoute._addFileChildren(
+  ApiShareLinksRouteChildren,
+)
+
+interface ApiSharedTokenRouteChildren {
+  ApiSharedTokenCoverRoute: typeof ApiSharedTokenCoverRoute
+}
+
+const ApiSharedTokenRouteChildren: ApiSharedTokenRouteChildren = {
+  ApiSharedTokenCoverRoute: ApiSharedTokenCoverRoute,
+}
+
+const ApiSharedTokenRouteWithChildren = ApiSharedTokenRoute._addFileChildren(
+  ApiSharedTokenRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AccountRoute: AccountRoute,
@@ -727,7 +849,9 @@ const rootRouteChildren: RootRouteChildren = {
   WishlistRoute: WishlistRoute,
   ApiDashboardRoute: ApiDashboardRoute,
   ApiHealthRoute: ApiHealthRoute,
+  ApiShareLinksRoute: ApiShareLinksRouteWithChildren,
   BinderIdRoute: BinderIdRoute,
+  STokenRoute: STokenRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
   ApiAuthLinkRoute: ApiAuthLinkRoute,
   ApiAuthLoginRoute: ApiAuthLoginRoute,
@@ -740,6 +864,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCatalogDiscoverRoute: ApiCatalogDiscoverRoute,
   ApiCatalogSearchRoute: ApiCatalogSearchRoute,
   ApiCatalogSuggestRoute: ApiCatalogSuggestRoute,
+  ApiSharedTokenRoute: ApiSharedTokenRouteWithChildren,
   ApiBindersIndexRoute: ApiBindersIndexRoute,
   ApiWishlistIndexRoute: ApiWishlistIndexRoute,
   ApiBindersIdCoverRoute: ApiBindersIdCoverRoute,
