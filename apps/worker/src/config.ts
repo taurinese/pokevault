@@ -1,4 +1,10 @@
-import { DEFAULT_TCGDEX_BASE_URL, ServiceConfigError } from "@pokevault/services";
+import { isAllowedDiscordWebhookUrl } from "@pokevault/domain";
+import {
+  DEFAULT_TCGDEX_BASE_URL,
+  ServiceConfigError,
+  signVapidJwt,
+  type VapidConfig,
+} from "@pokevault/services";
 import { Config, Effect, Option } from "effect";
 
 /** Default delay between two heartbeat ticks (30 s). */
@@ -16,6 +22,12 @@ export const DEFAULT_CARDMARKET_PRICE_BATCH_LIMIT = 30;
 /** Allowed range for `CARDMARKET_PRICE_BATCH_LIMIT`. */
 export const CARDMARKET_PRICE_BATCH_LIMIT_RANGE = { min: 1, max: 200 } as const;
 
+/** Default alert evaluation interval: every 15 min (TTL of price snapshots). */
+export const DEFAULT_ALERT_EVAL_INTERVAL_MS = 15 * 60 * 1000;
+
+/** Default public URL of the app (links of the notifications) when `APP_URL`/`SITE_URL` are unset. */
+export const DEFAULT_APP_URL = "http://localhost:3000";
+
 const HEARTBEAT_ENV_KEY = "WORKER_HEARTBEAT_INTERVAL_MS";
 const DATABASE_URL_ENV_KEY = "DATABASE_URL";
 const TCGDEX_SYNC_ENABLED_ENV_KEY = "TCGDEX_SYNC_ENABLED";
@@ -24,6 +36,29 @@ const TCGDEX_BASE_URL_ENV_KEY = "TCGDEX_BASE_URL";
 const CARDMARKET_PRICE_SYNC_ENABLED_ENV_KEY = "CARDMARKET_PRICE_SYNC_ENABLED";
 const CARDMARKET_PRICE_SYNC_INTERVAL_MS_ENV_KEY = "CARDMARKET_PRICE_SYNC_INTERVAL_MS";
 const CARDMARKET_PRICE_BATCH_LIMIT_ENV_KEY = "CARDMARKET_PRICE_BATCH_LIMIT";
+const ALERT_EVAL_ENABLED_ENV_KEY = "ALERT_EVAL_ENABLED";
+const ALERT_EVAL_INTERVAL_MS_ENV_KEY = "ALERT_EVAL_INTERVAL_MS";
+const VAPID_PUBLIC_KEY_ENV_KEY = "VAPID_PUBLIC_KEY";
+const VAPID_PRIVATE_KEY_ENV_KEY = "VAPID_PRIVATE_KEY";
+const VAPID_SUBJECT_ENV_KEY = "VAPID_SUBJECT";
+const DISCORD_DEFAULT_WEBHOOK_URL_ENV_KEY = "DISCORD_DEFAULT_WEBHOOK_URL";
+const DISCORD_BOT_TOKEN_ENV_KEY = "DISCORD_BOT_TOKEN";
+const APP_URL_ENV_KEY = "APP_URL";
+const SITE_URL_ENV_KEY = "SITE_URL";
+
+/** Settings of the alert evaluation cron; only present when `ALERT_EVAL_ENABLED=true`. */
+export interface AlertEvalSettings {
+  /** Postgres connection string (service role), required by the cron. */
+  readonly databaseUrl: string;
+  /** Public URL of the app (links of the push / Discord notifications), without trailing slash. */
+  readonly appUrl: string;
+  /** VAPID key pair; `null` disables Web Push (every push delivery fails with a typed error). */
+  readonly vapid: VapidConfig | null;
+  /** Discord bot token enabling DMs, or `null`. */
+  readonly discordBotToken: string | null;
+  /** Instance-wide Discord webhook (validated against the SSRF guard), or `null`. */
+  readonly defaultDiscordWebhookUrl: string | null;
+}
 
 interface WorkerConfigBase {
   /** Delay between two heartbeat ticks, in milliseconds (strictly positive). */
@@ -45,6 +80,13 @@ interface WorkerConfigBase {
   readonly cardmarketPriceSyncIntervalMs: number;
   /** Max number of cards refreshed per price cron run (1..200). */
   readonly cardmarketPriceBatchLimit: number;
+  /** Delay between two alert evaluation runs, in milliseconds (strictly positive). */
+  readonly alertEvalIntervalMs: number;
+  /**
+   * Alert evaluation + notifications cron (default disabled: `ALERT_EVAL_ENABLED=false`).
+   * `null` when disabled.
+   */
+  readonly alertEval: AlertEvalSettings | null;
 }
 
 export type WorkerConfig =
@@ -83,6 +125,110 @@ const optionalStringConfig = (key: string) =>
     Effect.mapError((error) => configError(key, String(error))),
     Effect.option,
   );
+
+/** Optional trimmed string config (missing or blank → `null`). */
+const optionalTrimmedConfig = (key: string) =>
+  Effect.map(optionalStringConfig(key), (value) => {
+    const trimmed = Option.getOrNull(value)?.trim();
+    return trimmed === undefined || trimmed.length === 0 ? null : trimmed;
+  });
+
+/**
+ * Reads the alert evaluation settings (only called when `ALERT_EVAL_ENABLED=true`):
+ * `DATABASE_URL` is mandatory, the VAPID triplet is all-or-nothing and cryptographically
+ * validated, the default Discord webhook must pass the SSRF guard. Secrets/URLs are never
+ * echoed in error messages.
+ */
+const loadAlertEvalSettings = (databaseUrl: string | null) =>
+  Effect.gen(function* () {
+    if (databaseUrl === null) {
+      return yield* Effect.fail(
+        configError(
+          DATABASE_URL_ENV_KEY,
+          `${DATABASE_URL_ENV_KEY} is required when ${ALERT_EVAL_ENABLED_ENV_KEY}=true`,
+        ),
+      );
+    }
+
+    const publicKey = yield* optionalTrimmedConfig(VAPID_PUBLIC_KEY_ENV_KEY);
+    const privateKey = yield* optionalTrimmedConfig(VAPID_PRIVATE_KEY_ENV_KEY);
+    const subject = yield* optionalTrimmedConfig(VAPID_SUBJECT_ENV_KEY);
+    let vapid: VapidConfig | null = null;
+    if (publicKey !== null || privateKey !== null || subject !== null) {
+      if (publicKey === null || privateKey === null || subject === null) {
+        const missingKey =
+          publicKey === null
+            ? VAPID_PUBLIC_KEY_ENV_KEY
+            : privateKey === null
+              ? VAPID_PRIVATE_KEY_ENV_KEY
+              : VAPID_SUBJECT_ENV_KEY;
+        return yield* Effect.fail(
+          configError(
+            missingKey,
+            `${VAPID_PUBLIC_KEY_ENV_KEY}, ${VAPID_PRIVATE_KEY_ENV_KEY} and ${VAPID_SUBJECT_ENV_KEY} must all be set together`,
+          ),
+        );
+      }
+      if (!/^(?:mailto:[^\s@]+@[^\s@]+|https:\/\/\S+)$/.test(subject)) {
+        return yield* Effect.fail(
+          configError(
+            VAPID_SUBJECT_ENV_KEY,
+            `${VAPID_SUBJECT_ENV_KEY} must be a mailto: or https: URL`,
+          ),
+        );
+      }
+      const candidate: VapidConfig = { publicKey, privateKey, subject };
+      try {
+        signVapidJwt(candidate, "https://push.example", 0);
+      } catch {
+        return yield* Effect.fail(
+          configError(
+            VAPID_PRIVATE_KEY_ENV_KEY,
+            `${VAPID_PUBLIC_KEY_ENV_KEY}/${VAPID_PRIVATE_KEY_ENV_KEY} are not a valid base64url P-256 VAPID key pair`,
+          ),
+        );
+      }
+      vapid = candidate;
+    }
+
+    const defaultDiscordWebhookUrl = yield* optionalTrimmedConfig(
+      DISCORD_DEFAULT_WEBHOOK_URL_ENV_KEY,
+    );
+    if (
+      defaultDiscordWebhookUrl !== null &&
+      !isAllowedDiscordWebhookUrl(defaultDiscordWebhookUrl)
+    ) {
+      return yield* Effect.fail(
+        configError(
+          DISCORD_DEFAULT_WEBHOOK_URL_ENV_KEY,
+          `${DISCORD_DEFAULT_WEBHOOK_URL_ENV_KEY} must be a https://discord.com/api/webhooks/<id>/<token> URL`,
+        ),
+      );
+    }
+
+    const discordBotToken = yield* optionalTrimmedConfig(DISCORD_BOT_TOKEN_ENV_KEY);
+
+    const appUrlRaw =
+      (yield* optionalTrimmedConfig(APP_URL_ENV_KEY)) ??
+      (yield* optionalTrimmedConfig(SITE_URL_ENV_KEY)) ??
+      DEFAULT_APP_URL;
+    if (!/^https?:\/\/[^\s/]+/i.test(appUrlRaw)) {
+      return yield* Effect.fail(
+        configError(
+          APP_URL_ENV_KEY,
+          `${APP_URL_ENV_KEY} (or ${SITE_URL_ENV_KEY}) must be an absolute http(s) URL`,
+        ),
+      );
+    }
+
+    return {
+      databaseUrl,
+      appUrl: appUrlRaw.replace(/\/+$/, ""),
+      vapid,
+      discordBotToken,
+      defaultDiscordWebhookUrl,
+    } satisfies AlertEvalSettings;
+  });
 
 /** Read the worker configuration from the environment (typed `ServiceConfigError` on failure). */
 export const loadWorkerConfig: Effect.Effect<WorkerConfig, ServiceConfigError> = Effect.gen(
@@ -160,14 +306,34 @@ export const loadWorkerConfig: Effect.Effect<WorkerConfig, ServiceConfigError> =
       );
     }
 
+    const alertEvalEnabled = yield* Config.Boolean(ALERT_EVAL_ENABLED_ENV_KEY).pipe(
+      Config.withDefault(false),
+      Effect.mapError((error) => configError(ALERT_EVAL_ENABLED_ENV_KEY, String(error))),
+    );
+
+    const alertEvalIntervalMs = yield* intConfig(
+      ALERT_EVAL_INTERVAL_MS_ENV_KEY,
+      DEFAULT_ALERT_EVAL_INTERVAL_MS,
+    );
+    if (alertEvalIntervalMs <= 0) {
+      return yield* Effect.fail(
+        configError(
+          ALERT_EVAL_INTERVAL_MS_ENV_KEY,
+          `${ALERT_EVAL_INTERVAL_MS_ENV_KEY} must be a strictly positive integer`,
+        ),
+      );
+    }
+
     const normalizedDatabaseUrl =
       databaseUrl === undefined || databaseUrl.length === 0 ? null : databaseUrl;
+
+    const alertEval = alertEvalEnabled ? yield* loadAlertEvalSettings(normalizedDatabaseUrl) : null;
 
     const requireDatabaseUrl = () =>
       Effect.fail(
         configError(
           DATABASE_URL_ENV_KEY,
-          `${DATABASE_URL_ENV_KEY} is required when ${TCGDEX_SYNC_ENABLED_ENV_KEY}=true or ${CARDMARKET_PRICE_SYNC_ENABLED_ENV_KEY}=true`,
+          `${DATABASE_URL_ENV_KEY} is required when ${TCGDEX_SYNC_ENABLED_ENV_KEY}=true, ${CARDMARKET_PRICE_SYNC_ENABLED_ENV_KEY}=true or ${ALERT_EVAL_ENABLED_ENV_KEY}=true`,
         ),
       );
 
@@ -177,6 +343,8 @@ export const loadWorkerConfig: Effect.Effect<WorkerConfig, ServiceConfigError> =
       tcgdexBaseUrl,
       cardmarketPriceSyncIntervalMs,
       cardmarketPriceBatchLimit,
+      alertEvalIntervalMs,
+      alertEval,
     };
 
     if (tcgdexSyncEnabled && cardmarketPriceSyncEnabled) {

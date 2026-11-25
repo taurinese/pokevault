@@ -12,6 +12,8 @@ export interface CatalogSyncConfig {
   readonly defaultLanguage: CardLanguage;
 }
 
+export * from "./alert-service.ts";
+export * from "./alert-worker-service.ts";
 export * from "./binder-service.ts";
 export * from "./burst-import.ts";
 export * from "./cardmarket-parser.ts";
@@ -24,6 +26,7 @@ export * from "./collection-memory-layer.ts";
 export * from "./collection-service.ts";
 export * from "./cover-image.ts";
 export * from "./db.ts";
+export * from "./notification-service.ts";
 export * from "./rls.ts";
 export * from "./share-service.ts";
 export * from "./storage.ts";

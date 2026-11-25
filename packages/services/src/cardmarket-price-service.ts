@@ -280,7 +280,7 @@ export const PriceSnapshotStoreLive: Layer.Layer<PriceSnapshotStore, never, Data
           // Priority 1: cards with at least one active price alert.
           const alertsFragment = guards.has_alerts
             ? db.sql`
-              SELECT c.id AS card_id, pa.language AS language, 'normal'::text AS variant,
+              SELECT c.id AS card_id, pa.language AS language, pa.variant AS variant,
                      1 AS rank
               FROM catalog_cards AS c
               JOIN price_alerts AS pa ON pa.card_id = c.id
