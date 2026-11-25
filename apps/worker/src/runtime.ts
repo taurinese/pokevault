@@ -1,4 +1,4 @@
-import type { PriceBatchReport } from "@pokevault/domain";
+import type { AlertEvaluationBatchReport, PriceBatchReport } from "@pokevault/domain";
 import type { CatalogSyncReport } from "@pokevault/services";
 import { Cause, Effect, Ref } from "effect";
 
@@ -148,6 +148,53 @@ export const priceRefreshLoop = (cron: PriceRefreshCron): Effect.Effect<never, u
     }),
   ).pipe(Effect.onInterrupt(() => Effect.logInfo("worker.price_refresh.interrupted")));
 
+/** Configuration of the price alert evaluation + notification cron. */
+export interface AlertEvalCron {
+  /** Delay between two evaluation runs, in milliseconds (strictly positive, default 15 min). */
+  readonly intervalMs: number;
+  /**
+   * One evaluation batch (evaluate → notify → record events). Its typed errors are logged
+   * (`worker.alert_eval.failed`) and never crash the worker; interruption is always propagated.
+   */
+  readonly run: Effect.Effect<AlertEvaluationBatchReport, unknown>;
+}
+
+/**
+ * Alert evaluation cron: runs `run` immediately, then every `intervalMs`. Failures are
+ * logged as warnings and the loop keeps going; interrupting the loop (SIGTERM/SIGINT
+ * shutdown) stops it and logs `worker.alert_eval.interrupted`.
+ */
+export const alertEvalLoop = (cron: AlertEvalCron): Effect.Effect<never, unknown> =>
+  Effect.forever(
+    Effect.gen(function* () {
+      yield* Effect.logInfo("worker.alert_eval.started");
+      yield* cron.run.pipe(
+        Effect.tap((report) =>
+          Effect.logInfo("worker.alert_eval.completed").pipe(
+            Effect.annotateLogs({
+              evaluated: report.evaluated,
+              triggered: report.triggered,
+              skippedCooldown: report.skippedCooldown,
+              skippedAboveThreshold: report.skippedAboveThreshold,
+              skippedNoPrice: report.skippedNoPrice,
+              pushSent: report.pushSent,
+              pushExpiredRemoved: report.pushExpiredRemoved,
+              discordSent: report.discordSent,
+              deliveryFailed: report.deliveryFailed,
+              durationMs: report.durationMs,
+            }),
+          ),
+        ),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("worker.alert_eval.failed", cause),
+        ),
+      );
+      yield* Effect.sleep(cron.intervalMs);
+    }),
+  ).pipe(Effect.onInterrupt(() => Effect.logInfo("worker.alert_eval.interrupted")));
+
 export interface RunWorkerOptions {
   readonly heartbeatIntervalMs: number;
   readonly signals: SignalSource;
@@ -155,6 +202,8 @@ export interface RunWorkerOptions {
   readonly catalogSync?: CatalogSyncCron | undefined;
   /** Optional Cardmarket price refresh cron, forked in a supervised fiber of the worker scope. */
   readonly priceRefresh?: PriceRefreshCron | undefined;
+  /** Optional alert evaluation + notification cron, forked in a supervised fiber of the worker scope. */
+  readonly alertEval?: AlertEvalCron | undefined;
 }
 
 /**
@@ -174,6 +223,9 @@ export const runWorker = (options: RunWorkerOptions): Effect.Effect<ShutdownSign
       }
       if (options.priceRefresh !== undefined) {
         yield* Effect.forkScoped(priceRefreshLoop(options.priceRefresh));
+      }
+      if (options.alertEval !== undefined) {
+        yield* Effect.forkScoped(alertEvalLoop(options.alertEval));
       }
       const signal = yield* Effect.raceFirst(
         awaitShutdownSignal(options.signals),
