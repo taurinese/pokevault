@@ -1093,6 +1093,13 @@ export const fr = {
   "pwa.iosGuide.step1": "Touchez le bouton « Partager » dans la barre Safari",
   "pwa.iosGuide.step2": "Sélectionnez « Sur l'écran d'accueil » puis « Ajouter »",
   "pwa.iosGuide.step3": "Ouvrez PokéVault depuis l'icône sur l'écran d'accueil",
+
+  // Navigation Desktop (Sidebar ≥ 1024px)
+  "desktopNav.label": "Navigation latérale",
+  "desktopNav.homeAria": "PokéVault — Retour à l'accueil",
+  "desktopNav.tagline": "Collection Pokémon TCG",
+  "desktopNav.burst": "Saisie rafale",
+  "desktopNav.account": "Compte & paramètres",
 } as const;
 
 export type TranslationKey = keyof typeof fr;

@@ -46,7 +46,7 @@ export interface FloatingPillNavbarProps {
 export const FloatingPillNavbar = ({ unreadAlertsCount = 0 }: FloatingPillNavbarProps) => (
   <nav
     aria-label={t("nav.label")}
-    className="pointer-events-none fixed inset-x-0 bottom-0 z-(--z-navbar) flex justify-center px-4"
+    className="pointer-events-none fixed inset-x-0 bottom-0 z-(--z-navbar) flex justify-center px-4 lg:hidden"
     style={{ paddingBottom: "calc(0.75rem + var(--safe-area-inset-bottom))" }}
   >
     <ul

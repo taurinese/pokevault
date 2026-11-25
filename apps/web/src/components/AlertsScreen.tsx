@@ -184,7 +184,7 @@ const SkeletonList = () => (
     role="status"
     aria-label={t("alerts.loading")}
     data-testid="alerts-skeleton"
-    className="flex flex-col gap-3 motion-reduce:animate-none"
+    className="flex flex-col gap-3 lg:grid lg:grid-cols-2 motion-reduce:animate-none"
   >
     {Array.from({ length: 3 }, (_, index) => (
       <div
@@ -653,7 +653,10 @@ const TriggeredSection = ({
         {t("alerts.triggered.markAll")}
       </button>
     </div>
-    <ul aria-label={t("alerts.triggered.list")} className="flex flex-col gap-3">
+    <ul
+      aria-label={t("alerts.triggered.list")}
+      className="flex flex-col gap-3 lg:grid lg:grid-cols-2"
+    >
       {events.map((event) => (
         <TriggeredRow key={event.id} event={event} nowMs={nowMs} onOpen={actions.onOpenEvent} />
       ))}
@@ -890,7 +893,7 @@ const WatchSection = ({
         {alerts.length}
       </span>
     </div>
-    <ul aria-label={t("alerts.watch.list")} className="flex flex-col gap-3">
+    <ul aria-label={t("alerts.watch.list")} className="flex flex-col gap-3 lg:grid lg:grid-cols-2">
       {alerts.map((alert) => (
         <WatchRow
           key={alert.id}
@@ -919,7 +922,7 @@ const ToastRegion = ({
     role="status"
     aria-live="polite"
     data-testid="alerts-toast-region"
-    className="pointer-events-none fixed inset-x-4 bottom-28 z-40 mx-auto max-w-md"
+    className="pointer-events-none fixed inset-x-4 bottom-28 z-40 mx-auto max-w-md lg:right-8 lg:bottom-8 lg:left-60"
   >
     {toast === null ? null : (
       <div
@@ -962,7 +965,7 @@ export const AlertsView = ({ state, actions, children }: AlertsViewProps) => {
     payload.alerts.length === 0 &&
     payload.triggeredEvents.length === 0;
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-5 px-4 pt-10 pb-40">
+    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-5 px-4 pt-10 pb-40 lg:max-w-5xl lg:gap-6 lg:px-8 lg:pb-12">
       <header className="flex items-center gap-2">
         <BellRing size={24} aria-hidden="true" className="text-gold" />
         <h1 className="text-2xl font-bold text-primary">{t("alerts.heading")}</h1>

@@ -104,6 +104,11 @@ describe("FloatingPillNavbar", () => {
     expect(html).toContain("min-width:var(--touch-target-min)");
     expect(html).toContain("min-height:var(--touch-target-min)");
   });
+
+  it("hides the mobile floating pill on desktop (lg:hidden) in favor of DesktopNav", async () => {
+    const html = await renderNavbar("/");
+    expect(html).toContain("lg:hidden");
+  });
 });
 
 describe("formatBadgeCount", () => {
